@@ -1,0 +1,282 @@
+"""
+Draft generation service.
+
+Uses Claude to produce an AI draft reply for a given email thread, injecting
+relevant knowledge base entries as context. The generated draft is persisted
+as a DraftResponse record and the thread status is updated to draft_ready.
+
+Design principles:
+- Temperature 0.3: slightly varied, natural-sounding language (not deterministic
+  like classification, not creative like open-ended generation)
+- Thread history capped at 10 most recent messages and 6000 chars total
+- Knowledge retrieved by category match + tag overlap + all policy entries
+- Escalated threads are skipped — Jane needs to handle those personally
+- Draft generation failure is non-fatal; the caller wraps this in try/except
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+
+import anthropic
+
+from app.config import get_settings
+from app.models.email import DraftResponse, DraftStatus, EmailMessage, EmailStatus, EmailThread, MessageDirection
+from app.services.knowledge import get_knowledge_service
+from app.services.notification import get_notification_service
+
+logger = logging.getLogger(__name__)
+
+# ── Prompt templates ───────────────────────────────────────────────────────────
+
+_SYSTEM_PROMPT_TEMPLATE = """\
+You are a professional email assistant for {firm_name}, a tax and accounting firm \
+owned by {firm_owner_name} ({firm_owner_email}). You draft email replies to clients \
+on behalf of the firm.
+
+RULES:
+- Be professional, warm, and concise
+- Never give specific tax advice — defer to "we'll review your situation"
+- Never promise specific deadlines unless the knowledge base provides them
+- Include a professional sign-off
+- Match the tone indicated: {suggested_reply_tone}
+- If the client seems upset, acknowledge their concern before addressing the substance
+- Do not fabricate information; if unsure, say the team will follow up
+
+FIRM KNOWLEDGE (use this to inform your response):
+{knowledge_context}\
+"""
+
+_USER_PROMPT_TEMPLATE = """\
+Draft a reply to this client email thread. The most recent message is at the bottom.
+
+Thread subject: {subject}
+Client: {client_name} ({client_email})
+Category: {category}
+Summary: {ai_summary}
+
+--- THREAD HISTORY ---
+{formatted_messages}
+--- END THREAD ---
+
+Write a complete email reply. Do not include a subject line — only the body.
+Sign off as the {firm_name} team unless the knowledge base specifies a different signature.\
+"""
+
+# How many characters of thread history to send (guards against token overflow)
+_THREAD_CHAR_LIMIT = 6000
+# How many messages to include at most
+_THREAD_MESSAGE_LIMIT = 10
+
+
+def _format_thread_messages(messages: list[EmailMessage]) -> str:
+    """
+    Format thread messages as a readable conversation history.
+
+    Takes the most recent `_THREAD_MESSAGE_LIMIT` messages (by received_at),
+    truncates the combined text to `_THREAD_CHAR_LIMIT` chars, and formats
+    each message with a direction label and timestamp.
+    """
+    # Sort chronologically — the relationship is already ordered but be explicit
+    sorted_msgs = sorted(messages, key=lambda m: m.received_at)
+    # Take the tail (most recent messages)
+    recent = sorted_msgs[-_THREAD_MESSAGE_LIMIT:]
+
+    parts: list[str] = []
+    for msg in recent:
+        direction_label = "CLIENT" if msg.direction == MessageDirection.inbound else "SCHILLER CPA"
+        timestamp = msg.received_at.strftime("%Y-%m-%d %H:%M UTC")
+        body = (msg.body_text or "").strip()
+        if not body:
+            body = "(no plain-text body)"
+        parts.append(f"[{direction_label} — {timestamp}]\n{body}")
+
+    full_text = "\n\n".join(parts)
+
+    # Truncate to char limit — keep the end (most recent content is most important)
+    if len(full_text) > _THREAD_CHAR_LIMIT:
+        full_text = "…[earlier messages truncated]\n\n" + full_text[-_THREAD_CHAR_LIMIT:]
+
+    return full_text
+
+
+class DraftGeneratorService:
+    """
+    Service that generates AI draft replies for email threads using Claude.
+
+    Instantiate once and reuse — the Anthropic client is thread-safe.
+    """
+
+    def __init__(self) -> None:
+        settings = get_settings()
+        self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self._model = settings.claude_model
+        self._temperature = settings.draft_temperature
+        self._max_tokens = settings.draft_max_tokens
+        self._firm_name = settings.firm_name
+        self._firm_owner_name = settings.firm_owner_name
+        self._firm_owner_email = settings.firm_owner_email
+
+    def generate(
+        self,
+        db,  # sqlalchemy.orm.Session — typed loosely to avoid circular import
+        thread: EmailThread,
+        *,
+        skip_escalation_guard: bool = False,
+    ) -> DraftResponse:
+        """
+        Generate an AI draft reply for the given email thread.
+
+        Steps:
+        1. Guard: skip escalated threads
+        2. Load thread messages (last 10, cap 6000 chars)
+        3. Get knowledge entries by category + tags
+        4. Build system + user prompts
+        5. Call Claude (temp=0.3, max_tokens=1024)
+        6. Parse response, create DraftResponse record
+        7. Update thread status to draft_ready
+        8. Fire draft.ready notification
+        9. Audit log the generation
+
+        Returns the created DraftResponse.
+        Raises on Claude API errors — callers should wrap in try/except.
+        """
+        from sqlalchemy import select
+        from app.utils.audit import log_action
+
+        if thread.status == EmailStatus.escalated and not skip_escalation_guard:
+            raise ValueError(
+                f"Thread {thread.id} is escalated — draft generation is not allowed. "
+                "Jane must review escalated threads personally."
+            )
+
+        # Load messages directly by thread_id — avoids re-fetching the thread object
+        # and sidestepping any identity-map staleness issues between pipeline and API callers.
+        messages_rows = db.execute(
+            select(EmailMessage)
+            .where(EmailMessage.thread_id == thread.id)
+            .order_by(EmailMessage.received_at)
+        ).scalars().all()
+        messages = list(messages_rows)
+        formatted_messages = _format_thread_messages(messages)
+
+        # Retrieve relevant knowledge entries
+        knowledge_svc = get_knowledge_service()
+        entries = knowledge_svc.get_relevant_entries(
+            db, category=thread.category.value
+        )
+        knowledge_context = knowledge_svc.format_for_prompt(entries)
+        knowledge_entry_ids = [str(e.id) for e in entries]
+
+        # Build prompts
+        suggested_tone = thread.suggested_reply_tone or "professional"
+
+        system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+            firm_name=self._firm_name,
+            firm_owner_name=self._firm_owner_name,
+            firm_owner_email=self._firm_owner_email,
+            suggested_reply_tone=suggested_tone,
+            knowledge_context=knowledge_context,
+        )
+
+        user_prompt = _USER_PROMPT_TEMPLATE.format(
+            subject=thread.subject,
+            client_name=thread.client_name or "Client",
+            client_email=thread.client_email,
+            category=thread.category.value,
+            ai_summary=thread.ai_summary or "No summary available.",
+            formatted_messages=formatted_messages,
+            firm_name=self._firm_name,
+        )
+
+        logger.info(
+            "DraftGenerator: generating draft for thread=%s category=%s entries=%d",
+            thread.id,
+            thread.category.value,
+            len(entries),
+        )
+
+        # Call Claude
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        draft_body = response.content[0].text.strip() if response.content else ""
+        prompt_tokens = response.usage.input_tokens if response.usage else None
+        completion_tokens = response.usage.output_tokens if response.usage else None
+
+        if not draft_body:
+            raise ValueError("Claude returned an empty draft body.")
+
+        logger.info(
+            "DraftGenerator: draft generated for thread=%s prompt_tokens=%s completion_tokens=%s",
+            thread.id,
+            prompt_tokens,
+            completion_tokens,
+        )
+
+        # Persist the draft
+        draft = DraftResponse(
+            thread_id=thread.id,
+            body_text=draft_body,
+            original_body_text=draft_body,  # Preserved for audit — never modified
+            status=DraftStatus.pending,
+            version=1,
+            ai_model=self._model,
+            ai_prompt_tokens=prompt_tokens,
+            ai_completion_tokens=completion_tokens,
+            knowledge_entry_ids=knowledge_entry_ids,
+        )
+        db.add(draft)
+
+        # Update thread status
+        thread.status = EmailStatus.draft_ready
+        thread.updated_at = datetime.now(timezone.utc)
+
+        db.flush()
+
+        # Audit log
+        log_action(
+            db,
+            action="draft.generated",
+            entity_type="draft_response",
+            entity_id=str(draft.id),
+            # No user_id — this is a system action
+            details={
+                "thread_id": str(thread.id),
+                "ai_model": self._model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "knowledge_entry_count": len(entries),
+                "knowledge_entry_ids": knowledge_entry_ids,
+            },
+        )
+
+        # Fire notification (non-blocking — log on failure)
+        try:
+            notifier = get_notification_service()
+            notifier.notify_draft_ready(
+                thread_id=str(thread.id),
+                draft_id=str(draft.id),
+                client_email=thread.client_email,
+            )
+        except Exception as exc:
+            logger.error("DraftGenerator: failed to send draft.ready notification: %s", exc)
+
+        return draft
+
+
+# ── Module-level singleton ─────────────────────────────────────────────────────
+
+_draft_generator: DraftGeneratorService | None = None
+
+
+def get_draft_generator() -> DraftGeneratorService:
+    global _draft_generator
+    if _draft_generator is None:
+        _draft_generator = DraftGeneratorService()
+    return _draft_generator

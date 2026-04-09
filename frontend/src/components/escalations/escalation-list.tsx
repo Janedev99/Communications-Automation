@@ -116,7 +116,14 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                     "hover:bg-gray-50/60 cursor-pointer transition-colors border-b border-gray-100 border-l-4",
                     SEVERITY_ROW_BORDER[esc.severity]
                   )}
+                  tabIndex={0}
                   onClick={() => toggleExpanded(esc.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleExpanded(esc.id);
+                    }
+                  }}
                 >
                   <TableCell className="px-3 py-3 w-8 text-gray-400">
                     {expandedId === esc.id ? (
@@ -126,9 +133,16 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                     )}
                   </TableCell>
                   <TableCell className="px-4 py-3">
-                    <span className="text-sm font-medium text-gray-800 truncate block max-w-[260px]">
-                      {esc.thread_id}
-                    </span>
+                    <div className="max-w-[260px]">
+                      <span className="text-sm font-medium text-gray-800 truncate block">
+                        {esc.thread_subject ?? `Thread ${esc.thread_id.slice(0, 8)}…`}
+                      </span>
+                      {esc.thread_client_email && (
+                        <span className="text-xs text-gray-400 truncate block">
+                          {esc.thread_client_email}
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="px-4 py-3 w-[220px]">
                     <span className="text-sm text-gray-600 truncate block max-w-[200px]">

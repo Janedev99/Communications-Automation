@@ -69,18 +69,32 @@ def list_threads(
     count_query = select(func.count()).select_from(query.subquery())
     total = db.execute(count_query).scalar_one()
 
-    # Paginate
+    # Paginate — fetch threads with per-thread message counts in a single query
     offset = (page - 1) * page_size
-    rows = db.execute(
-        query.order_by(EmailThread.updated_at.desc()).offset(offset).limit(page_size)
-    ).scalars().all()
 
-    # Enrich with message counts
+    # Subquery: count of messages per thread
+    msg_count_subq = (
+        select(
+            EmailMessage.thread_id,
+            func.count(EmailMessage.id).label("message_count"),
+        )
+        .group_by(EmailMessage.thread_id)
+        .subquery()
+    )
+
+    paged_query = (
+        select(EmailThread, func.coalesce(msg_count_subq.c.message_count, 0).label("message_count"))
+        .outerjoin(msg_count_subq, EmailThread.id == msg_count_subq.c.thread_id)
+        .where(query.whereclause if query.whereclause is not None else True)
+        .order_by(EmailThread.updated_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    rows = db.execute(paged_query).all()
+
     items: list[EmailThreadListItem] = []
-    for thread in rows:
-        msg_count = db.execute(
-            select(func.count()).where(EmailMessage.thread_id == thread.id)
-        ).scalar_one()
+    for thread, msg_count in rows:
         item = EmailThreadListItem.model_validate(thread)
         item.message_count = msg_count
         items.append(item)

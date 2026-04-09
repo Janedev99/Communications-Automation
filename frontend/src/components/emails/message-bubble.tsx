@@ -17,7 +17,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
             {message.body_text ?? "(no content)"}
           </p>
-          <p className="text-[10px] text-gray-300 mt-2 text-right">
+          <p className="text-[10px] text-gray-400 mt-2 text-right">
             {formatDate(message.received_at)}
           </p>
         </div>

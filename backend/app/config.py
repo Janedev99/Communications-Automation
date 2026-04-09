@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     firm_owner_name: str = "Jane Schiller"
     firm_owner_email: str = "jane@schilcpa.com"
 
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004,http://localhost:5173"
+
     # ── Seed admin ────────────────────────────────────────────────────────────
     admin_email: str = "jane@example.com"
     admin_name: str = "Jane"

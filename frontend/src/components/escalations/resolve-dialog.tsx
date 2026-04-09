@@ -72,7 +72,7 @@ export function ResolveDialog({
           <Button
             className="bg-brand-500 hover:bg-brand-600 text-white"
             onClick={handleSubmit}
-            disabled={loading}
+            disabled={loading || !notes.trim()}
           >
             {loading ? "Resolving..." : "Mark as Resolved"}
           </Button>

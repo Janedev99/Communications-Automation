@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { EscalationList } from "@/components/escalations/escalation-list";
 import { Pagination } from "@/components/shared/pagination";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
+import { ErrorState } from "@/components/shared/error-state";
 import {
   Select,
   SelectContent,
@@ -22,7 +23,7 @@ export default function EscalationsPage() {
   // "active" is a UI-only value meaning "pending + acknowledged"
   const apiStatus = status === "active" ? undefined : status === "all" ? undefined : status;
 
-  const { escalations, total, isLoading, mutate } = useEscalations({
+  const { escalations, total, isLoading, isError, mutate } = useEscalations({
     status: apiStatus,
     severity: severity || undefined,
     page,
@@ -34,6 +35,10 @@ export default function EscalationsPage() {
     status === "active"
       ? escalations.filter((e) => e.status === "pending" || e.status === "acknowledged")
       : escalations;
+
+  // When "active" is selected, pagination total must reflect the filtered count,
+  // not the unfiltered API total (which includes resolved escalations).
+  const paginationTotal = status === "active" ? filteredEscalations.length : total;
 
   const handleFilterChange = (setter: (v: string) => void) => (v: string) => {
     setter(v);
@@ -75,7 +80,13 @@ export default function EscalationsPage() {
         </Select>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <ErrorState
+          title="Failed to load escalations"
+          description="Could not retrieve escalations. Please try again."
+          onRetry={mutate}
+        />
+      ) : isLoading ? (
         <TableSkeleton rows={6} />
       ) : (
         <>
@@ -83,7 +94,7 @@ export default function EscalationsPage() {
           <Pagination
             page={page}
             pageSize={25}
-            total={total}
+            total={paginationTotal}
             onPageChange={setPage}
           />
         </>

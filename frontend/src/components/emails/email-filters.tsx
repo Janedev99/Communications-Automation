@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -35,6 +36,24 @@ export function EmailFilters({
   onClientEmailChange,
   onClear,
 }: EmailFiltersProps) {
+  // Local input state updates immediately for a responsive feel.
+  // The parent callback (which triggers an API call) is debounced by 500ms.
+  const [inputValue, setInputValue] = useState(clientEmail);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep local state in sync when the parent resets filters externally (e.g. "Clear").
+  useEffect(() => {
+    setInputValue(clientEmail);
+  }, [clientEmail]);
+
+  const handleEmailInput = (value: string) => {
+    setInputValue(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      onClientEmailChange(value);
+    }, 500);
+  };
+
   const hasFilters = !!status || !!category || !!clientEmail;
 
   return (
@@ -70,8 +89,8 @@ export function EmailFilters({
       <div className="relative">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
         <Input
-          value={clientEmail}
-          onChange={(e) => onClientEmailChange(e.target.value)}
+          value={inputValue}
+          onChange={(e) => handleEmailInput(e.target.value)}
           placeholder="Search by client email..."
           className="pl-8 w-[260px] h-9 text-sm"
         />

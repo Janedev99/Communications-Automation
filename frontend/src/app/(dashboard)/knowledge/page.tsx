@@ -8,6 +8,7 @@ import { KnowledgeList } from "@/components/knowledge/knowledge-list";
 import { KnowledgeForm } from "@/components/knowledge/knowledge-form";
 import { Pagination } from "@/components/shared/pagination";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
+import { ErrorState } from "@/components/shared/error-state";
 import {
   Select,
   SelectContent,
@@ -24,7 +25,7 @@ export default function KnowledgePage() {
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { entries, total, isLoading, mutate } = useKnowledge({
+  const { entries, total, isLoading, isError, mutate } = useKnowledge({
     entry_type: entryType || undefined,
     is_active: showInactive ? undefined : true,
     page,
@@ -79,7 +80,13 @@ export default function KnowledgePage() {
         </label>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <ErrorState
+          title="Failed to load knowledge base"
+          description="Could not retrieve knowledge entries. Please try again."
+          onRetry={mutate}
+        />
+      ) : isLoading ? (
         <TableSkeleton rows={8} />
       ) : (
         <>

@@ -30,12 +30,35 @@ logging.basicConfig(
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
 _polling_task: asyncio.Task | None = None
+_session_cleanup_task: asyncio.Task | None = None
+
+
+def _sync_cleanup_sessions() -> int:
+    """Synchronous helper: delete expired sessions and return the count removed."""
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    with SessionLocal() as db:
+        result = db.execute(text("DELETE FROM sessions WHERE expires_at < now()"))
+        db.commit()
+        return result.rowcount
+
+
+async def _session_cleanup_loop() -> None:
+    """Delete expired sessions every hour without blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            removed = await loop.run_in_executor(None, _sync_cleanup_sessions)
+            logger.info("Session cleanup: removed %d expired session(s)", removed)
+        except Exception as exc:
+            logger.warning("Session cleanup failed: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start background tasks on startup, cancel them on shutdown."""
-    global _polling_task
+    global _polling_task, _session_cleanup_task
 
     logger.info("Starting Jane Communication Automation backend (env=%s)", settings.app_env)
 
@@ -44,15 +67,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _polling_task = asyncio.create_task(start_polling_loop(), name="email-polling")
     logger.info("Email polling task started")
 
+    # Start session cleanup background task
+    _session_cleanup_task = asyncio.create_task(_session_cleanup_loop(), name="session-cleanup")
+    logger.info("Session cleanup task started")
+
     yield  # Application is running
 
     # Shutdown
-    if _polling_task and not _polling_task.done():
-        _polling_task.cancel()
-        try:
-            await _polling_task
-        except asyncio.CancelledError:
-            pass
+    for task in (_polling_task, _session_cleanup_task):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     logger.info("Shutdown complete")
 
 
@@ -75,11 +103,11 @@ def create_app() -> FastAPI:
     )
 
     # ── CORS ───────────────────────────────────────────────────────────────────
-    # In production, replace "*" with the actual frontend origin.
+    # Origins are configurable via CORS_ORIGINS env var (comma-separated).
     # We use allow_credentials=True so the HttpOnly session cookie is sent.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "http://localhost:3004", "http://localhost:5173"],
+        allow_origins=settings.cors_origins.split(","),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -107,6 +135,11 @@ def create_app() -> FastAPI:
     # Phase 2
     app.include_router(knowledge.router, prefix="/api/v1")
     app.include_router(drafts.router, prefix="/api/v1")
+
+    # ── Health check ───────────────────────────────────────────────────────────
+    @app.get("/health", include_in_schema=False)
+    async def health() -> dict:
+        return {"status": "ok"}
 
     # ── Root ───────────────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)

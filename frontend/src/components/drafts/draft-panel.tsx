@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Check, X, Send, FileEdit, Loader2 } from "lucide-react";
+import { Check, X, Send, FileEdit, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { RejectionDialog } from "./rejection-dialog";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants";
 import { api } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
@@ -25,10 +26,18 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const [sending, setSending] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
+  const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [editedText, setEditedText] = useState(draft?.body_text ?? "");
   const [showOriginal, setShowOriginal] = useState(false);
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up auto-save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    };
+  }, []);
 
   // Sync editedText when draft changes
   useEffect(() => {
@@ -146,7 +155,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   // ── State A: No draft ──────────────────────────────────────────────────────
   if (!draft) {
     return (
-      <div className="border-l border-gray-200 bg-white flex flex-col h-full">
+      <div className="bg-white flex flex-col h-full">
         {panelHeader}
         <div className="flex flex-col items-center justify-center flex-1 px-6 text-center">
           <FileEdit className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
@@ -175,7 +184,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   // ── State C: Draft rejected ────────────────────────────────────────────────
   if (draft.status === "rejected") {
     return (
-      <div className="border-l border-gray-200 bg-white flex flex-col h-full">
+      <div className="bg-white flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-red-50 border border-red-200">
@@ -216,7 +225,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   // ── State D: Draft sent ────────────────────────────────────────────────────
   if (draft.status === "sent") {
     return (
-      <div className="border-l border-gray-200 bg-white flex flex-col h-full">
+      <div className="bg-white flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200">
@@ -243,20 +252,29 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     : editedText;
 
   return (
-    <div className="border-l border-gray-200 bg-white flex flex-col h-full">
+    <div className="bg-white flex flex-col h-full">
       {panelHeader}
 
       {/* Editor */}
       <div className="flex-1 px-5 py-4 overflow-hidden flex flex-col">
+        {draft.status === "approved" && (
+          <div className="flex items-center gap-1.5 mb-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
+            <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>Approved — editing locked</span>
+          </div>
+        )}
         <Textarea
           value={displayText}
           onChange={(e) => !showOriginal && handleTextChange(e.target.value)}
           readOnly={showOriginal || draft.status === "approved"}
-          className="flex-1 w-full resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-gray-700 leading-relaxed p-0 min-h-[200px]"
+          className={cn(
+            "flex-1 w-full resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-gray-700 leading-relaxed p-0 min-h-[200px]",
+            draft.status === "approved" && "bg-gray-50"
+          )}
           placeholder="Draft content will appear here..."
         />
         {autoSaveLabel && !showOriginal && (
-          <p className="text-[10px] text-gray-300 mt-1">{autoSaveLabel}</p>
+          <p className="text-[10px] text-gray-400 mt-1">{autoSaveLabel}</p>
         )}
       </div>
 
@@ -279,34 +297,35 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       <div className="px-5 py-4 border-t border-gray-200 flex items-center gap-2 flex-shrink-0">
         {draft.status !== "approved" && (
           <>
-            <button
+            <Button
               onClick={handleApprove}
               disabled={approving}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-colors disabled:opacity-50"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
             >
-              <Check className="w-4 h-4" />
+              <Check className="w-4 h-4 mr-1.5" />
               {approving ? "Approving..." : "Approve"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => setShowRejectionDialog(true)}
               disabled={rejecting}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium bg-white border border-red-300 text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+              className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
             >
-              <X className="w-4 h-4" />
+              <X className="w-4 h-4 mr-1.5" />
               Reject
-            </button>
+            </Button>
           </>
         )}
 
         {draft.status === "approved" && (
-          <button
-            onClick={handleSend}
+          <Button
+            onClick={() => setShowSendConfirm(true)}
             disabled={sending}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium bg-brand-500 hover:bg-brand-600 text-white transition-colors disabled:opacity-50"
+            className="bg-brand-500 hover:bg-brand-600 text-white"
           >
-            <Send className="w-4 h-4" />
+            <Send className="w-4 h-4 mr-1.5" />
             {sending ? "Sending..." : "Send"}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -315,6 +334,20 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         onOpenChange={setShowRejectionDialog}
         onReject={handleReject}
         loading={rejecting}
+      />
+
+      <ConfirmDialog
+        open={showSendConfirm}
+        onOpenChange={setShowSendConfirm}
+        title="Send this email?"
+        description={`Send this email to ${thread.client_email}? This action cannot be undone.`}
+        confirmLabel="Send"
+        confirmVariant="default"
+        onConfirm={async () => {
+          setShowSendConfirm(false);
+          await handleSend();
+        }}
+        loading={sending}
       />
     </div>
   );

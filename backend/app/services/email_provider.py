@@ -189,10 +189,12 @@ class MSGraphProvider(EmailProvider):
         # In practice we need to track the Graph-native id separately.
         # For now we use the internetMessageId to look up and patch.
         mailbox = self._settings.msgraph_mailbox
+        # Escape single quotes in message_id to prevent OData filter injection
+        safe_id = message_id.replace("'", "''")
         # Search for message by internetMessageId
         url = (
             f"{self.GRAPH_BASE}/users/{mailbox}/messages"
-            f"?$filter=internetMessageId eq '{message_id}'"
+            f"?$filter=internetMessageId eq '{safe_id}'"
             "&$select=id"
         )
         try:

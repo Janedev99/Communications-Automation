@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_client_ip, get_current_user
 from app.database import get_db
+from app.models.email import EmailThread
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
 from app.models.user import User
 from app.schemas.escalation import (
@@ -28,6 +29,18 @@ from app.schemas.escalation import (
 from app.utils.audit import log_action
 
 router = APIRouter(prefix="/escalations", tags=["escalations"])
+
+
+def _build_response(escalation: Escalation, db: Session) -> EscalationResponse:
+    """Build an EscalationResponse, enriching it with thread subject and client email."""
+    thread = db.execute(
+        select(EmailThread).where(EmailThread.id == escalation.thread_id)
+    ).scalar_one_or_none()
+    resp = EscalationResponse.model_validate(escalation)
+    if thread is not None:
+        resp.thread_subject = thread.subject
+        resp.thread_client_email = thread.client_email
+    return resp
 
 
 @router.get("", response_model=EscalationListResponse)
@@ -60,7 +73,7 @@ def list_escalations(
     ).scalars().all()
 
     return EscalationListResponse(
-        items=[EscalationResponse.model_validate(e) for e in rows],
+        items=[_build_response(e, db) for e in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -80,7 +93,7 @@ def get_escalation(
     if escalation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escalation not found.")
 
-    return EscalationResponse.model_validate(escalation)
+    return _build_response(escalation, db)
 
 
 @router.put("/{escalation_id}/acknowledge", response_model=EscalationResponse)
@@ -122,7 +135,7 @@ def acknowledge_escalation(
         ip_address=get_client_ip(request),
     )
 
-    return EscalationResponse.model_validate(escalation)
+    return _build_response(escalation, db)
 
 
 @router.put("/{escalation_id}/resolve", response_model=EscalationResponse)
@@ -154,10 +167,9 @@ def resolve_escalation(
     escalation.resolution_notes = body.resolution_notes
 
     # Update the linked thread's status back to categorized (no longer escalated)
-    from app.models.email import EmailStatus, EmailThread
-    from sqlalchemy import select as sa_select
+    from app.models.email import EmailStatus
     thread = db.execute(
-        sa_select(EmailThread).where(EmailThread.id == escalation.thread_id)
+        select(EmailThread).where(EmailThread.id == escalation.thread_id)
     ).scalar_one_or_none()
     if thread and thread.status == EmailStatus.escalated:
         thread.status = EmailStatus.categorized
@@ -175,4 +187,4 @@ def resolve_escalation(
         details={"resolution_notes": body.resolution_notes},
     )
 
-    return EscalationResponse.model_validate(escalation)
+    return _build_response(escalation, db)

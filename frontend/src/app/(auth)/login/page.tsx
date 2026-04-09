@@ -40,7 +40,7 @@ export default function LoginPage() {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 w-full max-w-sm p-8">
         {/* Brand mark */}
         <div className="flex flex-col items-center">
-          <div className="w-10 h-10 rounded-lg bg-blue-600 text-white font-bold text-lg flex items-center justify-center">
+          <div className="w-10 h-10 rounded-lg bg-brand-500 text-white font-bold text-lg flex items-center justify-center">
             S
           </div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight text-center mt-4">
@@ -94,7 +94,7 @@ export default function LoginPage() {
           <div className="mt-6">
             <Button
               type="submit"
-              className="w-full h-10 bg-blue-600 hover:bg-blue-700 text-white font-medium"
+              className="w-full h-10 bg-brand-500 hover:bg-brand-600 text-white font-medium"
               disabled={loading}
             >
               {loading ? (

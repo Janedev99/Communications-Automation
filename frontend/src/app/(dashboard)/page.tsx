@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Mail, AlertTriangle, BookOpen, Send, FileText } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { DashboardSkeleton } from "@/components/shared/loading-skeleton";
+import { ErrorState } from "@/components/shared/error-state";
 import { ThreadStatusBadge } from "@/components/emails/thread-status-badge";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useEmails } from "@/hooks/use-emails";
@@ -17,27 +18,16 @@ import { cn, relativeTime, truncate } from "@/lib/utils";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { stats, isLoading: statsLoading } = useDashboard();
-  const { threads, isLoading: threadsLoading } = useEmails({
+  const { stats, isLoading: statsLoading, isError: statsError, mutate: mutateStats } = useDashboard();
+  const { threads, isLoading: threadsLoading, isError: threadsError, mutate: mutateThreads } = useEmails({
     page: 1,
     page_size: 5,
   });
-  const { escalations, isLoading: escalationsLoading } = useEscalations({
+  const { escalations, isLoading: escalationsLoading, isError: escalationsError, mutate: mutateEscalations } = useEscalations({
     page: 1,
     page_size: 5,
     status: "pending",
   });
-
-  const isLoading = statsLoading || threadsLoading || escalationsLoading;
-
-  if (isLoading) {
-    return (
-      <>
-        <PageHeader title="Dashboard" />
-        <DashboardSkeleton />
-      </>
-    );
-  }
 
   const pendingEmails =
     (stats?.threads_by_status["new"] ?? 0) +
@@ -89,13 +79,34 @@ export default function DashboardPage() {
     },
   ];
 
+  if (statsLoading && threadsLoading && escalationsLoading) {
+    return (
+      <>
+        <PageHeader title="Dashboard" />
+        <DashboardSkeleton />
+      </>
+    );
+  }
+
   return (
     <div>
       <PageHeader title="Dashboard" />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {statCards.map((card) => {
+        {statsLoading ? (
+          <div className="col-span-full">
+            <DashboardSkeleton />
+          </div>
+        ) : statsError ? (
+          <div className="col-span-full">
+            <ErrorState
+              title="Failed to load stats"
+              description="Could not retrieve dashboard statistics."
+              onRetry={mutateStats}
+            />
+          </div>
+        ) : statCards.map((card) => {
           const Icon = card.icon;
           return (
             <Link
@@ -136,7 +147,17 @@ export default function DashboardPage() {
             </Link>
           </div>
           <div className="bg-white rounded-lg border border-gray-200">
-            {threads.length === 0 ? (
+            {threadsLoading ? (
+              <div className="px-4 py-8 text-center">
+                <p className="text-sm text-gray-400">Loading...</p>
+              </div>
+            ) : threadsError ? (
+              <ErrorState
+                title="Failed to load threads"
+                description="Could not retrieve recent email threads."
+                onRetry={mutateThreads}
+              />
+            ) : threads.length === 0 ? (
               <div className="px-4 py-8 text-center">
                 <p className="text-sm text-gray-400">No recent threads</p>
               </div>
@@ -145,7 +166,15 @@ export default function DashboardPage() {
                 <div
                   key={thread.id}
                   className="px-4 py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60 cursor-pointer transition-colors"
+                  tabIndex={0}
+                  role="button"
                   onClick={() => router.push(`/emails/${thread.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push(`/emails/${thread.id}`);
+                    }
+                  }}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
@@ -179,7 +208,17 @@ export default function DashboardPage() {
             </Link>
           </div>
           <div className="bg-white rounded-lg border border-gray-200">
-            {escalations.length === 0 ? (
+            {escalationsLoading ? (
+              <div className="px-4 py-8 text-center">
+                <p className="text-sm text-gray-400">Loading...</p>
+              </div>
+            ) : escalationsError ? (
+              <ErrorState
+                title="Failed to load escalations"
+                description="Could not retrieve pending escalations."
+                onRetry={mutateEscalations}
+              />
+            ) : escalations.length === 0 ? (
               <div className="px-4 py-8 text-center">
                 <p className="text-sm text-gray-400">No pending escalations</p>
               </div>
@@ -188,12 +227,20 @@ export default function DashboardPage() {
                 <div
                   key={esc.id}
                   className="px-4 py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60 cursor-pointer transition-colors"
+                  tabIndex={0}
+                  role="button"
                   onClick={() => router.push("/escalations")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push("/escalations");
+                    }
+                  }}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-800 truncate">
-                        Thread {esc.thread_id.slice(0, 8)}...
+                        {esc.thread_subject ?? `Thread ${esc.thread_id.slice(0, 8)}…`}
                       </p>
                       <p className="text-xs text-gray-500 mt-0.5 truncate">
                         {truncate(esc.reason, 60)}

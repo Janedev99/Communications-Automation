@@ -129,12 +129,3 @@ class RejectDraftRequest(BaseModel):
         description="Why this draft was rejected. Used to improve future prompts.",
     )
 
-
-# ── KnowledgeEntry schemas ─────────────────────────────────────────────────────
-# DEPRECATED: These legacy schemas are superseded by app.schemas.knowledge.
-# Re-exported here only for backward compatibility with any code that imports
-# from this module.  New code should import from app.schemas.knowledge directly.
-from app.schemas.knowledge import (  # noqa: F401
-    CreateKnowledgeEntryRequest,
-    KnowledgeEntryResponse,
-)

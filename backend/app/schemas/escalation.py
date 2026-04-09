@@ -20,6 +20,9 @@ class EscalationResponse(BaseModel):
     resolved_at: datetime | None
     resolved_by_id: uuid.UUID | None
     resolution_notes: str | None
+    # Denormalised thread fields — populated by the list/detail endpoints
+    thread_subject: str | None = None
+    thread_client_email: str | None = None
 
 
 class EscalationListResponse(BaseModel):

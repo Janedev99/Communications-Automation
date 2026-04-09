@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
 import { CreateUserDialog } from "@/components/settings/create-user-dialog";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
+import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
 import useSWR from "swr";
 import { swrFetcher } from "@/lib/api";
@@ -25,7 +26,7 @@ export default function SettingsPage() {
     }
   }, [user, isAdmin, router]);
 
-  const { data: users, isLoading, mutate } = useSWR<User[]>(
+  const { data: users, isLoading, error: usersError, mutate } = useSWR<User[]>(
     isAdmin ? "/api/v1/auth/users" : null,
     swrFetcher
   );
@@ -48,7 +49,13 @@ export default function SettingsPage() {
         }
       />
 
-      {isLoading ? (
+      {usersError ? (
+        <ErrorState
+          title="Failed to load users"
+          description="Could not retrieve team members. Please try again."
+          onRetry={mutate}
+        />
+      ) : isLoading ? (
         <TableSkeleton rows={5} />
       ) : (
         <UserList

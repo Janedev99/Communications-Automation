@@ -5,6 +5,7 @@ import { ChevronLeft } from "lucide-react";
 import { ThreadDetail } from "@/components/emails/thread-detail";
 import { DraftPanel } from "@/components/drafts/draft-panel";
 import { ThreadDetailSkeleton } from "@/components/shared/loading-skeleton";
+import { ErrorState } from "@/components/shared/error-state";
 import { useThread } from "@/hooks/use-thread";
 import { useThreadDraft } from "@/hooks/use-drafts";
 
@@ -14,7 +15,7 @@ export default function ThreadDetailPage({
   params: { threadId: string };
 }) {
   const { threadId } = params;
-  const { thread, isLoading: threadLoading, mutate: mutateThread } = useThread(threadId);
+  const { thread, isLoading: threadLoading, isError: threadError, mutate: mutateThread } = useThread(threadId);
   const { draft, mutate: mutateDraft } = useThreadDraft(threadId);
 
   const handleDraftChange = () => {
@@ -27,6 +28,16 @@ export default function ThreadDetailPage({
       <div className="-m-6 h-[calc(100vh-56px)]">
         <ThreadDetailSkeleton />
       </div>
+    );
+  }
+
+  if (threadError) {
+    return (
+      <ErrorState
+        title="Failed to load thread"
+        description="Could not retrieve this email thread. Please try again."
+        onRetry={mutateThread}
+      />
     );
   }
 
@@ -59,16 +70,18 @@ export default function ThreadDetailPage({
       </div>
 
       {/* Two-panel layout */}
-      <div className="flex flex-1 min-h-0 grid-cols-1 lg:grid lg:grid-cols-[1fr_400px] overflow-hidden">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] flex-1 min-h-0 overflow-hidden">
         {/* Left panel: thread + messages */}
         <ThreadDetail thread={thread} />
 
         {/* Right panel: draft workflow */}
-        <DraftPanel
-          thread={thread}
-          draft={draft}
-          onDraftChange={handleDraftChange}
-        />
+        <div className="border-t lg:border-t-0 lg:border-l border-gray-200 min-h-0 overflow-hidden flex flex-col">
+          <DraftPanel
+            thread={thread}
+            draft={draft}
+            onDraftChange={handleDraftChange}
+          />
+        </div>
       </div>
     </div>
   );

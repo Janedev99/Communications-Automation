@@ -65,7 +65,14 @@ export function EmailList({ threads }: EmailListProps) {
             <TableRow
               key={thread.id}
               className="hover:bg-gray-50/60 cursor-pointer transition-colors border-b border-gray-100"
+              tabIndex={0}
               onClick={() => router.push(`/emails/${thread.id}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  router.push(`/emails/${thread.id}`);
+                }
+              }}
             >
               <TableCell className="px-4 py-3">
                 <span className="text-sm font-medium text-gray-800 truncate block max-w-[300px]">

@@ -89,6 +89,13 @@ class EmailThread(Base):
     )
     # The external thread ID from the mail provider (e.g., MS Graph conversationId)
     provider_thread_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    # Staff assignment: which user currently owns this thread
+    assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -111,6 +118,9 @@ class EmailThread(Base):
     )
     drafts: Mapped[list["DraftResponse"]] = relationship(
         "DraftResponse", back_populates="thread", cascade="all, delete-orphan"
+    )
+    assigned_to: Mapped["User | None"] = relationship(  # type: ignore[name-defined]
+        "User", foreign_keys=[assigned_to_id]
     )
 
     def __repr__(self) -> str:
@@ -150,6 +160,8 @@ class EmailMessage(Base):
     is_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Raw headers stored as JSON for debugging / replay
     raw_headers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Attachment metadata: list of {filename, size, content_type}
+    attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     thread: Mapped["EmailThread"] = relationship("EmailThread", back_populates="messages")

@@ -42,6 +42,7 @@ from app.schemas.email import (
 from app.services.draft_generator import get_draft_generator
 from app.services.email_provider import get_email_provider
 from app.utils.audit import log_action
+from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,9 @@ def generate_draft(
     Will generate a draft regardless of thread status, unless the thread
     has already been fully sent (status=sent or status=closed).
     """
+    # Enforce per-user AI call rate limit before any DB work
+    check_ai_rate_limit(current_user.id)
+
     thread = _get_thread_or_404(thread_id, db)
 
     if thread.status in (EmailStatus.sent, EmailStatus.closed):
@@ -156,7 +160,14 @@ def generate_draft(
 
     try:
         generator = get_draft_generator()
-        draft = generator.generate(db, thread, skip_escalation_guard=is_escalated)
+        # Record the AI call now — before generate() so even a partial attempt counts
+        record_ai_call(current_user.id)
+        draft = generator.generate(
+            db,
+            thread,
+            skip_escalation_guard=is_escalated,
+            tone_override=_body.tone or None,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -366,14 +377,16 @@ def send_draft(
 
     # Generate a Message-ID we control for thread continuity
     settings = _get_settings()
-    firm_domain = settings.firm_owner_email.split("@")[-1] if "@" in settings.firm_owner_email else "localhost"
+    # Use the monitored mailbox as the from address so client replies return to the inbox
+    from_address = settings.msgraph_mailbox or settings.firm_owner_email
+    firm_domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
     outbound_message_id = f"<draft-{draft.id}@{firm_domain}>"
 
     # Step 1: Persist DB state FIRST (draft=sent, outbound message, thread=sent)
     outbound_msg = EmailMessage(
         thread_id=thread.id,
         message_id_header=outbound_message_id,
-        sender=f"{settings.firm_name} <{settings.firm_owner_email}>",
+        sender=f"{settings.firm_name} <{from_address}>",
         recipient=thread.client_email,
         body_text=draft.body_text,
         received_at=datetime.now(timezone.utc),

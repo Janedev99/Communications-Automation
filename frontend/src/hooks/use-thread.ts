@@ -7,7 +7,8 @@ import type { EmailThread } from "@/lib/types";
 export function useThread(threadId: string | null) {
   const { data, error, isLoading, mutate } = useSWR<EmailThread>(
     threadId ? `/api/v1/emails/${threadId}` : null,
-    swrFetcher
+    swrFetcher,
+    { refreshInterval: 15_000 }
   );
 
   return {

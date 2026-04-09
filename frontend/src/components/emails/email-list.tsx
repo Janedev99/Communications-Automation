@@ -9,19 +9,30 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Mail } from "lucide-react";
+import { Mail, UserCircle2 } from "lucide-react";
 import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { relativeTime } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { EmailThreadListItem } from "@/lib/types";
 
 interface EmailListProps {
   threads: EmailThreadListItem[];
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onSelectAll?: () => void;
 }
 
-export function EmailList({ threads }: EmailListProps) {
+export function EmailList({
+  threads,
+  selectedIds = new Set(),
+  onToggleSelect,
+  onSelectAll,
+}: EmailListProps) {
   const router = useRouter();
+  const hasBulkMode = !!onToggleSelect;
+  const allSelected = hasBulkMode && threads.length > 0 && selectedIds.size === threads.length;
 
   if (threads.length === 0) {
     return (
@@ -40,66 +51,131 @@ export function EmailList({ threads }: EmailListProps) {
       <Table>
         <TableHeader>
           <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
+            {hasBulkMode && (
+              <TableHead className="w-10 px-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={onSelectAll}
+                  aria-label="Select all threads"
+                  className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-400 cursor-pointer"
+                />
+              </TableHead>
+            )}
             <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
               Subject
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[180px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[160px]">
               Client
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[140px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[130px]">
               Category
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[140px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[130px]">
               Status
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[80px] text-center">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[130px]">
+              Assigned
+            </TableHead>
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[70px] text-center">
               Msgs
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[110px]">
               Updated
             </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {threads.map((thread) => (
-            <TableRow
-              key={thread.id}
-              className="hover:bg-gray-50/60 cursor-pointer transition-colors border-b border-gray-100"
-              tabIndex={0}
-              onClick={() => router.push(`/emails/${thread.id}`)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  router.push(`/emails/${thread.id}`);
-                }
-              }}
-            >
-              <TableCell className="px-4 py-3">
-                <span className="text-sm font-medium text-gray-800 truncate block max-w-[300px]">
-                  {thread.subject}
-                </span>
-              </TableCell>
-              <TableCell className="px-4 py-3 w-[180px]">
-                <span className="text-sm text-gray-600 truncate block">
-                  {thread.client_name ?? thread.client_email}
-                </span>
-              </TableCell>
-              <TableCell className="px-4 py-3 w-[140px]">
-                <CategoryBadge category={thread.category} />
-              </TableCell>
-              <TableCell className="px-4 py-3 w-[140px]">
-                <ThreadStatusBadge status={thread.status} />
-              </TableCell>
-              <TableCell className="px-4 py-3 w-[80px] text-center text-sm text-gray-500">
-                {thread.message_count}
-              </TableCell>
-              <TableCell className="px-4 py-3 w-[120px]">
-                <span className="text-xs text-gray-400">
-                  {relativeTime(thread.updated_at)}
-                </span>
-              </TableCell>
-            </TableRow>
-          ))}
+          {threads.map((thread) => {
+            const isSelected = selectedIds.has(thread.id);
+            return (
+              <TableRow
+                key={thread.id}
+                data-thread-row="true"
+                data-thread-id={thread.id}
+                className={cn(
+                  "transition-colors border-b border-gray-100",
+                  isSelected
+                    ? "bg-brand-50/60 hover:bg-brand-50"
+                    : "hover:bg-gray-50/60"
+                )}
+              >
+                {hasBulkMode && (
+                  <TableCell className="w-10 px-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => onToggleSelect!(thread.id)}
+                      aria-label={`Select thread: ${thread.subject}`}
+                      className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-400 cursor-pointer"
+                    />
+                  </TableCell>
+                )}
+                <TableCell
+                  className="px-4 py-3 cursor-pointer"
+                  tabIndex={0}
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push(`/emails/${thread.id}`);
+                    }
+                  }}
+                >
+                  <span className="text-sm font-medium text-gray-800 truncate block max-w-[280px]">
+                    {thread.subject}
+                  </span>
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[160px] cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  <span className="text-sm text-gray-600 truncate block">
+                    {thread.client_name ?? thread.client_email}
+                  </span>
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[130px] cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  <CategoryBadge category={thread.category} />
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[130px] cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  <ThreadStatusBadge status={thread.status} />
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[130px] cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  {thread.assigned_to_name ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-600">
+                      <UserCircle2 className="w-3.5 h-3.5 text-brand-400 flex-shrink-0" />
+                      <span className="truncate max-w-[90px]">{thread.assigned_to_name}</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[70px] text-center text-sm text-gray-500 cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  {thread.message_count}
+                </TableCell>
+                <TableCell
+                  className="px-4 py-3 w-[110px] cursor-pointer"
+                  onClick={() => router.push(`/emails/${thread.id}`)}
+                >
+                  <span className="text-xs text-gray-400">
+                    {relativeTime(thread.updated_at)}
+                  </span>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>

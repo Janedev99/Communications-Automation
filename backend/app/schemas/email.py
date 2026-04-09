@@ -13,6 +13,14 @@ from app.models.email import (
 )
 
 
+# ── Attachment metadata (embedded in EmailMessageResponse) ────────────────────
+
+class AttachmentInfo(BaseModel):
+    filename: str
+    size: int | None = None        # size in bytes; None if provider didn't report it
+    content_type: str | None = None
+
+
 # ── Categorization result (from AI) ───────────────────────────────────────────
 
 class CategorizationResult(BaseModel):
@@ -39,6 +47,7 @@ class EmailMessageResponse(BaseModel):
     received_at: datetime
     direction: MessageDirection
     is_processed: bool
+    attachments: list[AttachmentInfo] | None = None
 
 
 # ── EmailThread schemas ────────────────────────────────────────────────────────
@@ -55,9 +64,32 @@ class EmailThreadResponse(BaseModel):
     category_confidence: float | None
     ai_summary: str | None
     suggested_reply_tone: str | None = None
+    assigned_to_id: uuid.UUID | None = None
+    assigned_to_name: str | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[EmailMessageResponse] = Field(default_factory=list)
+
+    @classmethod
+    def from_thread(cls, thread: Any) -> "EmailThreadResponse":
+        """Build from an EmailThread ORM object, resolving assigned_to_name."""
+        data = {
+            "id": thread.id,
+            "subject": thread.subject,
+            "client_email": thread.client_email,
+            "client_name": thread.client_name,
+            "status": thread.status,
+            "category": thread.category,
+            "category_confidence": thread.category_confidence,
+            "ai_summary": thread.ai_summary,
+            "suggested_reply_tone": thread.suggested_reply_tone,
+            "assigned_to_id": thread.assigned_to_id,
+            "assigned_to_name": thread.assigned_to.name if thread.assigned_to else None,
+            "created_at": thread.created_at,
+            "updated_at": thread.updated_at,
+            "messages": thread.messages,
+        }
+        return cls.model_validate(data)
 
 
 class EmailThreadListItem(BaseModel):
@@ -73,6 +105,8 @@ class EmailThreadListItem(BaseModel):
     category_confidence: float | None
     ai_summary: str | None
     suggested_reply_tone: str | None = None
+    assigned_to_id: uuid.UUID | None = None
+    assigned_to_name: str | None = None
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
@@ -115,10 +149,14 @@ class UpdateDraftRequest(BaseModel):
 class GenerateDraftRequest(BaseModel):
     """
     Optional request body for POST /emails/{thread_id}/generate-draft.
-    Currently has no required fields — thread_id is sufficient context.
-    Reserved for future per-request overrides (e.g. custom tone).
+    tone: optional override for the AI draft tone (e.g. 'professional', 'empathetic').
     """
-    pass
+    tone: str | None = None
+
+
+class ManualDraftRequest(BaseModel):
+    """Request body for POST /emails/{thread_id}/drafts (manual/template-based draft)."""
+    body_text: str = Field(min_length=1, max_length=50_000)
 
 
 class RejectDraftRequest(BaseModel):
@@ -128,4 +166,42 @@ class RejectDraftRequest(BaseModel):
         max_length=2000,
         description="Why this draft was rejected. Used to improve future prompts.",
     )
+
+
+# ── Assignment / Status change request schemas ────────────────────────────────
+
+class AssignRequest(BaseModel):
+    """Body for PUT /emails/{thread_id}/assign. Pass user_id=null to unassign."""
+    user_id: uuid.UUID | None = Field(
+        default=None,
+        description="ID of the user to assign, or null to unassign.",
+    )
+
+
+class StatusChangeRequest(BaseModel):
+    """Body for PUT /emails/{thread_id}/status."""
+    status: EmailStatus
+
+
+# ── Bulk action request schema ────────────────────────────────────────────────
+
+class BulkActionParams(BaseModel):
+    """Optional parameters for bulk actions (e.g. user_id for assign)."""
+    user_id: uuid.UUID | None = None
+
+
+class BulkActionRequest(BaseModel):
+    """Body for POST /emails/bulk."""
+    thread_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    action: str = Field(
+        description="One of: close, assign, recategorize",
+        pattern="^(close|assign|recategorize)$",
+    )
+    params: BulkActionParams = Field(default_factory=BulkActionParams)
+
+
+class BulkActionResponse(BaseModel):
+    succeeded: int
+    failed: int
+    errors: list[str] = Field(default_factory=list)
 

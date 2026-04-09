@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -13,27 +14,85 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
+import { useDashboard } from "@/hooks/use-dashboard";
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
 }
 
-const NAV_ITEMS = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Emails", href: "/emails", icon: Mail },
-  { label: "Escalations", href: "/escalations", icon: AlertTriangle },
-  { label: "Knowledge Base", href: "/knowledge", icon: BookOpen },
-];
+const LAST_SEEN_KEY = "jane_sidebar_last_seen";
+
+interface LastSeenCounts {
+  new_threads: number;
+  pending_escalations: number;
+}
+
+function getLastSeen(): LastSeenCounts {
+  if (typeof window === "undefined") return { new_threads: 0, pending_escalations: 0 };
+  try {
+    const raw = localStorage.getItem(LAST_SEEN_KEY);
+    if (!raw) return { new_threads: 0, pending_escalations: 0 };
+    return JSON.parse(raw) as LastSeenCounts;
+  } catch {
+    return { new_threads: 0, pending_escalations: 0 };
+  }
+}
+
+function setLastSeen(counts: LastSeenCounts): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(LAST_SEEN_KEY, JSON.stringify(counts));
+}
+
+function NotificationDot({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <span
+      className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white"
+      aria-label="New items"
+    />
+  );
+}
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useUser();
+  const { stats } = useDashboard();
+
+  // Compute whether there are new items since last seen
+  const lastSeenRef = useRef<LastSeenCounts>(getLastSeen());
+
+  const currentNewThreads = stats?.last_24h?.new_threads ?? 0;
+  const currentPendingEscalations = stats?.totals?.pending_escalations ?? 0;
+
+  const hasNewEmails = currentNewThreads > lastSeenRef.current.new_threads;
+  const hasNewEscalations = currentPendingEscalations > lastSeenRef.current.pending_escalations;
+
+  // When navigating to a section, clear its badge and persist
+  useEffect(() => {
+    if (pathname.startsWith("/emails")) {
+      const updated = { ...lastSeenRef.current, new_threads: currentNewThreads };
+      lastSeenRef.current = updated;
+      setLastSeen(updated);
+    }
+    if (pathname.startsWith("/escalations")) {
+      const updated = { ...lastSeenRef.current, pending_escalations: currentPendingEscalations };
+      lastSeenRef.current = updated;
+      setLastSeen(updated);
+    }
+  }, [pathname, currentNewThreads, currentPendingEscalations]);
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
     return pathname.startsWith(href);
   };
+
+  const NAV_ITEMS = [
+    { label: "Dashboard", href: "/", icon: LayoutDashboard, badge: false },
+    { label: "Emails", href: "/emails", icon: Mail, badge: hasNewEmails },
+    { label: "Escalations", href: "/escalations", icon: AlertTriangle, badge: hasNewEscalations },
+    { label: "Knowledge Base", href: "/knowledge", icon: BookOpen, badge: false },
+  ];
 
   return (
     <aside
@@ -63,20 +122,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* Main nav */}
       <nav className={cn("flex-1 px-2 space-y-0.5", collapsed && "px-2")}>
-        {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+        {NAV_ITEMS.map(({ label, href, icon: Icon, badge }) => (
           <Link
             key={href}
             href={href}
             title={collapsed ? label : undefined}
             className={cn(
-              "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
+              "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
               collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
               isActive(href)
                 ? "text-brand-600 bg-white shadow-sm ring-1 ring-gray-200/60 font-semibold"
                 : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
             )}
           >
-            <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
+            <span className="relative flex-shrink-0">
+              <Icon className="w-5 h-5" strokeWidth={1.75} />
+              <NotificationDot show={badge} />
+            </span>
             {!collapsed && <span>{label}</span>}
           </Link>
         ))}

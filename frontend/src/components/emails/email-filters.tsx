@@ -18,9 +18,11 @@ interface EmailFiltersProps {
   status: string;
   category: string;
   clientEmail: string;
+  assignedTo: string;
   onStatusChange: (v: string) => void;
   onCategoryChange: (v: string) => void;
   onClientEmailChange: (v: string) => void;
+  onAssignedToChange: (v: string) => void;
   onClear: () => void;
 }
 
@@ -31,9 +33,11 @@ export function EmailFilters({
   status,
   category,
   clientEmail,
+  assignedTo,
   onStatusChange,
   onCategoryChange,
   onClientEmailChange,
+  onAssignedToChange,
   onClear,
 }: EmailFiltersProps) {
   // Local input state updates immediately for a responsive feel.
@@ -54,7 +58,7 @@ export function EmailFilters({
     }, 500);
   };
 
-  const hasFilters = !!status || !!category || !!clientEmail;
+  const hasFilters = !!status || !!category || !!clientEmail || !!assignedTo;
 
   return (
     <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -86,13 +90,24 @@ export function EmailFilters({
         </SelectContent>
       </Select>
 
+      {/* Assigned-to filter */}
+      <Select value={assignedTo || "all"} onValueChange={(v: string | null) => onAssignedToChange(!v || v === "all" ? "" : v)}>
+        <SelectTrigger className="w-[160px] h-9 text-sm">
+          <SelectValue placeholder="All assignees" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All assignees</SelectItem>
+          <SelectItem value="me">Assigned to me</SelectItem>
+        </SelectContent>
+      </Select>
+
       <div className="relative">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
         <Input
           value={inputValue}
           onChange={(e) => handleEmailInput(e.target.value)}
-          placeholder="Search by client email..."
-          className="pl-8 w-[260px] h-9 text-sm"
+          placeholder="Filter by client email..."
+          className="pl-8 w-[240px] h-9 text-sm"
         />
       </div>
 

@@ -8,6 +8,7 @@ import { ThreadDetailSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useThread } from "@/hooks/use-thread";
 import { useThreadDraft } from "@/hooks/use-drafts";
+import { useThreadEscalation } from "@/hooks/use-thread-escalation";
 
 export default function ThreadDetailPage({
   params,
@@ -17,9 +18,14 @@ export default function ThreadDetailPage({
   const { threadId } = params;
   const { thread, isLoading: threadLoading, isError: threadError, mutate: mutateThread } = useThread(threadId);
   const { draft, mutate: mutateDraft } = useThreadDraft(threadId);
+  const { escalation } = useThreadEscalation(threadId);
 
   const handleDraftChange = () => {
     mutateDraft();
+    mutateThread();
+  };
+
+  const handleThreadChange = () => {
     mutateThread();
   };
 
@@ -72,7 +78,7 @@ export default function ThreadDetailPage({
       {/* Two-panel layout */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] flex-1 min-h-0 overflow-hidden">
         {/* Left panel: thread + messages */}
-        <ThreadDetail thread={thread} />
+        <ThreadDetail thread={thread} escalation={escalation ?? undefined} onThreadChange={handleThreadChange} />
 
         {/* Right panel: draft workflow */}
         <div className="border-t lg:border-t-0 lg:border-l border-gray-200 min-h-0 overflow-hidden flex flex-col">

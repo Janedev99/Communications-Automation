@@ -15,7 +15,7 @@ export function useThreadDraft(threadId: string | null) {
   const { data, error, isLoading, mutate } = useSWR<DraftResponse[]>(
     threadId ? `/api/v1/emails/${threadId}/drafts` : null,
     swrFetcher,
-    { shouldRetryOnError: false }
+    { shouldRetryOnError: false, refreshInterval: 15_000 }
   );
 
   // Backend returns newest-first; pick index 0 as the active draft

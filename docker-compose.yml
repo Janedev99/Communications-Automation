@@ -32,16 +32,39 @@ services:
     environment:
       # Override DB host to use Docker service name
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-jane_user}:${POSTGRES_PASSWORD:-jane_pass}@db:5432/${POSTGRES_DB:-jane_automation}
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    volumes:
-      # Mount source for hot-reload in development
-      - ./backend:/app
+    expose:
+      - "8000"
     command: >
       sh -c "
         alembic upgrade head &&
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
       "
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

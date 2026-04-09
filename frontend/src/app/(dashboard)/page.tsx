@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Mail, AlertTriangle, BookOpen, Send, FileText } from "lucide-react";
+import { Mail, AlertTriangle, BookOpen, Send, FileText, Cpu, Activity } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { DashboardSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
@@ -10,6 +10,8 @@ import { ThreadStatusBadge } from "@/components/emails/thread-status-badge";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useEmails } from "@/hooks/use-emails";
 import { useEscalations } from "@/hooks/use-escalations";
+import { useActivity } from "@/hooks/use-activity";
+import { useUser } from "@/hooks/use-user";
 import {
   SEVERITY_BADGE_CLASSES,
   SEVERITY_LABELS,
@@ -18,6 +20,7 @@ import { cn, relativeTime, truncate } from "@/lib/utils";
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { isAdmin } = useUser();
   const { stats, isLoading: statsLoading, isError: statsError, mutate: mutateStats } = useDashboard();
   const { threads, isLoading: threadsLoading, isError: threadsError, mutate: mutateThreads } = useEmails({
     page: 1,
@@ -28,6 +31,7 @@ export default function DashboardPage() {
     page_size: 5,
     status: "pending",
   });
+  const { items: activityItems, isLoading: activityLoading } = useActivity(20);
 
   const pendingEmails =
     (stats?.threads_by_status["new"] ?? 0) +
@@ -88,6 +92,13 @@ export default function DashboardPage() {
     );
   }
 
+  const aiUsage = stats?.ai_usage;
+  const costFormatted = aiUsage
+    ? aiUsage.estimated_cost_usd < 0.01
+      ? "<$0.01"
+      : `$${aiUsage.estimated_cost_usd.toFixed(2)}`
+    : null;
+
   return (
     <div>
       <PageHeader title="Dashboard" />
@@ -132,6 +143,27 @@ export default function DashboardPage() {
           );
         })}
       </div>
+
+      {/* AI Usage card — admin only */}
+      {isAdmin && aiUsage && (
+        <div className="mt-4">
+          <div className="bg-white rounded-lg border border-gray-200 border-l-4 border-l-indigo-400 px-5 py-4 flex items-center gap-4">
+            <Cpu className="w-5 h-5 text-indigo-400 flex-shrink-0" strokeWidth={1.5} />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">AI Usage This Month</p>
+              <p className="text-sm font-semibold text-gray-800 mt-0.5">
+                {aiUsage.calls_this_month} AI draft{aiUsage.calls_this_month !== 1 ? "s" : ""} generated
+                {costFormatted && (
+                  <span className="text-gray-500 font-normal"> · estimated {costFormatted}</span>
+                )}
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {aiUsage.prompt_tokens.toLocaleString()} prompt tokens · {aiUsage.completion_tokens.toLocaleString()} completion tokens
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Two-column section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
@@ -259,6 +291,39 @@ export default function DashboardPage() {
               ))
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Activity Feed */}
+      <div className="mt-6">
+        <div className="flex items-center gap-2 mb-3">
+          <Activity className="w-4 h-4 text-gray-400" strokeWidth={1.5} />
+          <h2 className="text-sm font-semibold text-gray-700">Recent Activity</h2>
+        </div>
+        <div className="bg-white rounded-lg border border-gray-200">
+          {activityLoading ? (
+            <div className="px-4 py-8 text-center">
+              <p className="text-sm text-gray-400">Loading...</p>
+            </div>
+          ) : activityItems.length === 0 ? (
+            <div className="px-4 py-8 text-center">
+              <p className="text-sm text-gray-400">No recent activity</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {activityItems.map((item) => (
+                <div key={item.id} className="px-4 py-2.5 flex items-center gap-3">
+                  <div className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0" />
+                  <p className="text-sm text-gray-700 flex-1 min-w-0 truncate">
+                    {item.description}
+                  </p>
+                  <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
+                    {relativeTime(item.created_at)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

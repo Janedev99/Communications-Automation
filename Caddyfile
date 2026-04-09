@@ -1,0 +1,16 @@
+{
+    # Global options — enable automatic HTTPS if a real domain is provided.
+    # For local/staging use, Caddy will serve on port 80 without TLS.
+}
+
+:80 {
+    # Route API requests to the FastAPI backend
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Route everything else to the Next.js frontend
+    handle {
+        reverse_proxy frontend:3000
+    }
+}

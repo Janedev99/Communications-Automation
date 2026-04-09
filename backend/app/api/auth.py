@@ -22,7 +22,7 @@ from app.api.deps import get_client_ip, get_current_user, require_admin
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User, UserRole
-from app.schemas.user import CreateUserRequest, LoginRequest, LoginResponse, MeResponse, UpdateUserRequest, UserResponse
+from app.schemas.user import ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, MeResponse, UpdateUserRequest, UserResponse
 from app.services import auth as auth_service
 from app.utils.audit import log_action
 
@@ -111,6 +111,7 @@ def login(
         httponly=True,
         samesite="lax",
         secure=settings.is_production,
+        path="/",
         max_age=int((session.expires_at - session.created_at).total_seconds()),
     )
 
@@ -153,6 +154,40 @@ def logout(
 def me(current_user: User = Depends(get_current_user)) -> MeResponse:
     """Return the currently authenticated user's profile."""
     return MeResponse.model_validate(current_user)
+
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Change the current user's password.
+
+    Validates the current password before accepting the new one.
+    Enforces complexity requirements on the new password.
+    """
+    if not auth_service.verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    current_user.hashed_password = auth_service.hash_password(body.new_password)
+    db.flush()
+
+    log_action(
+        db,
+        action="auth.password_changed",
+        entity_type="user",
+        entity_id=str(current_user.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+    )
+
+    return {"detail": "Password updated successfully."}
 
 
 @router.post(
@@ -229,6 +264,27 @@ def update_user(
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    # Admin self-protection: prevent admins from breaking themselves or the last admin
+    is_self = user_id == current_user.id
+    if is_self:
+        if body.is_active is False:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="You cannot deactivate your own account.",
+            )
+        if body.role is not None and body.role != UserRole.admin:
+            # Ensure at least one other active admin exists before downgrading
+            active_admin_count = (
+                db.query(User)
+                .filter(User.role == UserRole.admin, User.is_active == True, User.id != current_user.id)  # noqa: E712
+                .count()
+            )
+            if active_admin_count == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="You are the last active admin. Assign another admin first.",
+                )
 
     if body.name is not None:
         user.name = body.name

@@ -133,12 +133,21 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Category <span className="text-gray-400 font-normal">(optional)</span>
             </label>
-            <Input
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="e.g., Tax Filing, Document Requests"
-              disabled={loading}
-            />
+            <Select value={category || "_all"} onValueChange={(v) => setCategory(v === "_all" ? "" : v)}>
+              <SelectTrigger disabled={loading}>
+                <SelectValue placeholder="All Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="_all">All Categories</SelectItem>
+                <SelectItem value="status_update">Status Update</SelectItem>
+                <SelectItem value="document_request">Document Request</SelectItem>
+                <SelectItem value="appointment">Appointment</SelectItem>
+                <SelectItem value="clarification">Clarification</SelectItem>
+                <SelectItem value="general_inquiry">General Inquiry</SelectItem>
+                <SelectItem value="complaint">Complaint</SelectItem>
+                <SelectItem value="urgent">Urgent</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div>

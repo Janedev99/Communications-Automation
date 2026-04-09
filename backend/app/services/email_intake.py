@@ -118,6 +118,11 @@ def _store_message(db: Session, thread: EmailThread, raw: RawEmail) -> EmailMess
         logger.debug("Skipping duplicate message_id=%s", raw.message_id)
         return None
 
+    # Serialize attachment metadata to plain dicts (JSON-safe)
+    attachment_data = (
+        [a.to_dict() for a in raw.attachments] if raw.attachments else None
+    )
+
     message = EmailMessage(
         thread_id=thread.id,
         message_id_header=raw.message_id,
@@ -129,6 +134,7 @@ def _store_message(db: Session, thread: EmailThread, raw: RawEmail) -> EmailMess
         direction=MessageDirection.inbound,
         is_processed=False,
         raw_headers=raw.raw_headers,
+        attachments=attachment_data if attachment_data else None,
     )
     db.add(message)
     db.flush()

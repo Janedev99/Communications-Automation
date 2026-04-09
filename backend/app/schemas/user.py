@@ -7,6 +7,22 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from app.models.user import UserRole
 
 
+def _validate_password_complexity(v: str) -> str:
+    """
+    Enforce password policy: min 8 chars, at least 1 uppercase, 1 lowercase, 1 digit.
+    Raises ValueError on any violation.
+    """
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    if not any(c.isupper() for c in v):
+        raise ValueError("Password must contain at least one uppercase letter.")
+    if not any(c.islower() for c in v):
+        raise ValueError("Password must contain at least one lowercase letter.")
+    if not any(c.isdigit() for c in v):
+        raise ValueError("Password must contain at least one digit.")
+    return v
+
+
 # ── Request schemas ────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
@@ -23,9 +39,17 @@ class CreateUserRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def password_complexity(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+        return _validate_password_complexity(v)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_complexity(cls, v: str) -> str:
+        return _validate_password_complexity(v)
 
 
 class UpdateUserRequest(BaseModel):

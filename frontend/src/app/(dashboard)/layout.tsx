@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
+import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
 import { useUser } from "@/hooks/use-user";
 
 export default function DashboardLayout({
@@ -11,9 +13,11 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // Default to collapsed on tablet, expanded on desktop
   const [collapsed, setCollapsed] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const { isLoading: authLoading } = useUser();
+  const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     const handleResize = () => {
@@ -26,8 +30,92 @@ export default function DashboardLayout({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Show spinner while session is being verified.
-  // useUser redirects to /login automatically on 401.
+  // Global keyboard shortcut handler
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      // Never fire when the user is typing in an input/textarea/select/contenteditable
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      // ? — show shortcuts help
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+
+      // Thread-detail shortcuts: a = approve, r = reject
+      if (pathname.startsWith("/emails/") && pathname.split("/").length >= 3) {
+        if (e.key === "a" && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          // Trigger approve button if visible
+          const approveBtn = document.querySelector<HTMLButtonElement>(
+            "[data-shortcut='approve']"
+          );
+          approveBtn?.click();
+          return;
+        }
+        if (e.key === "r" && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          const rejectBtn = document.querySelector<HTMLButtonElement>(
+            "[data-shortcut='reject']"
+          );
+          rejectBtn?.click();
+          return;
+        }
+      }
+
+      // Email list shortcuts: j/k navigation + Enter to open
+      if (pathname === "/emails") {
+        const rows = document.querySelectorAll<HTMLElement>("[data-thread-row]");
+        if (rows.length === 0) return;
+
+        const focused = document.querySelector<HTMLElement>("[data-thread-row][data-focused='true']");
+        const currentIndex = focused ? Array.from(rows).indexOf(focused) : -1;
+
+        if (e.key === "j") {
+          e.preventDefault();
+          const nextIndex = Math.min(currentIndex + 1, rows.length - 1);
+          rows.forEach((r) => r.removeAttribute("data-focused"));
+          rows[nextIndex]?.setAttribute("data-focused", "true");
+          rows[nextIndex]?.focus();
+          return;
+        }
+
+        if (e.key === "k") {
+          e.preventDefault();
+          const prevIndex = Math.max(currentIndex - 1, 0);
+          rows.forEach((r) => r.removeAttribute("data-focused"));
+          rows[prevIndex]?.setAttribute("data-focused", "true");
+          rows[prevIndex]?.focus();
+          return;
+        }
+
+        if (e.key === "Enter" && focused) {
+          e.preventDefault();
+          const threadId = focused.getAttribute("data-thread-id");
+          if (threadId) {
+            router.push(`/emails/${threadId}`);
+          }
+          return;
+        }
+      }
+    },
+    [pathname, router]
+  );
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+
   if (authLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50">
@@ -45,6 +133,11 @@ export default function DashboardLayout({
           {children}
         </main>
       </div>
+
+      <KeyboardShortcutsDialog
+        open={showShortcuts}
+        onOpenChange={setShowShortcuts}
+      />
     </div>
   );
 }

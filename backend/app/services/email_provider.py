@@ -30,6 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class AttachmentMeta:
+    """Lightweight metadata about an email attachment (no binary content)."""
+    filename: str
+    size: int | None = None          # bytes; None if the provider didn't report it
+    content_type: str | None = None  # MIME type, e.g. "application/pdf"
+
+    def to_dict(self) -> dict:
+        return {
+            "filename": self.filename,
+            "size": self.size,
+            "content_type": self.content_type,
+        }
+
+
+@dataclass
 class RawEmail:
     """
     Provider-agnostic representation of a fetched email.
@@ -48,6 +63,8 @@ class RawEmail:
     # References header for thread grouping
     references: str | None = None
     in_reply_to: str | None = None
+    # Attachment metadata (filenames / sizes, no binary payloads)
+    attachments: list[AttachmentMeta] = field(default_factory=list)
 
 
 class EmailProvider(ABC):
@@ -149,7 +166,8 @@ class MSGraphProvider(EmailProvider):
             "?$filter=isRead eq false"
             "&$select=id,subject,from,toRecipients,body,bodyPreview,"
             "receivedDateTime,conversationId,internetMessageId,"
-            "internetMessageHeaders"
+            "internetMessageHeaders,hasAttachments,attachments"
+            "&$expand=attachments($select=name,size,contentType,isInline)"
             "&$top=50"
             "&$orderby=receivedDateTime asc"
         )
@@ -167,6 +185,19 @@ class MSGraphProvider(EmailProvider):
                 h["name"]: h["value"]
                 for h in msg.get("internetMessageHeaders") or []
             }
+
+            # Extract attachment metadata (skip inline/embedded images)
+            attachments: list[AttachmentMeta] = []
+            if msg.get("hasAttachments"):
+                for att in msg.get("attachments") or []:
+                    if att.get("isInline"):
+                        continue  # Skip inline images embedded in HTML body
+                    attachments.append(AttachmentMeta(
+                        filename=att.get("name", "attachment"),
+                        size=att.get("size"),
+                        content_type=att.get("contentType"),
+                    ))
+
             results.append(RawEmail(
                 message_id=msg.get("internetMessageId", msg["id"]),
                 subject=msg.get("subject", "(no subject)"),
@@ -181,6 +212,7 @@ class MSGraphProvider(EmailProvider):
                 provider_thread_id=msg.get("conversationId"),
                 in_reply_to=raw_headers.get("In-Reply-To"),
                 references=raw_headers.get("References"),
+                attachments=attachments,
             ))
         return results
 
@@ -352,17 +384,32 @@ class IMAPProvider(EmailProvider):
         except Exception:
             received_at = datetime.now(timezone.utc)
 
-        # Extract body
+        # Extract body and attachment metadata
         body_text: str | None = None
         body_html: str | None = None
+        attachments: list[AttachmentMeta] = []
+
         if msg.is_multipart():
             for part in msg.walk():
                 ct = part.get_content_type()
-                if ct == "text/plain" and body_text is None:
+                disposition = part.get_content_disposition() or ""
+
+                if disposition == "attachment":
+                    # Extract attachment metadata only — no binary content stored
+                    raw_filename = part.get_filename() or "attachment"
+                    filename = _decode_header_value(raw_filename)
+                    payload = part.get_payload(decode=True)
+                    size = len(payload) if isinstance(payload, bytes) else None
+                    attachments.append(AttachmentMeta(
+                        filename=filename,
+                        size=size,
+                        content_type=ct,
+                    ))
+                elif ct == "text/plain" and body_text is None and disposition != "attachment":
                     payload = part.get_payload(decode=True)
                     if isinstance(payload, bytes):
                         body_text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
-                elif ct == "text/html" and body_html is None:
+                elif ct == "text/html" and body_html is None and disposition != "attachment":
                     payload = part.get_payload(decode=True)
                     if isinstance(payload, bytes):
                         body_html = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
@@ -389,6 +436,7 @@ class IMAPProvider(EmailProvider):
             raw_headers=raw_headers,
             in_reply_to=msg.get("In-Reply-To"),
             references=msg.get("References"),
+            attachments=attachments,
         )
 
     def mark_as_read(self, message_id: str) -> None:

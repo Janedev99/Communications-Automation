@@ -23,7 +23,9 @@ export function useEscalations(params: UseEscalationsParams = {}) {
   const key = `/api/v1/escalations?${searchParams.toString()}`;
 
   const { data, error, isLoading, mutate } =
-    useSWR<PaginatedResponse<Escalation>>(key, swrFetcher);
+    useSWR<PaginatedResponse<Escalation>>(key, swrFetcher, {
+      refreshInterval: 15_000,
+    });
 
   return {
     data,

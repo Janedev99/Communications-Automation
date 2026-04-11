@@ -26,7 +26,7 @@ export function useUser() {
   const logout = async () => {
     try {
       await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/v1/auth/logout`,
+        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001"}/api/v1/auth/logout`,
         { method: "POST", credentials: "include" }
       );
     } catch {

@@ -247,6 +247,107 @@ def bulk_action(
     return BulkActionResponse(succeeded=succeeded, failed=failed, errors=errors)
 
 
+# ── Export / compliance report ─────────────────────────────────────────────────
+# NOTE: Declared before /{thread_id} to avoid routing conflict (FastAPI matches
+# in declaration order and "export" would otherwise be captured as a thread UUID).
+
+@router.get("/export", response_model=list[dict])
+def export_threads(
+    client_email: str | None = Query(default=None),
+    from_date: str | None = Query(default=None, alias="from"),
+    to_date: str | None = Query(default=None, alias="to"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """
+    Export threads with all messages, drafts, and escalations.
+    Admin only. Used for compliance reporting.
+    """
+    if current_user.role.value != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+    query = select(EmailThread).options(
+        selectinload(EmailThread.messages),
+        selectinload(EmailThread.drafts),
+        selectinload(EmailThread.escalations),
+    )
+
+    if client_email:
+        safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(EmailThread.client_email.ilike(f"%{safe_email}%", escape="\\"))
+
+    if from_date:
+        try:
+            from_dt = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc)
+            query = query.where(EmailThread.created_at >= from_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid 'from' date. Use ISO 8601 format.",
+            )
+
+    if to_date:
+        try:
+            to_dt = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc)
+            query = query.where(EmailThread.created_at <= to_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid 'to' date. Use ISO 8601 format.",
+            )
+
+    threads = db.execute(query.order_by(EmailThread.created_at.desc()).limit(500)).scalars().all()
+
+    result = []
+    for t in threads:
+        result.append({
+            "id": str(t.id),
+            "subject": t.subject,
+            "client_email": t.client_email,
+            "client_name": t.client_name,
+            "status": t.status.value,
+            "category": t.category.value,
+            "ai_summary": t.ai_summary,
+            "created_at": t.created_at.isoformat(),
+            "updated_at": t.updated_at.isoformat(),
+            "messages": [
+                {
+                    "id": str(m.id),
+                    "sender": m.sender,
+                    "recipient": m.recipient,
+                    "body_text": m.body_text,
+                    "received_at": m.received_at.isoformat(),
+                    "direction": m.direction.value,
+                }
+                for m in sorted(t.messages, key=lambda m: m.received_at)
+            ],
+            "drafts": [
+                {
+                    "id": str(d.id),
+                    "body_text": d.body_text,
+                    "status": d.status.value,
+                    "version": d.version,
+                    "created_at": d.created_at.isoformat(),
+                    "reviewed_at": d.reviewed_at.isoformat() if d.reviewed_at else None,
+                }
+                for d in sorted(t.drafts, key=lambda d: d.created_at)
+            ],
+            "escalations": [
+                {
+                    "id": str(e.id),
+                    "reason": e.reason,
+                    "severity": e.severity.value,
+                    "status": e.status.value,
+                    "created_at": e.created_at.isoformat(),
+                    "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+                }
+                for e in sorted(t.escalations, key=lambda e: e.created_at)
+            ],
+        })
+
+    return result
+
+
 # ── Thread list ───────────────────────────────────────────────────────────────
 
 @router.get("", response_model=EmailThreadListResponse)
@@ -706,102 +807,3 @@ def create_manual_draft(
     )
 
     return DraftResponseResponse.model_validate(draft)
-
-
-# ── Export / compliance report ─────────────────────────────────────────────────
-
-@router.get("/export", response_model=list[dict])
-def export_threads(
-    client_email: str | None = Query(default=None),
-    from_date: str | None = Query(default=None, alias="from"),
-    to_date: str | None = Query(default=None, alias="to"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[dict]:
-    """
-    Export threads with all messages, drafts, and escalations.
-    Admin only. Used for compliance reporting.
-    """
-    if current_user.role.value != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
-
-    query = select(EmailThread).options(
-        selectinload(EmailThread.messages),
-        selectinload(EmailThread.drafts),
-        selectinload(EmailThread.escalations),
-    )
-
-    if client_email:
-        safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        query = query.where(EmailThread.client_email.ilike(f"%{safe_email}%", escape="\\"))
-
-    if from_date:
-        try:
-            from_dt = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc)
-            query = query.where(EmailThread.created_at >= from_dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Invalid 'from' date. Use ISO 8601 format.",
-            )
-
-    if to_date:
-        try:
-            to_dt = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc)
-            query = query.where(EmailThread.created_at <= to_dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Invalid 'to' date. Use ISO 8601 format.",
-            )
-
-    threads = db.execute(query.order_by(EmailThread.created_at.desc()).limit(500)).scalars().all()
-
-    result = []
-    for t in threads:
-        result.append({
-            "id": str(t.id),
-            "subject": t.subject,
-            "client_email": t.client_email,
-            "client_name": t.client_name,
-            "status": t.status.value,
-            "category": t.category.value,
-            "ai_summary": t.ai_summary,
-            "created_at": t.created_at.isoformat(),
-            "updated_at": t.updated_at.isoformat(),
-            "messages": [
-                {
-                    "id": str(m.id),
-                    "sender": m.sender,
-                    "recipient": m.recipient,
-                    "body_text": m.body_text,
-                    "received_at": m.received_at.isoformat(),
-                    "direction": m.direction.value,
-                }
-                for m in sorted(t.messages, key=lambda m: m.received_at)
-            ],
-            "drafts": [
-                {
-                    "id": str(d.id),
-                    "body_text": d.body_text,
-                    "status": d.status.value,
-                    "version": d.version,
-                    "created_at": d.created_at.isoformat(),
-                    "reviewed_at": d.reviewed_at.isoformat() if d.reviewed_at else None,
-                }
-                for d in sorted(t.drafts, key=lambda d: d.created_at)
-            ],
-            "escalations": [
-                {
-                    "id": str(e.id),
-                    "reason": e.reason,
-                    "severity": e.severity.value,
-                    "status": e.status.value,
-                    "created_at": e.created_at.isoformat(),
-                    "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
-                }
-                for e in sorted(t.escalations, key=lambda e: e.created_at)
-            ],
-        })
-
-    return result

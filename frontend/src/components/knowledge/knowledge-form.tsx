@@ -117,7 +117,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Entry Type
             </label>
-            <Select value={entryType} onValueChange={(v) => setEntryType(v as EntryType)}>
+            <Select value={entryType} onValueChange={(v) => v && setEntryType(v as EntryType)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -133,7 +133,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Category <span className="text-gray-400 font-normal">(optional)</span>
             </label>
-            <Select value={category || "_all"} onValueChange={(v) => setCategory(v === "_all" ? "" : v)}>
+            <Select value={category || "_all"} onValueChange={(v) => setCategory(!v || v === "_all" ? "" : v)}>
               <SelectTrigger disabled={loading}>
                 <SelectValue placeholder="All Categories" />
               </SelectTrigger>

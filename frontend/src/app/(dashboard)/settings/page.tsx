@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
@@ -16,7 +15,6 @@ import { swrFetcher } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 export default function SettingsPage() {
-  const router = useRouter();
   const { user, isAdmin } = useUser();
   const [createOpen, setCreateOpen] = useState(false);
 

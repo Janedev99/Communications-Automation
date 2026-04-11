@@ -116,7 +116,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Role
             </label>
-            <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
+            <Select value={role} onValueChange={(v) => v && setRole(v as UserRole)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>

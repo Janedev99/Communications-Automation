@@ -281,7 +281,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             <label className="block text-xs font-medium text-gray-500 mb-1.5 text-left">
               Tone
             </label>
-            <Select value={selectedTone} onValueChange={setSelectedTone}>
+            <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -364,7 +364,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           {/* Tone selector before regenerate */}
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">Tone</label>
-            <Select value={selectedTone} onValueChange={setSelectedTone}>
+            <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -488,7 +488,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       {draft.status !== "approved" && (
         <div className="px-5 pt-3 pb-1 flex-shrink-0">
           <label className="block text-xs font-medium text-gray-500 mb-1">Tone override</label>
-          <Select value={selectedTone} onValueChange={setSelectedTone}>
+          <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
             <SelectTrigger className="h-7 text-xs">
               <SelectValue />
             </SelectTrigger>

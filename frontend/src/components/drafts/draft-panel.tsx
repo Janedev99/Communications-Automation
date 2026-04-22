@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Check, X, Send, FileEdit, Loader2, Lock, LayoutTemplate } from "lucide-react";
+import { Check, X, Send, FileEdit, Loader2, Lock, LayoutTemplate, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -526,22 +526,42 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               <X className="w-4 h-4 mr-1.5" />
               Reject
             </Button>
+            <Button
+              variant="outline"
+              onClick={handleGenerate}
+              disabled={generating}
+              title="Regenerate draft with AI"
+            >
+              <RefreshCw className="w-4 h-4 mr-1.5" />
+              {generating ? "Regenerating..." : "Regenerate"}
+            </Button>
           </>
         )}
 
         {draft.status === "approved" && (
-          <Button
-            onClick={() => setShowSendConfirm(true)}
-            disabled={sending || undoCountdown !== null}
-            className="bg-brand-500 hover:bg-brand-600 text-white"
-          >
-            <Send className="w-4 h-4 mr-1.5" />
-            {undoCountdown !== null
-              ? `Sending in ${undoCountdown}s…`
-              : sending
-              ? "Sending..."
-              : "Send"}
-          </Button>
+          <>
+            <Button
+              onClick={() => setShowSendConfirm(true)}
+              disabled={sending || undoCountdown !== null || generating}
+              className="bg-brand-500 hover:bg-brand-600 text-white"
+            >
+              <Send className="w-4 h-4 mr-1.5" />
+              {undoCountdown !== null
+                ? `Sending in ${undoCountdown}s…`
+                : sending
+                ? "Sending..."
+                : "Send"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleGenerate}
+              disabled={generating || sending}
+              title="Reject this draft and generate a new one with AI"
+            >
+              <RefreshCw className="w-4 h-4 mr-1.5" />
+              {generating ? "Regenerating..." : "Regenerate"}
+            </Button>
+          </>
         )}
       </div>
 

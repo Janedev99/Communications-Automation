@@ -2,7 +2,7 @@
 
 import useSWR, { mutate as globalMutate } from "swr";
 import { useRouter } from "next/navigation";
-import { swrFetcher } from "@/lib/api";
+import { api, swrFetcher } from "@/lib/api";
 import type { MeResponse } from "@/lib/types";
 
 const ME_KEY = "/api/v1/auth/me";
@@ -25,12 +25,12 @@ export function useUser() {
 
   const logout = async () => {
     try {
-      await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001"}/api/v1/auth/logout`,
-        { method: "POST", credentials: "include" }
-      );
+      // Use the api wrapper so the X-CSRF-Token header is sent automatically.
+      // Without it the backend's require_csrf dependency returns 403 and the
+      // server-side session is never invalidated.
+      await api.post("/api/v1/auth/logout");
     } catch {
-      // ignore errors — we'll redirect regardless
+      // Ignore errors — redirect to login regardless so client state is cleared.
     }
     // Clear the SWR cache
     await globalMutate(ME_KEY, undefined, false);

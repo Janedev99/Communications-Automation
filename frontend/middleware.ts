@@ -12,7 +12,7 @@ export function middleware(request: NextRequest) {
   }
 
   // Check for session cookie — if missing, redirect to login
-  const sessionCookie = request.cookies.get("session_id");
+  const sessionCookie = request.cookies.get("session_token");
   if (!sessionCookie?.value) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("from", pathname);

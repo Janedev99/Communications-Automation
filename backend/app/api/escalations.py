@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
 from app.database import get_db
-from app.models.email import EmailThread
+from app.models.email import EmailThread  # noqa: F401 — referenced via escalation.thread
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
 from app.models.user import User
 from app.schemas.escalation import (
@@ -31,12 +31,22 @@ from app.utils.audit import log_action
 router = APIRouter(prefix="/escalations", tags=["escalations"])
 
 
-def _build_response(escalation: Escalation, db: Session) -> EscalationResponse:
-    """Build an EscalationResponse, enriching it with thread subject and client email."""
-    thread = db.execute(
-        select(EmailThread).where(EmailThread.id == escalation.thread_id)
-    ).scalar_one_or_none()
+def _build_response(escalation: Escalation, db: Session | None = None) -> EscalationResponse:
+    """
+    Build an EscalationResponse, enriching it with thread subject and client email.
+
+    Prefers the already-loaded escalation.thread relationship (populated via
+    joinedload in list_escalations). Falls back to a direct query if thread is
+    not loaded (e.g. from get_escalation which doesn't use joinedload).
+    """
     resp = EscalationResponse.model_validate(escalation)
+    # Access the already-loaded relationship first (avoids N+1 in list endpoint)
+    thread = getattr(escalation, "thread", None)
+    if thread is None and db is not None:
+        from app.models.email import EmailThread as _ET
+        thread = db.execute(
+            select(_ET).where(_ET.id == escalation.thread_id)
+        ).scalar_one_or_none()
     if thread is not None:
         resp.thread_subject = thread.subject
         resp.thread_client_email = thread.client_email
@@ -68,12 +78,18 @@ def list_escalations(
     ).scalar_one()
 
     offset = (page - 1) * page_size
+    # Use joinedload to fetch escalation.thread in a single SQL query,
+    # eliminating the N+1 pattern from _build_response issuing per-row queries.
     rows = db.execute(
-        query.order_by(Escalation.created_at.desc()).offset(offset).limit(page_size)
+        query
+        .options(joinedload(Escalation.thread))
+        .order_by(Escalation.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
     ).scalars().all()
 
     return EscalationListResponse(
-        items=[_build_response(e, db) for e in rows],
+        items=[_build_response(e) for e in rows],
         total=total,
         page=page,
         page_size=page_size,

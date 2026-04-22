@@ -6,25 +6,123 @@ Registers all routers, middleware, lifespan events, and exception handlers.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import json
 import logging
+import sys
+import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from datetime import datetime, timezone
+from typing import AsyncGenerator, Callable
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import auth, dashboard, drafts, emails, escalations, knowledge
 from app.config import get_settings
 
-logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# ── Logging configuration ──────────────────────────────────────────────────────
-logging.basicConfig(
-    level=getattr(logging, settings.app_log_level.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# ── Request ID context var — populated per request ────────────────────────────
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
 )
+_user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "user_id", default="-"
+)
+
+
+# ── JSON log formatter ─────────────────────────────────────────────────────────
+
+class _JsonFormatter(logging.Formatter):
+    """Emit each log record as a single JSON line for structured log ingestion."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+            "request_id": _request_id_var.get("-"),
+            "user_id": _user_id_var.get("-"),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+class _LoggingFilter(logging.Filter):
+    """Inject request_id + user_id into every log record from the context vars."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get("-")  # type: ignore[attr-defined]
+        record.user_id = _user_id_var.get("-")  # type: ignore[attr-defined]
+        return True
+
+
+# ── Configure logging ──────────────────────────────────────────────────────────
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, settings.app_log_level.upper(), logging.INFO))
+
+    handler = logging.StreamHandler(sys.stdout)
+    if settings.is_production:
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+    handler.addFilter(_LoggingFilter())
+
+    # Replace any existing handlers
+    root.handlers = [handler]
+
+
+_configure_logging()
+logger = logging.getLogger(__name__)
+
+
+# ── Request ID middleware ──────────────────────────────────────────────────────
+
+class RequestIdMiddleware:
+    """
+    Generate a UUID per request, expose it as X-Request-ID response header,
+    and inject it into the logging context var so all log lines from the
+    same request carry the same ID.
+    """
+
+    def __init__(self, app: Callable) -> None:
+        self._app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self._app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        # Honour client-supplied request ID (e.g. from a load balancer) or generate a new one
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        token = _request_id_var.set(request_id)
+
+        # Try to extract user_id from session cookie for log context; best-effort only
+        user_id_token = _user_id_var.set("-")
+
+        async def send_with_header(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append(
+                    (b"x-request-id", request_id.encode())
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        try:
+            await self._app(scope, receive, send_with_header)
+        finally:
+            _request_id_var.reset(token)
+            _user_id_var.reset(user_id_token)
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -102,15 +200,18 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/openapi.json",
     )
 
+    # ── Request ID middleware (innermost — applied first on ingress) ───────────
+    app.add_middleware(RequestIdMiddleware)
+
     # ── CORS ───────────────────────────────────────────────────────────────────
-    # Origins are configurable via CORS_ORIGINS env var (comma-separated).
-    # We use allow_credentials=True so the HttpOnly session cookie is sent.
+    # Explicit methods and headers are required when allow_credentials=True.
+    # Wildcards ("*") are silently rejected by browsers for credentialed requests.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins.split(","),
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-CSRF-Token"],
     )
 
     # ── Exception handlers ─────────────────────────────────────────────────────

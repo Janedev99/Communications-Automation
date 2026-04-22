@@ -87,6 +87,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return pathname.startsWith(href);
   };
 
+  // Item 5 — High/critical escalation badge
+  // Count unresolved escalations with severity high or critical
+  const highCriticalCount =
+    (stats?.escalations_by_severity?.["high"] ?? 0) +
+    (stats?.escalations_by_severity?.["critical"] ?? 0);
+  const criticalCount = stats?.escalations_by_severity?.["critical"] ?? 0;
+
   const NAV_ITEMS = [
     { label: "Dashboard", href: "/", icon: LayoutDashboard, badge: false },
     { label: "Emails", href: "/emails", icon: Mail, badge: hasNewEmails },
@@ -122,26 +129,55 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* Main nav */}
       <nav className={cn("flex-1 px-2 space-y-0.5", collapsed && "px-2")}>
-        {NAV_ITEMS.map(({ label, href, icon: Icon, badge }) => (
-          <Link
-            key={href}
-            href={href}
-            title={collapsed ? label : undefined}
-            className={cn(
-              "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
-              collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
-              isActive(href)
-                ? "text-brand-600 bg-white shadow-sm ring-1 ring-gray-200/60 font-semibold"
-                : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
-            )}
-          >
-            <span className="relative flex-shrink-0">
-              <Icon className="w-5 h-5" strokeWidth={1.75} />
-              <NotificationDot show={badge} />
-            </span>
-            {!collapsed && <span>{label}</span>}
-          </Link>
-        ))}
+        {NAV_ITEMS.map(({ label, href, icon: Icon, badge }) => {
+          const isEscalations = href === "/escalations";
+          const active = isActive(href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              title={collapsed ? label : undefined}
+              className={cn(
+                "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
+                collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
+                active
+                  ? "text-brand-600 bg-white shadow-sm ring-1 ring-gray-200/60 font-semibold"
+                  : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+              )}
+            >
+              <span className="relative flex-shrink-0">
+                <Icon className="w-5 h-5" strokeWidth={1.75} />
+                <NotificationDot show={badge} />
+              </span>
+              {!collapsed && (
+                <span className={cn("flex-1", isEscalations && highCriticalCount > 0 && "font-semibold")}>
+                  {label}
+                </span>
+              )}
+              {/* Item 5 — high/critical count badge + overdue pulsing dot */}
+              {!collapsed && isEscalations && highCriticalCount > 0 && (
+                <span className="flex items-center gap-1.5 ml-auto">
+                  {/* Red pulsing dot when there are ANY critical escalations (proxy for overdue) */}
+                  {criticalCount > 0 && (
+                    <span
+                      className="w-2 h-2 rounded-full bg-red-500 animate-pulse motion-reduce:animate-none"
+                      aria-label="Critical escalation overdue"
+                    />
+                  )}
+                  <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold">
+                    {highCriticalCount > 99 ? "99+" : highCriticalCount}
+                  </span>
+                </span>
+              )}
+              {/* Collapsed state: show numeric badge above icon when relevant */}
+              {collapsed && isEscalations && highCriticalCount > 0 && (
+                <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none">
+                  {highCriticalCount > 9 ? "9+" : highCriticalCount}
+                </span>
+              )}
+            </Link>
+          );
+        })}
 
         {/* Admin section */}
         {isAdmin && (

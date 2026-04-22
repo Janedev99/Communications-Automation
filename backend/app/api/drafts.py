@@ -458,6 +458,7 @@ def send_draft(
             subject=reply_subject,
             body_text=draft.body_text,
             reply_to_message_id=reply_to_message_id,
+            references_header=references_header,
             message_id=outbound_message_id,
         )
         # Update with actual message_id if provider returned a different one

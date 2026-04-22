@@ -13,10 +13,15 @@ PUT  /emails/{thread_id}/drafts/{draft_id} — update a draft (review/edit)
 """
 from __future__ import annotations
 
+import json
+import threading
 import uuid
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime, date, timezone
+from typing import AsyncGenerator, DefaultDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -247,24 +252,58 @@ def bulk_action(
     return BulkActionResponse(succeeded=succeeded, failed=failed, errors=errors)
 
 
+# ── Export daily rate-limit tracker (T1.18) ───────────────────────────────────
+# Tracks per-user export counts per calendar day: {(user_id, date): count}
+# Module-level dict is safe here: only admin users can reach this endpoint,
+# and the process-level singleton is acceptable for V1 (single-replica deploy).
+_export_rate_lock = threading.Lock()
+_export_counts: DefaultDict[tuple[uuid.UUID, date], int] = defaultdict(int)
+_EXPORT_DAILY_LIMIT = 10
+
+
+def _check_export_rate_limit(user_id: uuid.UUID) -> None:
+    today = datetime.now(timezone.utc).date()
+    with _export_rate_lock:
+        key = (user_id, today)
+        if _export_counts[key] >= _EXPORT_DAILY_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Export rate limit reached. Maximum {_EXPORT_DAILY_LIMIT} "
+                    "full exports per day per user."
+                ),
+            )
+        _export_counts[key] += 1
+
+
 # ── Export / compliance report ─────────────────────────────────────────────────
 # NOTE: Declared before /{thread_id} to avoid routing conflict (FastAPI matches
 # in declaration order and "export" would otherwise be captured as a thread UUID).
 
-@router.get("/export", response_model=list[dict])
+@router.get("/export")
 def export_threads(
     client_email: str | None = Query(default=None),
     from_date: str | None = Query(default=None, alias="from"),
     to_date: str | None = Query(default=None, alias="to"),
+    offset: int = Query(default=0, ge=0, description="Number of threads to skip"),
+    limit: int = Query(default=100, ge=1, le=500, description="Max threads per page"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[dict]:
+) -> StreamingResponse:
     """
     Export threads with all messages, drafts, and escalations.
     Admin only. Used for compliance reporting.
+
+    T1.18:
+      - Paginated via offset/limit (max 500 per page).
+      - Rate-limited to 10 full exports per user per day.
+      - Streaming JSON-lines response (one JSON object per line).
     """
     if current_user.role.value != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+    # Rate limit check
+    _check_export_rate_limit(current_user.id)
 
     query = select(EmailThread).options(
         selectinload(EmailThread.messages),
@@ -296,56 +335,67 @@ def export_threads(
                 detail="Invalid 'to' date. Use ISO 8601 format.",
             )
 
-    threads = db.execute(query.order_by(EmailThread.created_at.desc()).limit(500)).scalars().all()
+    threads = db.execute(
+        query.order_by(EmailThread.created_at.desc()).offset(offset).limit(limit)
+    ).scalars().all()
 
-    result = []
-    for t in threads:
-        result.append({
-            "id": str(t.id),
-            "subject": t.subject,
-            "client_email": t.client_email,
-            "client_name": t.client_name,
-            "status": t.status.value,
-            "category": t.category.value,
-            "ai_summary": t.ai_summary,
-            "created_at": t.created_at.isoformat(),
-            "updated_at": t.updated_at.isoformat(),
-            "messages": [
-                {
-                    "id": str(m.id),
-                    "sender": m.sender,
-                    "recipient": m.recipient,
-                    "body_text": m.body_text,
-                    "received_at": m.received_at.isoformat(),
-                    "direction": m.direction.value,
-                }
-                for m in sorted(t.messages, key=lambda m: m.received_at)
-            ],
-            "drafts": [
-                {
-                    "id": str(d.id),
-                    "body_text": d.body_text,
-                    "status": d.status.value,
-                    "version": d.version,
-                    "created_at": d.created_at.isoformat(),
-                    "reviewed_at": d.reviewed_at.isoformat() if d.reviewed_at else None,
-                }
-                for d in sorted(t.drafts, key=lambda d: d.created_at)
-            ],
-            "escalations": [
-                {
-                    "id": str(e.id),
-                    "reason": e.reason,
-                    "severity": e.severity.value,
-                    "status": e.status.value,
-                    "created_at": e.created_at.isoformat(),
-                    "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
-                }
-                for e in sorted(t.escalations, key=lambda e: e.created_at)
-            ],
-        })
+    def _iter_jsonlines() -> AsyncGenerator[str, None]:  # type: ignore[return]
+        """Yield one JSON line per thread for memory-efficient streaming."""
+        for t in threads:
+            record = {
+                "id": str(t.id),
+                "subject": t.subject,
+                "client_email": t.client_email,
+                "client_name": t.client_name,
+                "status": t.status.value,
+                "category": t.category.value,
+                "ai_summary": t.ai_summary,
+                "created_at": t.created_at.isoformat(),
+                "updated_at": t.updated_at.isoformat(),
+                "messages": [
+                    {
+                        "id": str(m.id),
+                        "sender": m.sender,
+                        "recipient": m.recipient,
+                        "body_text": m.body_text,
+                        "received_at": m.received_at.isoformat(),
+                        "direction": m.direction.value,
+                    }
+                    for m in sorted(t.messages, key=lambda m: m.received_at)
+                ],
+                "drafts": [
+                    {
+                        "id": str(d.id),
+                        "body_text": d.body_text,
+                        "status": d.status.value,
+                        "version": d.version,
+                        "created_at": d.created_at.isoformat(),
+                        "reviewed_at": d.reviewed_at.isoformat() if d.reviewed_at else None,
+                    }
+                    for d in sorted(t.drafts, key=lambda d: d.created_at)
+                ],
+                "escalations": [
+                    {
+                        "id": str(e.id),
+                        "reason": e.reason,
+                        "severity": e.severity.value,
+                        "status": e.status.value,
+                        "created_at": e.created_at.isoformat(),
+                        "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+                    }
+                    for e in sorted(t.escalations, key=lambda e: e.created_at)
+                ],
+            }
+            yield json.dumps(record, ensure_ascii=False) + "\n"
 
-    return result
+    return StreamingResponse(
+        _iter_jsonlines(),
+        media_type="application/x-ndjson",
+        headers={
+            "X-Export-Count": str(len(threads)),
+            "X-Export-Offset": str(offset),
+        },
+    )
 
 
 # ── Thread list ───────────────────────────────────────────────────────────────

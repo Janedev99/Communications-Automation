@@ -367,6 +367,11 @@ def poll_once() -> int:
         logger.error("Email poll failed during fetch: %s", exc, exc_info=True)
         return 0
 
+    # T1.13: Record a successful poll cycle now — we successfully connected and
+    # fetched (even if zero new emails). This prevents false "stalled" health
+    # alerts during legitimately quiet periods (nights, weekends, etc.).
+    _record_successful_poll()
+
     if not raw_emails:
         logger.debug("No new emails found")
         return 0
@@ -402,10 +407,6 @@ def poll_once() -> int:
     # This runs AFTER all categorization commits, decoupled from the poll transaction.
     for thread_id in threads_needing_drafts:
         _generate_draft_for_thread(thread_id)
-
-    # Update health timestamp on successful poll (T1.13)
-    if processed > 0 or not raw_emails:
-        _record_successful_poll()
 
     return processed
 

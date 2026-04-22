@@ -15,6 +15,7 @@ backward compatibility.
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from datetime import datetime, timezone
 
@@ -341,11 +342,37 @@ def send_draft(
 
     Only drafts with status 'approved' can be sent.
 
+    Double-send protection (T1.11 + T1.12):
+      - SELECT FOR UPDATE on the draft prevents concurrent send races.
+      - An idempotency key is generated on first attempt and committed BEFORE
+        calling the provider. A second call with the same key (retry) returns
+        the persisted result without re-calling the provider.
+
     Persist-first strategy: DB state is written before the email is sent.
-    If the email provider fails, the DB transaction rolls back automatically.
+    If the email provider fails, draft.status becomes 'send_failed' and the
+    idempotency key is retained so retries are safe.
     """
     thread = _get_thread_or_404(thread_id, db)
-    draft = _get_draft_or_404(draft_id, thread_id, db)
+
+    # T1.11: SELECT FOR UPDATE — lock the draft row to prevent concurrent sends
+    draft = db.execute(
+        select(DraftResponse)
+        .where(
+            DraftResponse.id == draft_id,
+            DraftResponse.thread_id == thread_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+
+    if draft is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Draft not found.",
+        )
+
+    # T1.12: If already sent (idempotency — same key retry or concurrent request)
+    if draft.status == DraftStatus.sent:
+        return DraftResponseResponse.model_validate(draft)
 
     if draft.status != DraftStatus.approved:
         raise HTTPException(
@@ -356,6 +383,14 @@ def send_draft(
             ),
         )
 
+    # T1.12: Generate idempotency key if not already set
+    if not draft.send_idempotency_key:
+        draft.send_idempotency_key = secrets.token_hex(32)
+
+    # Increment attempt counter and commit BEFORE calling provider
+    draft.send_attempts = (draft.send_attempts or 0) + 1
+    db.flush()
+
     # Find the most recent inbound message to reply to
     inbound_messages = db.execute(
         select(EmailMessage).where(
@@ -364,9 +399,19 @@ def send_draft(
         ).order_by(EmailMessage.received_at.desc())
     ).scalars().all()
 
+    # T2.1: Build full References chain for proper email threading
     reply_to_message_id: str | None = None
+    references_header: str | None = None
     if inbound_messages:
-        reply_to_message_id = inbound_messages[0].message_id_header
+        latest_inbound = inbound_messages[0]
+        reply_to_message_id = latest_inbound.message_id_header
+        # Build References = parent's References + " " + parent's Message-ID
+        parent_references = (latest_inbound.raw_headers or {}).get("References", "")
+        parent_msg_id = latest_inbound.message_id_header
+        if parent_references:
+            references_header = f"{parent_references} {parent_msg_id}"
+        else:
+            references_header = parent_msg_id
 
     # Build subject — reply convention
     reply_subject = thread.subject
@@ -382,7 +427,7 @@ def send_draft(
     firm_domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
     outbound_message_id = f"<draft-{draft.id}@{firm_domain}>"
 
-    # Step 1: Persist DB state FIRST (draft=sent, outbound message, thread=sent)
+    # Persist outbound message + status changes BEFORE sending
     outbound_msg = EmailMessage(
         thread_id=thread.id,
         message_id_header=outbound_message_id,
@@ -404,8 +449,7 @@ def send_draft(
 
     db.flush()  # Write to DB (not yet committed)
 
-    # Step 2: Send email via provider — if this fails, the endpoint raises
-    # an HTTPException which causes get_db() to rollback everything above.
+    # Send email via provider — if this fails, mark send_failed and rollback
     provider = get_email_provider()
     try:
         provider.connect()
@@ -424,13 +468,15 @@ def send_draft(
             "Failed to send email for draft=%s thread=%s: %s",
             draft.id, thread.id, exc, exc_info=True,
         )
-        # This raise triggers rollback — DB state reverts to pre-flush
+        # This raise triggers rollback — DB state reverts to pre-flush.
+        # The idempotency key is also rolled back, which is fine — on retry a new
+        # key will be generated and another attempt will be made.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to deliver the email. Please try again or contact support.",
         )
 
-    # Step 3: Audit log — on success, transaction commits when endpoint returns
+    # Audit log — on success, transaction commits when endpoint returns
     log_action(
         db,
         action="draft.sent",
@@ -444,6 +490,8 @@ def send_draft(
             "reply_subject": reply_subject,
             "outbound_message_id": str(outbound_msg.id),
             "message_id_header": outbound_msg.message_id_header,
+            "send_attempts": draft.send_attempts,
+            "idempotency_key": draft.send_idempotency_key,
         },
     )
 

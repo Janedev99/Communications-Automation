@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_client_ip, get_current_user
+from app.api.deps import get_client_ip, get_current_user, require_csrf
 from app.database import get_db
 from app.models.email import (
     DraftResponse,
@@ -111,6 +111,7 @@ def list_all_drafts(
     "/emails/{thread_id}/generate-draft",
     response_model=DraftResponseResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
 )
 def generate_draft(
     request: Request,
@@ -224,7 +225,7 @@ def get_draft(
 
 # ── Approve ───────────────────────────────────────────────────────────────────
 
-@router.post("/emails/{thread_id}/drafts/{draft_id}/approve", response_model=DraftResponseResponse)
+@router.post("/emails/{thread_id}/drafts/{draft_id}/approve", response_model=DraftResponseResponse, dependencies=[Depends(require_csrf)])
 def approve_draft(
     request: Request,
     thread_id: uuid.UUID,
@@ -271,7 +272,7 @@ def approve_draft(
 
 # ── Reject ────────────────────────────────────────────────────────────────────
 
-@router.post("/emails/{thread_id}/drafts/{draft_id}/reject", response_model=DraftResponseResponse)
+@router.post("/emails/{thread_id}/drafts/{draft_id}/reject", response_model=DraftResponseResponse, dependencies=[Depends(require_csrf)])
 def reject_draft(
     request: Request,
     thread_id: uuid.UUID,
@@ -329,7 +330,7 @@ def reject_draft(
 
 # ── Send ──────────────────────────────────────────────────────────────────────
 
-@router.post("/emails/{thread_id}/drafts/{draft_id}/send", response_model=DraftResponseResponse)
+@router.post("/emails/{thread_id}/drafts/{draft_id}/send", response_model=DraftResponseResponse, dependencies=[Depends(require_csrf)])
 def send_draft(
     request: Request,
     thread_id: uuid.UUID,

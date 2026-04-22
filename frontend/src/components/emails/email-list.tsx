@@ -127,11 +127,15 @@ export function EmailList({
                       {thread.subject}
                     </span>
                     {thread.draft_generation_failed && (
-                      <AlertTriangle
-                        className="w-3.5 h-3.5 text-red-500 flex-shrink-0"
-                        aria-label="Draft generation failed"
+                      <span
                         title="AI draft generation failed for this thread"
-                      />
+                        className="flex-shrink-0"
+                      >
+                        <AlertTriangle
+                          className="w-3.5 h-3.5 text-red-500"
+                          aria-label="Draft generation failed"
+                        />
+                      </span>
                     )}
                   </span>
                 </TableCell>

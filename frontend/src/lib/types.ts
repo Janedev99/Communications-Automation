@@ -18,7 +18,7 @@ export type EmailCategory =
   | "urgent"
   | "uncategorized";
 
-export type DraftStatus = "pending" | "edited" | "approved" | "rejected" | "sent";
+export type DraftStatus = "pending" | "edited" | "approved" | "rejected" | "sent" | "send_failed";
 export type EscalationSeverity = "low" | "medium" | "high" | "critical";
 export type EscalationStatus = "pending" | "acknowledged" | "resolved";
 export type UserRole = "staff" | "admin";
@@ -104,6 +104,8 @@ export interface EmailThreadListItem {
   created_at: string;
   updated_at: string;
   message_count: number;
+  /** True when the last AI draft generation attempt failed for this thread */
+  draft_generation_failed?: boolean;
 }
 
 export interface BulkActionParams {

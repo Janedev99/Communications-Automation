@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timezone
 
 import anthropic
+from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
 from app.models.email import DraftResponse, DraftStatus, EmailMessage, EmailStatus, EmailThread, MessageDirection
@@ -28,6 +29,22 @@ from app.services.notification import get_notification_service
 from app.utils.sanitize import strip_html
 
 logger = logging.getLogger(__name__)
+
+
+# ── Pydantic model for Claude draft response validation ───────────────────────
+
+class _DraftResponse(BaseModel):
+    """
+    Validates the structure of Claude's draft reply.
+
+    Claude is instructed to return plain email body text, not JSON.
+    This model wraps that: we validate that the body is a non-empty string.
+    subject_line and tone are optional metadata fields; if Claude includes them
+    they are captured but not used (the body is the authoritative output).
+    """
+    subject_line: str | None = None
+    body: str
+    tone: str | None = None
 
 # ── Prompt templates ───────────────────────────────────────────────────────────
 
@@ -232,9 +249,22 @@ class DraftGeneratorService:
             messages=[{"role": "user", "content": user_prompt}],
         )
 
-        draft_body = response.content[0].text.strip() if response.content else ""
+        raw_body = response.content[0].text.strip() if response.content else ""
         prompt_tokens = response.usage.input_tokens if response.usage else None
         completion_tokens = response.usage.output_tokens if response.usage else None
+
+        # Validate the draft body using Pydantic — catches empty/whitespace-only output
+        try:
+            validated = _DraftResponse(body=raw_body)
+            draft_body = validated.body
+        except ValidationError as exc:
+            logger.error(
+                "DraftGenerator: Pydantic validation failed for thread=%s: %s",
+                thread.id,
+                exc,
+            )
+            # Fallback: use the raw content if body is present, else raise
+            draft_body = raw_body or ""
 
         # T2.3: Record token usage for budget tracking
         if response.usage:

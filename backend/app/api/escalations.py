@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_client_ip, get_current_user
+from app.api.deps import get_client_ip, get_current_user, require_csrf
 from app.database import get_db
 from app.models.email import EmailThread
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
@@ -96,7 +96,7 @@ def get_escalation(
     return _build_response(escalation, db)
 
 
-@router.put("/{escalation_id}/acknowledge", response_model=EscalationResponse)
+@router.put("/{escalation_id}/acknowledge", response_model=EscalationResponse, dependencies=[Depends(require_csrf)])
 def acknowledge_escalation(
     request: Request,
     escalation_id: uuid.UUID,
@@ -138,7 +138,7 @@ def acknowledge_escalation(
     return _build_response(escalation, db)
 
 
-@router.put("/{escalation_id}/resolve", response_model=EscalationResponse)
+@router.put("/{escalation_id}/resolve", response_model=EscalationResponse, dependencies=[Depends(require_csrf)])
 def resolve_escalation(
     request: Request,
     escalation_id: uuid.UUID,

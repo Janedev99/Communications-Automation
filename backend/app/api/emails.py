@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_client_ip, get_current_user
+from app.api.deps import get_client_ip, get_current_user, require_csrf
 from app.database import get_db
 from app.models.email import (
     DraftResponse,
@@ -143,7 +143,7 @@ def search_threads(
 
 # ── Bulk action endpoint (also before /{thread_id}) ───────────────────────────
 
-@router.post("/bulk", response_model=BulkActionResponse)
+@router.post("/bulk", response_model=BulkActionResponse, dependencies=[Depends(require_csrf)])
 def bulk_action(
     request: Request,
     body: BulkActionRequest,
@@ -497,7 +497,7 @@ def get_thread(
     return EmailThreadResponse.from_thread(thread)
 
 
-@router.post("/{thread_id}/categorize", response_model=EmailThreadResponse)
+@router.post("/{thread_id}/categorize", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
 def manual_categorize(
     request: Request,
     thread_id: uuid.UUID,
@@ -573,7 +573,7 @@ def manual_categorize(
 
 # ── Assignment ────────────────────────────────────────────────────────────────
 
-@router.put("/{thread_id}/assign", response_model=EmailThreadResponse)
+@router.put("/{thread_id}/assign", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
 def assign_thread(
     request: Request,
     thread_id: uuid.UUID,
@@ -630,7 +630,7 @@ def assign_thread(
 
 # ── Manual status change ──────────────────────────────────────────────────────
 
-@router.put("/{thread_id}/status", response_model=EmailThreadResponse)
+@router.put("/{thread_id}/status", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
 def change_thread_status(
     request: Request,
     thread_id: uuid.UUID,
@@ -710,7 +710,7 @@ def list_drafts(
     return [DraftResponseResponse.model_validate(d) for d in drafts]
 
 
-@router.put("/{thread_id}/drafts/{draft_id}", response_model=DraftResponseResponse)
+@router.put("/{thread_id}/drafts/{draft_id}", response_model=DraftResponseResponse, dependencies=[Depends(require_csrf)])
 def update_draft(
     request: Request,
     thread_id: uuid.UUID,
@@ -796,7 +796,7 @@ def get_thread_escalation(
 
 # ── Manual draft creation (template-based) ────────────────────────────────────
 
-@router.post("/{thread_id}/drafts", response_model=DraftResponseResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{thread_id}/drafts", response_model=DraftResponseResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_csrf)])
 def create_manual_draft(
     request: Request,
     thread_id: uuid.UUID,

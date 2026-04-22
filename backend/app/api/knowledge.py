@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_client_ip, get_current_user
+from app.api.deps import get_client_ip, get_current_user, require_csrf
 from app.database import get_db
 from app.models.email import KnowledgeEntry
 from app.models.user import User
@@ -95,7 +95,7 @@ def get_knowledge_entry(
     return KnowledgeEntryResponse.model_validate(entry)
 
 
-@router.post("", response_model=KnowledgeEntryResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=KnowledgeEntryResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_csrf)])
 def create_knowledge_entry(
     request: Request,
     body: CreateKnowledgeEntryRequest,
@@ -137,7 +137,7 @@ def create_knowledge_entry(
     return KnowledgeEntryResponse.model_validate(entry)
 
 
-@router.put("/{entry_id}", response_model=KnowledgeEntryResponse)
+@router.put("/{entry_id}", response_model=KnowledgeEntryResponse, dependencies=[Depends(require_csrf)])
 def update_knowledge_entry(
     request: Request,
     entry_id: uuid.UUID,
@@ -199,7 +199,7 @@ def update_knowledge_entry(
     return KnowledgeEntryResponse.model_validate(entry)
 
 
-@router.delete("/{entry_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{entry_id}", status_code=status.HTTP_200_OK, dependencies=[Depends(require_csrf)])
 def delete_knowledge_entry(
     request: Request,
     entry_id: uuid.UUID,

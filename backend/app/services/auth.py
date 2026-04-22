@@ -203,6 +203,43 @@ def logout(db: Session, raw_token: str) -> None:
         db.flush()
 
 
+def invalidate_other_sessions(
+    db: Session,
+    user_id: uuid.UUID,
+    except_raw_token: str | None,
+) -> int:
+    """
+    Deactivate all active sessions for the given user EXCEPT the one matching
+    except_raw_token (the caller's current session).
+
+    Returns the count of sessions revoked.
+    Used after a password change to prevent stale sessions from remaining valid.
+    """
+    now = datetime.now(timezone.utc)
+    current_hash = _hash_token(except_raw_token) if except_raw_token else None
+
+    sessions = db.execute(
+        select(DbSession).where(
+            DbSession.user_id == user_id,
+            DbSession.is_active == True,  # noqa: E712
+            DbSession.expires_at > now,
+        )
+    ).scalars().all()
+
+    revoked = 0
+    for session in sessions:
+        if current_hash and session.token_hash == current_hash:
+            continue  # Keep the caller's current session active
+        session.is_active = False
+        session.expires_at = now
+        revoked += 1
+
+    if revoked:
+        db.flush()
+
+    return revoked
+
+
 def authenticate(db: Session, email: str, password: str) -> User | None:
     """
     Verify credentials and return the User, or None if invalid.

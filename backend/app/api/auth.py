@@ -223,6 +223,8 @@ def change_password(
 
     Validates the current password before accepting the new one.
     Enforces complexity requirements on the new password.
+    Invalidates all other active sessions after the password change to prevent
+    a compromised session from remaining valid post-rotation.
     """
     if not auth_service.verify_password(body.current_password, current_user.hashed_password):
         raise HTTPException(
@@ -233,6 +235,14 @@ def change_password(
     current_user.hashed_password = auth_service.hash_password(body.new_password)
     db.flush()
 
+    # Revoke all other active sessions for this user so a stolen session can't
+    # survive a password change. The current session (used for this request) is
+    # identified by the session_token cookie — preserve it so the user stays logged in.
+    current_session_token = request.cookies.get("session_token")
+    revoked_count = auth_service.invalidate_other_sessions(
+        db, user_id=current_user.id, except_raw_token=current_session_token
+    )
+
     log_action(
         db,
         action="auth.password_changed",
@@ -240,7 +250,18 @@ def change_password(
         entity_id=str(current_user.id),
         user_id=current_user.id,
         ip_address=get_client_ip(request),
+        details={"sessions_revoked": revoked_count},
     )
+    if revoked_count:
+        log_action(
+            db,
+            action="password_changed_sessions_rotated",
+            entity_type="user",
+            entity_id=str(current_user.id),
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            details={"revoked_session_count": revoked_count},
+        )
 
     return {"detail": "Password updated successfully."}
 

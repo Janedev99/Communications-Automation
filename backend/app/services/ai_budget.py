@@ -21,28 +21,12 @@ import logging
 import threading
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, Integer, String, select, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import select, text
 
-from app.database import Base, SessionLocal
+from app.database import SessionLocal
+from app.models.ai_budget import AIBudgetUsage  # noqa: F401 — model import for type checking
 
 logger = logging.getLogger(__name__)
-
-# ── DB model ──────────────────────────────────────────────────────────────────
-
-class AIBudgetUsage(Base):
-    """Daily token usage accumulator.  One row per calendar date."""
-    __tablename__ = "ai_budget_usage"
-
-    date: Mapped[date] = mapped_column(Date, primary_key=True)
-    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    def __repr__(self) -> str:
-        return (
-            f"<AIBudgetUsage date={self.date} "
-            f"input={self.input_tokens} output={self.output_tokens}>"
-        )
 
 
 # ── Exception ─────────────────────────────────────────────────────────────────

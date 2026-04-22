@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import case, or_, select, update
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.email import KnowledgeEntry
@@ -100,20 +100,12 @@ class KnowledgeService:
                 seen.add(entry.id)
                 deduped.append(entry)
 
-        # Increment usage_count atomically using SQL-side addition to avoid
-        # race conditions when concurrent draft generations read the same count.
-        # If the draft generation later fails, this count remains incremented.
-        # That's acceptable; it reflects that the entry was retrieved for consideration.
-        entry_ids = [entry.id for entry in deduped]
-        db.execute(
-            update(KnowledgeEntry)
-            .where(KnowledgeEntry.id.in_(entry_ids))
-            .values(usage_count=KnowledgeEntry.usage_count + 1)
-        )
-        # Refresh the ORM objects to reflect the DB-side update
-        for entry in deduped:
-            db.refresh(entry)
-        db.flush()
+        # P2 — DEFERRED: usage_count tracking is a non-functional metric.
+        # At scale the UPDATE on every retrieval becomes a write hotspot.
+        # For V1 the update is intentionally skipped to avoid write-amplification
+        # on the knowledge entries table. Will be replaced with an async
+        # batch counter (e.g. Redis + periodic flush) before V2 launch.
+        # Previously: db.execute(update(KnowledgeEntry)...) + refresh per entry.
 
         logger.info(
             "KnowledgeService: retrieved %d entries for category=%r",

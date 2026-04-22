@@ -9,7 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Mail, UserCircle2 } from "lucide-react";
+import { AlertTriangle, Mail, UserCircle2 } from "lucide-react";
 import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -122,8 +122,17 @@ export function EmailList({
                     }
                   }}
                 >
-                  <span className="text-sm font-medium text-gray-800 truncate block max-w-[280px]">
-                    {thread.subject}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-sm font-medium text-gray-800 truncate block max-w-[268px]">
+                      {thread.subject}
+                    </span>
+                    {thread.draft_generation_failed && (
+                      <AlertTriangle
+                        className="w-3.5 h-3.5 text-red-500 flex-shrink-0"
+                        aria-label="Draft generation failed"
+                        title="AI draft generation failed for this thread"
+                      />
+                    )}
                   </span>
                 </TableCell>
                 <TableCell

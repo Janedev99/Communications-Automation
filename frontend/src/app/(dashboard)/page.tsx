@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { DashboardSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ThreadStatusBadge } from "@/components/emails/thread-status-badge";
+import { SystemStatusStrip } from "@/components/dashboard/system-status-strip";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useEmails } from "@/hooks/use-emails";
 import { useEscalations } from "@/hooks/use-escalations";
@@ -102,6 +103,9 @@ export default function DashboardPage() {
   return (
     <div>
       <PageHeader title="Dashboard" />
+
+      {/* Item 4 — System status strip */}
+      <SystemStatusStrip />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">

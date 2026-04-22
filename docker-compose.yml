@@ -44,6 +44,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # NEXT_PUBLIC_* vars are inlined at build time by Next.js — they must be
+      # passed as build args (not runtime environment variables).
+      # The backend is accessed by the browser via Caddy, so use the public URL.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8001}
     restart: unless-stopped
     expose:
       - "3000"

@@ -1,7 +1,10 @@
 /** @type {import('next').NextConfig} */
 
+// Single canonical env var for the backend API base URL.
+// NEXT_PUBLIC_API_BASE_URL was a legacy alias — it has been removed.
+// All consumers (api.ts, middleware, CSP) now read NEXT_PUBLIC_API_URL.
 const apiBaseUrl =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8001";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
 
 const nextConfig = {
   output: "standalone",

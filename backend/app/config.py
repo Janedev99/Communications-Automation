@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     admin_name: str = "Jane"
     admin_password: str = ""
 
+    # ── Trusted Proxies (rate-limiter / IP extraction) ────────────────────────
+    # Comma-separated list of trusted proxy IP addresses (e.g. Caddy, Railway LB).
+    # When non-empty, X-Forwarded-For is trusted ONLY if the direct connection IP
+    # matches one of these. Prevents rate-limit spoofing via header injection.
+    # Example: TRUSTED_PROXIES=10.0.0.1,172.31.0.1
+    trusted_proxies: str = ""
+
+    @property
+    def trusted_proxy_set(self) -> frozenset[str]:
+        """Return the set of trusted proxy IPs (parsed from TRUSTED_PROXIES)."""
+        return frozenset(
+            ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()
+        )
+
     # ── AI Budget (T2.3) ──────────────────────────────────────────────────────
     # Daily token budget across all Claude API calls. Set to 0 to disable.
     daily_token_budget: int = 1_000_000

@@ -87,10 +87,25 @@ def require_csrf(
 
 
 def get_client_ip(request: Request) -> str | None:
-    """Extract the real client IP, respecting X-Forwarded-For if present."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return None
+    """
+    Extract the real client IP.
+
+    X-Forwarded-For is only trusted when:
+      - TRUSTED_PROXIES is configured (non-empty), AND
+      - The direct connection IP (request.client.host) is in that set.
+
+    Without trusted proxy configuration, the direct connection IP is returned
+    unconditionally. This prevents rate-limit bucket spoofing via header injection
+    when the backend is reachable directly (bypassing the reverse proxy).
+    """
+    from app.config import get_settings
+    direct_ip = request.client.host if request.client else None
+
+    settings = get_settings()
+    trusted = settings.trusted_proxy_set
+    if trusted and direct_ip in trusted:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+
+    return direct_ip

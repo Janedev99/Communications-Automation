@@ -32,7 +32,10 @@ logger = logging.getLogger(__name__)
 # regardless of what Claude returns.  Pattern uses word-boundary anchors and
 # is case-insensitive.
 _ESCALATION_KEYWORDS: re.Pattern[str] = re.compile(
-    r"\b(irs|audit|subpoena|penalty|attorney|lawsuit|refund|complaint|dispute|"
+    # "refund" removed — routine "when will I get my tax refund?" queries were
+    # triggering forced escalation. Tax refund inquiries are categorized by the
+    # AI as general_inquiry; only legal/compliance keywords force escalation.
+    r"\b(irs|audit|subpoena|penalty|attorney|lawsuit|complaint|dispute|"
     r"fraud|lien|levy)\b",
     re.IGNORECASE,
 )

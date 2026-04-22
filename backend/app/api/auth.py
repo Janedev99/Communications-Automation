@@ -26,7 +26,7 @@ from typing import DefaultDict
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_client_ip, get_current_user, require_admin
+from app.api.deps import get_client_ip, get_current_user, require_admin, require_csrf
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User, UserRole
@@ -180,7 +180,7 @@ def login(
     )
 
 
-@router.post("/logout", status_code=status.HTTP_200_OK)
+@router.post("/logout", status_code=status.HTTP_200_OK, dependencies=[Depends(require_csrf)])
 def logout(
     request: Request,
     response: Response,
@@ -211,7 +211,7 @@ def me(current_user: User = Depends(get_current_user)) -> MeResponse:
     return MeResponse.model_validate(current_user)
 
 
-@router.post("/change-password", status_code=status.HTTP_200_OK)
+@router.post("/change-password", status_code=status.HTTP_200_OK, dependencies=[Depends(require_csrf)])
 def change_password(
     request: Request,
     body: ChangePasswordRequest,
@@ -249,7 +249,7 @@ def change_password(
     "/users",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_csrf)],
 )
 def create_user(
     request: Request,
@@ -306,7 +306,7 @@ def list_users(
 @router.put(
     "/users/{user_id}",
     response_model=UserResponse,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_csrf)],
 )
 def update_user(
     user_id: uuid.UUID,

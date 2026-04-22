@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { PasswordRules, isPasswordValid } from "@/components/shared/password-rules";
 import type { UserRole } from "@/lib/types";
 
 interface CreateUserDialogProps {
@@ -41,8 +42,11 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
     setRole("staff");
   };
 
+  const passwordValid = isPasswordValid(password);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!passwordValid) return;
     setLoading(true);
     try {
       await api.post("/api/v1/auth/users", { name, email, password, role });
@@ -102,6 +106,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
               Password
             </label>
             <Input
+              id="create-user-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -109,7 +114,9 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
               required
               minLength={8}
               disabled={loading}
+              aria-describedby="create-user-password-rules"
             />
+            <PasswordRules value={password} id="create-user-password-rules" />
           </div>
 
           <div>
@@ -134,7 +141,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
             <Button
               type="submit"
               className="bg-brand-500 hover:bg-brand-600 text-white"
-              disabled={loading}
+              disabled={loading || !passwordValid}
             >
               {loading ? "Creating..." : "Create User"}
             </Button>

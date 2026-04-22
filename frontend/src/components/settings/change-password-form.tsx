@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordRules, isPasswordValid } from "@/components/shared/password-rules";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -19,7 +20,7 @@ export function ChangePasswordForm() {
   const passwordsMatch = newPassword === confirmPassword;
   const isValid =
     currentPassword.trim().length > 0 &&
-    newPassword.length >= 8 &&
+    isPasswordValid(newPassword) &&
     passwordsMatch;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -84,6 +85,7 @@ export function ChangePasswordForm() {
           </label>
           <div className="relative">
             <Input
+              id="new-password"
               type={showNew ? "text" : "password"}
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -92,6 +94,7 @@ export function ChangePasswordForm() {
               required
               minLength={8}
               className="pr-10"
+              aria-describedby="password-rules"
             />
             <button
               type="button"
@@ -103,9 +106,7 @@ export function ChangePasswordForm() {
               {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Min. 8 characters with uppercase, lowercase, and a number.
-          </p>
+          <PasswordRules value={newPassword} id="password-rules" />
         </div>
 
         <div>

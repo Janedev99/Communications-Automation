@@ -178,6 +178,21 @@ class RejectDraftRequest(BaseModel):
     )
 
 
+class SendDraftRequest(BaseModel):
+    """
+    Optional request body for POST .../send.
+
+    idempotency_key: client-supplied key (e.g. UUID or nonce) used to deduplicate
+    retries. If omitted the server generates one. On retry with the same key the
+    server returns the previously recorded result without calling the email provider.
+    """
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Client-supplied idempotency key for safe retries.",
+    )
+
+
 # ── Assignment / Status change request schemas ────────────────────────────────
 
 class AssignRequest(BaseModel):

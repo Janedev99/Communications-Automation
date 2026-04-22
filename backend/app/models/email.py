@@ -59,6 +59,7 @@ class DraftStatus(str, enum.Enum):
     approved = "approved"     # Staff approved, ready to send
     rejected = "rejected"     # Staff rejected, needs revision
     sent = "sent"             # Successfully sent
+    send_failed = "send_failed"  # Provider call failed; idempotency key retained for retry
 
 
 class EmailThread(Base):

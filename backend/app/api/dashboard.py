@@ -92,22 +92,29 @@ def get_stats(
     ).all()
     escalations_by_severity = {row.severity.value: row.count for row in esc_severity_rows}
 
-    # ── Recent activity (last 24 hours) ────────────────────────────────────────
+    # ── Totals + last-24h counts in a single pass ──────────────────────────────
+    # Combine thread total, pending escalations, and 24h activity into fewer queries.
     since = datetime.now(timezone.utc) - timedelta(hours=24)
-    new_threads_24h = db.execute(
-        select(func.count(EmailThread.id)).where(EmailThread.created_at >= since)
-    ).scalar_one()
-    new_escalations_24h = db.execute(
-        select(func.count(Escalation.id)).where(Escalation.created_at >= since)
-    ).scalar_one()
 
-    # ── Totals ──────────────────────────────────────────────────────────────────
-    total_threads = db.execute(select(func.count(EmailThread.id))).scalar_one()
-    pending_escalations = db.execute(
-        select(func.count(Escalation.id)).where(
-            Escalation.status == EscalationStatus.pending
+    thread_summary = db.execute(
+        select(
+            func.count(EmailThread.id).label("total"),
+            func.count(EmailThread.id).filter(EmailThread.created_at >= since).label("last_24h"),
         )
-    ).scalar_one()
+    ).one()
+    total_threads = thread_summary.total
+    new_threads_24h = thread_summary.last_24h
+
+    esc_summary = db.execute(
+        select(
+            func.count(Escalation.id).filter(
+                Escalation.status == EscalationStatus.pending
+            ).label("pending"),
+            func.count(Escalation.id).filter(Escalation.created_at >= since).label("last_24h"),
+        )
+    ).one()
+    pending_escalations = esc_summary.pending
+    new_escalations_24h = esc_summary.last_24h
 
     # ── Phase 2: Draft stats ───────────────────────────────────────────────────
     drafts_pending_review = db.execute(

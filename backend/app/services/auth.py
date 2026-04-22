@@ -4,21 +4,31 @@ Authentication service.
 Handles:
   - Password hashing / verification (bcrypt)
   - User creation
-  - Session creation, validation, and revocation
+  - Session creation (with hashed opaque token), validation, and revocation
+  - Session rotation (invalidate all prior sessions on new login)
   - Role-based access checks
+  - CSRF token generation for the double-submit pattern
 """
+from __future__ import annotations
+
+import hashlib
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models.user import Session as DbSession, User, UserRole
+from app.utils.audit import log_action
 
 
 settings = get_settings()
+
+# Length of the opaque token issued to the browser cookie.
+_TOKEN_BYTES = 32
 
 
 # ── Password helpers ──────────────────────────────────────────────────────────
@@ -35,6 +45,18 @@ def verify_password(plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
+
+
+# ── Token helpers ─────────────────────────────────────────────────────────────
+
+def _hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of a session token."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def generate_csrf_token() -> str:
+    """Generate a cryptographically secure CSRF token for the double-submit pattern."""
+    return secrets.token_urlsafe(32)
 
 
 # ── User management ────────────────────────────────────────────────────────────
@@ -86,13 +108,51 @@ def create_session(
     *,
     ip_address: str | None = None,
     user_agent: str | None = None,
-) -> DbSession:
-    """Create and persist a new server-side session. Returns the session object."""
+) -> tuple[DbSession, str]:
+    """
+    Create and persist a new server-side session.
+
+    Invalidates all prior active sessions for the user (session rotation) to
+    prevent session fixation and limit the blast radius of a leaked cookie.
+
+    Returns (session_db_record, raw_token).
+    The raw_token MUST be set as the cookie value — it is never stored in DB.
+    """
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=settings.session_ttl_hours)
 
+    # ── Rotate: expire all active sessions for this user ──────────────────────
+    # This forces re-authentication if the user is already logged in elsewhere.
+    # We log it so admins can see concurrent-session activity in the audit log.
+    revoked = db.execute(
+        update(DbSession)
+        .where(
+            DbSession.user_id == user.id,
+            DbSession.is_active == True,  # noqa: E712
+            DbSession.expires_at > now,
+        )
+        .values(is_active=False, expires_at=now)
+        .returning(DbSession.id)
+    ).fetchall()
+
+    if revoked:
+        log_action(
+            db,
+            action="session_rotated",
+            entity_type="user",
+            entity_id=str(user.id),
+            user_id=user.id,
+            ip_address=ip_address,
+            details={"revoked_session_count": len(revoked)},
+        )
+
+    # ── Create new session ────────────────────────────────────────────────────
+    raw_token = secrets.token_urlsafe(_TOKEN_BYTES)
+    token_hash = _hash_token(raw_token)
+
     session = DbSession(
         user_id=user.id,
+        token_hash=token_hash,
         created_at=now,
         expires_at=expires_at,
         ip_address=ip_address,
@@ -101,20 +161,22 @@ def create_session(
     )
     db.add(session)
     db.flush()
-    return session
+    return session, raw_token
 
 
-def validate_session(db: Session, session_id: uuid.UUID) -> User | None:
+def validate_session(db: Session, raw_token: str) -> User | None:
     """
-    Validate a session cookie value.
+    Validate a session cookie value (raw opaque token).
 
-    Returns the associated User if the session is valid and not expired,
-    otherwise returns None.
+    Hashes the token and looks up the session record.
+    Returns the associated User if valid and not expired, otherwise None.
     """
+    token_hash = _hash_token(raw_token)
     now = datetime.now(timezone.utc)
+
     session = db.execute(
         select(DbSession).where(
-            DbSession.id == session_id,
+            DbSession.token_hash == token_hash,
             DbSession.is_active == True,  # noqa: E712
             DbSession.expires_at > now,
         )
@@ -130,10 +192,11 @@ def validate_session(db: Session, session_id: uuid.UUID) -> User | None:
     return user
 
 
-def logout(db: Session, session_id: uuid.UUID) -> None:
-    """Deactivate a session (soft-delete)."""
+def logout(db: Session, raw_token: str) -> None:
+    """Deactivate a session identified by its raw token (soft-delete)."""
+    token_hash = _hash_token(raw_token)
     session = db.execute(
-        select(DbSession).where(DbSession.id == session_id)
+        select(DbSession).where(DbSession.token_hash == token_hash)
     ).scalar_one_or_none()
     if session:
         session.is_active = False

@@ -7,6 +7,14 @@ GET  /auth/me               — return the current user's profile
 POST /auth/users            — create a new user (admin only)
 GET  /auth/users            — list all users (admin only)
 PUT  /auth/users/{user_id}  — update a user (admin only)
+
+Security model:
+  - Session cookie: HttpOnly, SameSite=None+Secure in production (cross-origin
+    Railway deploys), SameSite=Lax locally.
+  - CSRF defense: double-submit pattern. Login issues a non-HttpOnly `csrf_token`
+    cookie. All state-changing requests (POST/PUT/DELETE) must echo the same
+    value in X-CSRF-Token header. Validated by `require_csrf` dependency.
+    Login itself is exempt (no session yet).
 """
 from __future__ import annotations
 
@@ -15,7 +23,7 @@ import uuid
 from collections import defaultdict
 from typing import DefaultDict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_client_ip, get_current_user, require_admin
@@ -60,6 +68,56 @@ def _record_failed_attempt(ip: str) -> None:
 def _clear_failed_attempts(ip: str) -> None:
     _failed_attempts.pop(ip, None)
 
+
+# ── CSRF helper ───────────────────────────────────────────────────────────────
+
+def _set_session_cookie(response: Response, token: str, max_age: int) -> None:
+    """Set the HttpOnly session cookie with environment-appropriate SameSite."""
+    settings = get_settings()
+    if settings.is_production:
+        # SameSite=None is required for cross-origin cookie sending (Railway deploys).
+        # Secure=True is mandatory when SameSite=None per RFC 6265bis.
+        samesite = "none"
+        secure = True
+    else:
+        samesite = "lax"
+        secure = False
+
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        samesite=samesite,
+        secure=secure,
+        path="/",
+        max_age=max_age,
+    )
+
+
+def _set_csrf_cookie(response: Response, csrf_token: str, max_age: int) -> None:
+    """
+    Set the non-HttpOnly CSRF cookie so the browser JS can read and echo it.
+    SameSite mirrors the session cookie strategy.
+    """
+    settings = get_settings()
+    if settings.is_production:
+        samesite = "none"
+        secure = True
+    else:
+        samesite = "lax"
+        secure = False
+
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,  # Must be readable by JS for the double-submit pattern
+        samesite=samesite,
+        secure=secure,
+        path="/",
+        max_age=max_age,
+    )
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -71,7 +129,11 @@ def login(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     """
-    Authenticate with email + password. Sets an HttpOnly session cookie on success.
+    Authenticate with email + password.
+
+    On success:
+      - Sets an HttpOnly `session_token` cookie (the auth material).
+      - Sets a non-HttpOnly `csrf_token` cookie (for the double-submit CSRF pattern).
     """
     ip = get_client_ip(request)
 
@@ -89,7 +151,7 @@ def login(
     # Clear failed attempts on successful login
     _clear_failed_attempts(ip)
     user_agent = request.headers.get("User-Agent")
-    session = auth_service.create_session(
+    session, raw_token = auth_service.create_session(
         db, user, ip_address=ip, user_agent=user_agent
     )
 
@@ -103,17 +165,13 @@ def login(
         details={"email": user.email},
     )
 
-    # Set HttpOnly cookie — SameSite=Lax is safe for same-site requests
-    settings = get_settings()
-    response.set_cookie(
-        key="session_id",
-        value=str(session.id),
-        httponly=True,
-        samesite="lax",
-        secure=settings.is_production,
-        path="/",
-        max_age=int((session.expires_at - session.created_at).total_seconds()),
-    )
+    max_age = int((session.expires_at - session.created_at).total_seconds())
+
+    _set_session_cookie(response, raw_token, max_age)
+
+    # Issue CSRF token for the double-submit pattern
+    csrf_token = auth_service.generate_csrf_token()
+    _set_csrf_cookie(response, csrf_token, max_age)
 
     return LoginResponse(
         user=UserResponse.model_validate(user),
@@ -129,14 +187,10 @@ def logout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    """Invalidate the current session and clear the cookie."""
-    session_cookie = request.cookies.get("session_id")
-    if session_cookie:
-        try:
-            sid = uuid.UUID(session_cookie)
-            auth_service.logout(db, sid)
-        except ValueError:
-            pass
+    """Invalidate the current session and clear the cookies."""
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        auth_service.logout(db, session_token)
 
     log_action(
         db,
@@ -147,7 +201,8 @@ def logout(
         ip_address=get_client_ip(request),
     )
 
-    response.delete_cookie("session_id")
+    response.delete_cookie("session_token")
+    response.delete_cookie("csrf_token")
 
 
 @router.get("/me", response_model=MeResponse)

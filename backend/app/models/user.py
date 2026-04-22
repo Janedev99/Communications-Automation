@@ -75,6 +75,10 @@ class Session(Base):
         nullable=False,
         index=True,
     )
+    # token_hash: SHA-256 hex digest of the opaque token issued to the client.
+    # The raw token is stored only in the cookie — never in the DB.
+    # Added in migration 005; NOT NULL enforced there.
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -215,8 +215,9 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   };
 
   /**
-   * Confirm handler: reject current draft, then generate a new one.
-   * If reject fails, we surface an error and stop — do not generate.
+   * Confirm handler: atomically reject the current draft and generate a new one
+   * via the /regenerate endpoint (single request, distinct audit action).
+   * Falls back to generate-only when no draft exists yet.
    */
   const handleRegenerateConfirmed = async () => {
     if (!draft) {
@@ -227,25 +228,16 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     setShowRegenerateConfirm(false);
     setGenerating(true);
     try {
-      // Step 1: reject the existing draft (silent reason)
-      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/reject`, {
-        rejection_reason: "Regenerated",
-      });
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to reject draft before regenerating.");
-      setGenerating(false);
-      return;
-    }
-    // Step 2: generate fresh draft
-    try {
-      await api.post(`/api/v1/emails/${thread.id}/generate-draft`, {
+      // Single atomic endpoint: rejects current draft + generates fresh one.
+      // Audit action recorded as draft_regenerated (not draft.rejected + draft.manually_triggered).
+      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/regenerate`, {
         tone: selectedTone,
       });
       onDraftChange();
       toast.success("New draft generated.");
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Draft rejected but new generation failed. Please try again.");
-      onDraftChange(); // refresh so panel reflects rejected state
+      toast.error(err instanceof Error ? err.message : "Failed to regenerate draft. Please try again.");
+      onDraftChange(); // refresh so panel reflects current state
     } finally {
       setGenerating(false);
     }

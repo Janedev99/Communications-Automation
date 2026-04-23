@@ -19,7 +19,7 @@ import logging
 from datetime import datetime, timezone
 
 import anthropic
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import get_settings
 from app.models.email import DraftResponse, DraftStatus, EmailMessage, EmailStatus, EmailThread, MessageDirection
@@ -38,12 +38,15 @@ class _DraftResponse(BaseModel):
     Validates the structure of Claude's draft reply.
 
     Claude is instructed to return plain email body text, not JSON.
-    This model wraps that: we validate that the body is a non-empty string.
+    This model wraps that: we validate that the body is a sufficiently long string.
     subject_line and tone are optional metadata fields; if Claude includes them
     they are captured but not used (the body is the authoritative output).
+
+    min_length=20 guards against degenerate one-word or empty responses that would
+    reach a client; anything shorter is escalated for human review.
     """
     subject_line: str | None = None
-    body: str
+    body: str = Field(min_length=20)
     tone: str | None = None
 
 # ── Prompt templates ───────────────────────────────────────────────────────────
@@ -253,7 +256,10 @@ class DraftGeneratorService:
         prompt_tokens = response.usage.input_tokens if response.usage else None
         completion_tokens = response.usage.output_tokens if response.usage else None
 
-        # Validate the draft body using Pydantic — catches empty/whitespace-only output
+        # Validate the draft body using Pydantic — catches empty/too-short output.
+        # min_length=20 rejects degenerate responses that are too brief to be useful.
+        # On failure we raise so the caller records draft_generation_failed and
+        # escalates — a too-short draft should never reach a client.
         try:
             validated = _DraftResponse(body=raw_body)
             draft_body = validated.body
@@ -263,8 +269,9 @@ class DraftGeneratorService:
                 thread.id,
                 exc,
             )
-            # Fallback: use the raw content if body is present, else raise
-            draft_body = raw_body or ""
+            raise ValueError(
+                "draft too short, needs human review"
+            ) from exc
 
         # T2.3: Record token usage for budget tracking
         if response.usage:

@@ -26,6 +26,21 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
+
+
+def _parse_iso_utc(s: str) -> datetime:
+    """Parse an ISO 8601 datetime string and ensure it is UTC-aware.
+
+    Python's ``datetime.fromisoformat`` leaves naive datetimes (those without a
+    timezone offset) as-is.  A naive datetime compared against timezone-aware
+    column values in SQLAlchemy produces wrong query results on some backends.
+    This helper always returns an aware datetime in UTC so filter comparisons
+    are unambiguous.
+    """
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 from app.database import get_db
 from app.models.email import (
     DraftResponse,
@@ -317,7 +332,7 @@ def export_threads(
 
     if from_date:
         try:
-            from_dt = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc)
+            from_dt = _parse_iso_utc(from_date)
             query = query.where(EmailThread.created_at >= from_dt)
         except ValueError:
             raise HTTPException(
@@ -327,7 +342,7 @@ def export_threads(
 
     if to_date:
         try:
-            to_dt = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc)
+            to_dt = _parse_iso_utc(to_date)
             query = query.where(EmailThread.created_at <= to_dt)
         except ValueError:
             raise HTTPException(

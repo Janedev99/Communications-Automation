@@ -105,7 +105,7 @@ export interface EmailThreadListItem {
   updated_at: string;
   message_count: number;
   /** True when the last AI draft generation attempt failed for this thread */
-  draft_generation_failed?: boolean;
+  draft_generation_failed: boolean;
 }
 
 export interface BulkActionParams {
@@ -147,6 +147,10 @@ export interface DraftResponse {
   ai_completion_tokens: number | null;
   knowledge_entry_ids: string[] | null;
   rejection_reason: string | null;
+  /** Number of send attempts made for this draft (0 until first send attempt). */
+  send_attempts: number;
+  /** Server-assigned or client-supplied idempotency key for the last send attempt. */
+  send_idempotency_key: string | null;
 }
 
 // ── System Status ─────────────────────────────────────────────────────────────

@@ -208,7 +208,7 @@ def create_app() -> FastAPI:
     # Wildcards ("*") are silently rejected by browsers for credentialed requests.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins.split(","),
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-CSRF-Token"],

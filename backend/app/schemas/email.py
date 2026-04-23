@@ -188,8 +188,12 @@ class SendDraftRequest(BaseModel):
     """
     idempotency_key: str | None = Field(
         default=None,
-        max_length=128,
-        description="Client-supplied idempotency key for safe retries.",
+        pattern=r"^[A-Za-z0-9_\-]{1,128}$",
+        description=(
+            "Client-supplied idempotency key for safe retries. "
+            "Must contain only alphanumeric characters, hyphens, or underscores "
+            "(1–128 chars). Null bytes, unicode, and special characters are rejected."
+        ),
     )
 
 

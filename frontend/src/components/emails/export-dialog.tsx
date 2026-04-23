@@ -12,7 +12,18 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+
+const getBaseUrl = () =>
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+
+/** Read a named cookie value from document.cookie, or null if not found. */
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie
+    .split("; ")
+    .find((row) => row.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.split("=")[1]) : null;
+}
 
 interface ExportDialogProps {
   open: boolean;
@@ -33,25 +44,54 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
 
-      const data = await api.get<unknown[]>(`/api/v1/emails/export?${params.toString()}`);
+      // The export endpoint returns NDJSON (application/x-ndjson), not a JSON array.
+      // We must read it as text, split on newlines, and parse each line individually.
+      const url = `${getBaseUrl()}/api/v1/emails/export?${params.toString()}`;
+      const csrfToken = getCookie("csrf_token");
+      const res = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      });
 
-      if (!data || data.length === 0) {
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.detail) message = body.detail;
+        } catch { /* ignore */ }
+        throw new Error(message);
+      }
+
+      const text = await res.text();
+      const lines = text.split("\n").filter((l) => l.trim().length > 0);
+      const records = lines.map((line) => JSON.parse(line) as unknown);
+
+      if (records.length === 0) {
         toast.info("No threads found matching the selected filters.");
         return;
       }
 
-      // Trigger browser download as a JSON file
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
+      // Trigger browser download as a pretty-printed JSON file
+      const blob = new Blob([JSON.stringify(records, null, 2)], {
+        type: "application/json",
+      });
+      const downloadUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
+      a.href = downloadUrl;
       a.download = `email-export-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(downloadUrl);
 
-      toast.success(`Exported ${data.length} thread${data.length !== 1 ? "s" : ""}.`);
+      toast.success(
+        `Exported ${records.length} thread${records.length !== 1 ? "s" : ""}.`
+      );
       onOpenChange(false);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Export failed.");
@@ -110,6 +150,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
               />
             </div>
           </div>
+          <p className="text-xs text-gray-400">Times are in UTC.</p>
         </div>
 
         <DialogFooter>

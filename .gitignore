@@ -73,3 +73,6 @@ frontend/out/
 
 # Backend virtual env
 backend/venv/
+
+# Claude Code local agent state (not part of the product)
+.claude/

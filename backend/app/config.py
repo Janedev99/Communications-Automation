@@ -7,7 +7,7 @@ provided explicitly.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,22 +82,61 @@ class Settings(BaseSettings):
     admin_name: str = "Jane"
     admin_password: str = ""
 
+    # ── Trusted Proxies (rate-limiter / IP extraction) ────────────────────────
+    # Comma-separated list of trusted proxy IP addresses (e.g. Caddy, Railway LB).
+    # When non-empty, X-Forwarded-For is trusted ONLY if the direct connection IP
+    # matches one of these. Prevents rate-limit spoofing via header injection.
+    # Example: TRUSTED_PROXIES=10.0.0.1,172.31.0.1
+    trusted_proxies: str = ""
+
+    @property
+    def trusted_proxy_set(self) -> frozenset[str]:
+        """Return the set of trusted proxy IPs (parsed from TRUSTED_PROXIES)."""
+        return frozenset(
+            ip.strip() for ip in self.trusted_proxies.split(",") if ip.strip()
+        )
+
+    # ── AI Budget (T2.3) ──────────────────────────────────────────────────────
+    # Daily token budget across all Claude API calls. Set to 0 to disable.
+    daily_token_budget: int = 1_000_000
+
+    # ── Shadow Mode (T2.4) ────────────────────────────────────────────────────
+    # When True, emails are categorized but no AI drafts are auto-generated.
+    # Useful for initial deployment validation without sending AI-generated replies.
+    shadow_mode: bool = False
+
     # ── Computed helpers ──────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
 
-    @field_validator("app_secret_key")
-    @classmethod
-    def warn_weak_secret(cls, v: str) -> str:
-        if v == "dev-secret-key-replace-in-production":
+    @model_validator(mode="after")
+    def _validate_imap_consistency(self) -> "Settings":
+        """
+        T2.2: When email_provider is 'imap', IMAP and SMTP usernames must match.
+        SPF/DKIM alignment requires the sending address to match the envelope-from.
+        """
+        if self.email_provider == "imap":
+            if self.imap_username and self.smtp_username:
+                if self.imap_username.lower() != self.smtp_username.lower():
+                    raise ValueError(
+                        f"IMAP_USERNAME ({self.imap_username!r}) and "
+                        f"SMTP_USERNAME ({self.smtp_username!r}) must match when "
+                        "EMAIL_PROVIDER=imap. Mismatched usernames cause SPF/DKIM "
+                        "alignment failures."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_weak_secret(self) -> "Settings":
+        if self.app_secret_key == "dev-secret-key-replace-in-production":
             import warnings
             warnings.warn(
                 "APP_SECRET_KEY is using the insecure default. "
                 "Set a strong random value before deploying.",
                 stacklevel=2,
             )
-        return v
+        return self
 
 
 @lru_cache(maxsize=1)

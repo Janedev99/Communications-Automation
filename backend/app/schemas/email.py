@@ -66,6 +66,9 @@ class EmailThreadResponse(BaseModel):
     suggested_reply_tone: str | None = None
     assigned_to_id: uuid.UUID | None = None
     assigned_to_name: str | None = None
+    # T2.5: Draft generation failure tracking
+    draft_generation_failed: bool = False
+    draft_generation_failed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[EmailMessageResponse] = Field(default_factory=list)
@@ -85,6 +88,8 @@ class EmailThreadResponse(BaseModel):
             "suggested_reply_tone": thread.suggested_reply_tone,
             "assigned_to_id": thread.assigned_to_id,
             "assigned_to_name": thread.assigned_to.name if thread.assigned_to else None,
+            "draft_generation_failed": getattr(thread, "draft_generation_failed", False),
+            "draft_generation_failed_at": getattr(thread, "draft_generation_failed_at", None),
             "created_at": thread.created_at,
             "updated_at": thread.updated_at,
             "messages": thread.messages,
@@ -107,6 +112,8 @@ class EmailThreadListItem(BaseModel):
     suggested_reply_tone: str | None = None
     assigned_to_id: uuid.UUID | None = None
     assigned_to_name: str | None = None
+    # T2.5: Draft generation failure tracking
+    draft_generation_failed: bool = False
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
@@ -139,6 +146,9 @@ class DraftResponseResponse(BaseModel):
     ai_completion_tokens: int | None = None
     knowledge_entry_ids: list[Any] | None = None
     rejection_reason: str | None = None
+    # T1.12: Idempotent send tracking
+    send_attempts: int = 0
+    send_idempotency_key: str | None = None
 
 
 class UpdateDraftRequest(BaseModel):
@@ -165,6 +175,25 @@ class RejectDraftRequest(BaseModel):
         min_length=1,
         max_length=2000,
         description="Why this draft was rejected. Used to improve future prompts.",
+    )
+
+
+class SendDraftRequest(BaseModel):
+    """
+    Optional request body for POST .../send.
+
+    idempotency_key: client-supplied key (e.g. UUID or nonce) used to deduplicate
+    retries. If omitted the server generates one. On retry with the same key the
+    server returns the previously recorded result without calling the email provider.
+    """
+    idempotency_key: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_\-]{1,128}$",
+        description=(
+            "Client-supplied idempotency key for safe retries. "
+            "Must contain only alphanumeric characters, hyphens, or underscores "
+            "(1–128 chars). Null bytes, unicode, and special characters are rejected."
+        ),
     )
 
 

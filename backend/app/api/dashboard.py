@@ -1,9 +1,10 @@
 """
 Dashboard routes.
 
-GET /dashboard/stats         — high-level counts for the operations dashboard
-GET /dashboard/activity      — recent audit log activity feed (last 20 entries)
-GET /dashboard/health        — database + service health check (public)
+GET /dashboard/stats          — high-level counts for the operations dashboard
+GET /dashboard/activity       — recent audit log activity feed (last 20 entries)
+GET /dashboard/health         — database + service health check (public); T1.13
+GET /dashboard/system-status  — shadow mode + poller health + anthropic health; T2.4
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ from app.models.escalation import Escalation, EscalationSeverity, EscalationStat
 from app.models.user import User
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+# Thresholds for health indicators (T1.13)
+_POLLER_HEALTHY_THRESHOLD_MINUTES = 10
+_ANTHROPIC_HEALTHY_THRESHOLD_MINUTES = 15
 
 # ── Human-readable action descriptions ────────────────────────────────────────
 
@@ -87,22 +92,29 @@ def get_stats(
     ).all()
     escalations_by_severity = {row.severity.value: row.count for row in esc_severity_rows}
 
-    # ── Recent activity (last 24 hours) ────────────────────────────────────────
+    # ── Totals + last-24h counts in a single pass ──────────────────────────────
+    # Combine thread total, pending escalations, and 24h activity into fewer queries.
     since = datetime.now(timezone.utc) - timedelta(hours=24)
-    new_threads_24h = db.execute(
-        select(func.count(EmailThread.id)).where(EmailThread.created_at >= since)
-    ).scalar_one()
-    new_escalations_24h = db.execute(
-        select(func.count(Escalation.id)).where(Escalation.created_at >= since)
-    ).scalar_one()
 
-    # ── Totals ──────────────────────────────────────────────────────────────────
-    total_threads = db.execute(select(func.count(EmailThread.id))).scalar_one()
-    pending_escalations = db.execute(
-        select(func.count(Escalation.id)).where(
-            Escalation.status == EscalationStatus.pending
+    thread_summary = db.execute(
+        select(
+            func.count(EmailThread.id).label("total"),
+            func.count(EmailThread.id).filter(EmailThread.created_at >= since).label("last_24h"),
         )
-    ).scalar_one()
+    ).one()
+    total_threads = thread_summary.total
+    new_threads_24h = thread_summary.last_24h
+
+    esc_summary = db.execute(
+        select(
+            func.count(Escalation.id).filter(
+                Escalation.status == EscalationStatus.pending
+            ).label("pending"),
+            func.count(Escalation.id).filter(Escalation.created_at >= since).label("last_24h"),
+        )
+    ).one()
+    pending_escalations = esc_summary.pending
+    new_escalations_24h = esc_summary.last_24h
 
     # ── Phase 2: Draft stats ───────────────────────────────────────────────────
     drafts_pending_review = db.execute(
@@ -221,11 +233,81 @@ def get_activity(
 def health_check() -> dict[str, Any]:
     """
     Public health check endpoint. Does not require authentication.
-    Returns database reachability and app version.
+
+    T1.13: Returns database reachability, poller health, and Anthropic reachability.
+      - poller_healthy: True if last_successful_poll_at < 10 min ago
+      - anthropic_reachable: True if last successful Anthropic call < 15 min ago
     """
+    from app.services.email_intake import last_successful_poll_at, last_successful_anthropic_at
+
     db_ok = check_db_connection()
+    now = datetime.now(timezone.utc)
+
+    poller_healthy: bool
+    if last_successful_poll_at is None:
+        poller_healthy = False
+    else:
+        age_minutes = (now - last_successful_poll_at).total_seconds() / 60
+        poller_healthy = age_minutes < _POLLER_HEALTHY_THRESHOLD_MINUTES
+
+    anthropic_reachable: bool
+    if last_successful_anthropic_at is None:
+        # If we've never made an Anthropic call yet, don't flag as unreachable
+        # (system may have just started with no emails yet)
+        anthropic_reachable = True
+    else:
+        age_minutes = (now - last_successful_anthropic_at).total_seconds() / 60
+        anthropic_reachable = age_minutes < _ANTHROPIC_HEALTHY_THRESHOLD_MINUTES
+
+    overall = db_ok and poller_healthy
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": "ok" if overall else "degraded",
         "database": "connected" if db_ok else "unreachable",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "poller_healthy": poller_healthy,
+        "anthropic_reachable": anthropic_reachable,
+        "last_successful_poll_at": last_successful_poll_at.isoformat() if last_successful_poll_at else None,
+        "last_successful_anthropic_at": last_successful_anthropic_at.isoformat() if last_successful_anthropic_at else None,
+        "timestamp": now.isoformat(),
+    }
+
+
+@router.get("/system-status")
+def system_status(
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    T2.4: Authenticated system status endpoint.
+
+    Returns:
+      - shadow_mode: whether auto-draft generation is disabled
+      - last_successful_poll_at: ISO timestamp or null
+      - poller_healthy: bool
+      - anthropic_reachable: bool
+    """
+    from app.config import get_settings
+    from app.services.email_intake import last_successful_poll_at, last_successful_anthropic_at
+
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+
+    poller_healthy: bool
+    if last_successful_poll_at is None:
+        poller_healthy = False
+    else:
+        age_minutes = (now - last_successful_poll_at).total_seconds() / 60
+        poller_healthy = age_minutes < _POLLER_HEALTHY_THRESHOLD_MINUTES
+
+    anthropic_reachable: bool
+    if last_successful_anthropic_at is None:
+        anthropic_reachable = True
+    else:
+        age_minutes = (now - last_successful_anthropic_at).total_seconds() / 60
+        anthropic_reachable = age_minutes < _ANTHROPIC_HEALTHY_THRESHOLD_MINUTES
+
+    return {
+        "shadow_mode": settings.shadow_mode,
+        "last_successful_poll_at": last_successful_poll_at.isoformat() if last_successful_poll_at else None,
+        "poller_healthy": poller_healthy,
+        "anthropic_reachable": anthropic_reachable,
+        "timestamp": now.isoformat(),
     }

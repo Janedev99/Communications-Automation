@@ -17,3 +17,4 @@ from app.models.email import (  # noqa: F401
 )
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
+from app.models.ai_budget import AIBudgetUsage  # noqa: F401

@@ -26,13 +26,17 @@ def _build_engine():
         "pool_timeout": 30,
         "pool_recycle": 1800,    # Recycle connections every 30 min
     }
+    # SQLite does not support connection pool kwargs — strip them when using SQLite
+    if settings.database_url.startswith("sqlite"):
+        kwargs = {"connect_args": {"check_same_thread": False}}
     engine = create_engine(settings.database_url, **kwargs)
 
-    # Ensure UTC timezone for every new connection
-    @event.listens_for(engine, "connect")
-    def set_timezone(dbapi_conn, _connection_record):
-        with dbapi_conn.cursor() as cursor:
-            cursor.execute("SET TIME ZONE 'UTC'")
+    # Ensure UTC timezone for every new PostgreSQL connection (SQLite skips this)
+    if not settings.database_url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def set_timezone(dbapi_conn, _connection_record):
+            with dbapi_conn.cursor() as cursor:
+                cursor.execute("SET TIME ZONE 'UTC'")
 
     return engine
 

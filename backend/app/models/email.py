@@ -59,6 +59,7 @@ class DraftStatus(str, enum.Enum):
     approved = "approved"     # Staff approved, ready to send
     rejected = "rejected"     # Staff rejected, needs revision
     sent = "sent"             # Successfully sent
+    send_failed = "send_failed"  # Provider call failed; idempotency key retained for retry
 
 
 class EmailThread(Base):
@@ -96,6 +97,14 @@ class EmailThread(Base):
         nullable=True,
         index=True,
     )
+    # T2.5: Draft generation failure tracking
+    draft_generation_failed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    draft_generation_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -212,6 +221,9 @@ class DraftResponse(Base):
     ai_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     knowledge_entry_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # T1.12: Idempotent send tracking — prevent double-send on retry
+    send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    send_idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Relationships
     thread: Mapped["EmailThread"] = relationship("EmailThread", back_populates="drafts")

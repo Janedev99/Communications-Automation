@@ -101,9 +101,16 @@ class EmailProvider(ABC):
         body_text: str,
         body_html: str | None = None,
         reply_to_message_id: str | None = None,
+        references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
-        """Send an outbound email. Returns the Message-ID of the sent message."""
+        """
+        Send an outbound email. Returns the Message-ID of the sent message.
+
+        reply_to_message_id: the Message-ID of the message being replied to
+        references_header:   full References header value (parent References + parent ID)
+                             preserving the full thread ancestry for email clients (T2.1)
+        """
         ...
 
     def disconnect(self) -> None:
@@ -248,6 +255,7 @@ class MSGraphProvider(EmailProvider):
         body_text: str,
         body_html: str | None = None,
         reply_to_message_id: str | None = None,
+        references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
         import uuid as _uuid
@@ -273,10 +281,15 @@ class MSGraphProvider(EmailProvider):
             "saveToSentItems": True,
         }
         if reply_to_message_id:
-            payload["message"]["internetMessageHeaders"].extend([
-                {"name": "In-Reply-To", "value": reply_to_message_id},
-                {"name": "References", "value": reply_to_message_id},
-            ])
+            payload["message"]["internetMessageHeaders"].append(
+                {"name": "In-Reply-To", "value": reply_to_message_id}
+            )
+        # T2.1: Set full References chain for proper email thread display
+        ref_value = references_header or reply_to_message_id
+        if ref_value:
+            payload["message"]["internetMessageHeaders"].append(
+                {"name": "References", "value": ref_value}
+            )
 
         try:
             resp = self._client.post(url, headers=self._headers(), json=payload)
@@ -460,6 +473,7 @@ class IMAPProvider(EmailProvider):
         body_text: str,
         body_html: str | None = None,
         reply_to_message_id: str | None = None,
+        references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
         import uuid as _uuid
@@ -477,7 +491,10 @@ class IMAPProvider(EmailProvider):
         msg["Message-ID"] = message_id
         if reply_to_message_id:
             msg["In-Reply-To"] = reply_to_message_id
-            msg["References"] = reply_to_message_id
+        # T2.1: Set full References chain for proper email thread display in clients
+        ref_value = references_header or reply_to_message_id
+        if ref_value:
+            msg["References"] = ref_value
 
         if body_html:
             assert isinstance(msg, MIMEMultipart)

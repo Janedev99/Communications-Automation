@@ -1,7 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Check, X, Send, FileEdit, Loader2, Lock, LayoutTemplate, RefreshCw } from "lucide-react";
+import {
+  Check,
+  X,
+  Send,
+  FileEdit,
+  Loader2,
+  Lock,
+  LayoutTemplate,
+  RefreshCw,
+  AlertTriangle,
+  CheckCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +28,8 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { TemplatePickerDialog } from "./template-picker-dialog";
 import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants";
 import { api } from "@/lib/api";
-import { cn, formatDate } from "@/lib/utils";
+import { ApiError } from "@/lib/types";
+import { cn, formatDate, relativeTime } from "@/lib/utils";
 import type { DraftResponse, EmailThread, KnowledgeEntry } from "@/lib/types";
 
 interface DraftPanelProps {
@@ -27,6 +39,20 @@ interface DraftPanelProps {
 }
 
 type AutoSaveState = "saved" | "saving" | "unsaved" | "idle";
+
+/**
+ * State machine for the send flow:
+ *  idle → pending_send (10s countdown)
+ *       → sending (network request in flight)
+ *       → sent | error | cancelled (terminal or recoverable)
+ */
+type SendState =
+  | { phase: "idle" }
+  | { phase: "pending_send"; countdown: number }
+  | { phase: "sending" }
+  | { phase: "sent"; sentAt: string }
+  | { phase: "error"; message: string }
+  | { phase: "cancelled" };
 
 const TONE_OPTIONS = [
   { value: "professional", label: "Professional" },
@@ -40,10 +66,11 @@ const UNDO_COUNTDOWN_SECONDS = 10;
 export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const [generating, setGenerating] = useState(false);
   const [approving, setApproving] = useState(false);
-  const [sending, setSending] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
+  // Regenerate confirm dialog (Item 3)
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [editedText, setEditedText] = useState(draft?.body_text ?? "");
@@ -53,18 +80,21 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const [selectedTone, setSelectedTone] = useState<string>(
     thread.suggested_reply_tone ?? "professional"
   );
-  // Undo-send countdown
-  const [undoCountdown, setUndoCountdown] = useState<number | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sendCancelledRef = useRef(false);
 
+  // Send state machine (Item 2)
+  const [sendState, setSendState] = useState<SendState>({ phase: "idle" });
+  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref to stable idempotency key per send attempt
+  const sendIdempotencyKeyRef = useRef<string>("");
 
   // Clean up timers on unmount
   useEffect(() => {
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-      if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (sendIntervalRef.current) clearInterval(sendIntervalRef.current);
     };
   }, []);
 
@@ -72,12 +102,36 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   useEffect(() => {
     setEditedText(draft?.body_text ?? "");
     setAutoSaveState("idle");
+    setSendState({ phase: "idle" });
   }, [draft?.id, draft?.body_text]);
 
   // Sync tone from thread whenever thread updates
   useEffect(() => {
     setSelectedTone(thread.suggested_reply_tone ?? "professional");
   }, [thread.suggested_reply_tone]);
+
+  // Focus Cancel button when pending_send banner appears (a11y)
+  const cancelSendBtnRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (sendState.phase === "pending_send") {
+      cancelSendBtnRef.current?.focus();
+    }
+  }, [sendState.phase]);
+
+  // Escape key triggers Cancel during countdown (a11y)
+  useEffect(() => {
+    if (sendState.phase !== "pending_send") return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelSend();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+    // cancelSend is stable — declared below with useCallback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendState.phase]);
 
   const handleTextChange = useCallback(
     (value: string) => {
@@ -147,79 +201,107 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     }
   };
 
-  // Performs the actual send after the undo countdown expires
-  const executeSend = async () => {
-    if (!draft) return;
-    setSending(true);
-    try {
-      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/send`);
-      onDraftChange();
-      toast.success("Email sent successfully.");
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to send email.");
-    } finally {
-      setSending(false);
+  /**
+   * Item 3 — Regenerate with confirm dialog.
+   * When a draft exists (pending|edited|approved), shows a confirm dialog.
+   * If no draft, proceeds directly.
+   */
+  const handleRegenerateClick = () => {
+    if (draft && draft.status !== "rejected" && draft.status !== "sent") {
+      setShowRegenerateConfirm(true);
+    } else {
+      handleGenerate();
     }
   };
 
-  // Starts the 10-second undo countdown after the confirm dialog is accepted
-  const handleSendWithUndo = () => {
-    setShowSendConfirm(false);
-    sendCancelledRef.current = false;
-    setUndoCountdown(UNDO_COUNTDOWN_SECONDS);
-
-    let remaining = UNDO_COUNTDOWN_SECONDS;
-
-    toast.loading(`Sending in ${remaining}s…`, {
-      id: "undo-send",
-      action: {
-        label: "Undo",
-        onClick: () => {
-          sendCancelledRef.current = true;
-          if (undoTimerRef.current) clearInterval(undoTimerRef.current);
-          setUndoCountdown(null);
-          toast.dismiss("undo-send");
-          toast.info("Send cancelled.");
-        },
-      },
-      duration: (UNDO_COUNTDOWN_SECONDS + 1) * 1000,
-    });
-
-    undoTimerRef.current = setInterval(() => {
-      remaining -= 1;
-      if (sendCancelledRef.current) {
-        clearInterval(undoTimerRef.current!);
-        setUndoCountdown(null);
-        return;
-      }
-      if (remaining <= 0) {
-        clearInterval(undoTimerRef.current!);
-        setUndoCountdown(null);
-        toast.dismiss("undo-send");
-        if (!sendCancelledRef.current) {
-          executeSend();
-        }
-      } else {
-        setUndoCountdown(remaining);
-        toast.loading(`Sending in ${remaining}s…`, {
-          id: "undo-send",
-          action: {
-            label: "Undo",
-            onClick: () => {
-              sendCancelledRef.current = true;
-              if (undoTimerRef.current) clearInterval(undoTimerRef.current);
-              setUndoCountdown(null);
-              toast.dismiss("undo-send");
-              toast.info("Send cancelled.");
-            },
-          },
-          duration: (remaining + 1) * 1000,
-        });
-      }
-    }, 1000);
+  /**
+   * Confirm handler: atomically reject the current draft and generate a new one
+   * via the /regenerate endpoint (single request, distinct audit action).
+   * Falls back to generate-only when no draft exists yet.
+   */
+  const handleRegenerateConfirmed = async () => {
+    if (!draft) {
+      setShowRegenerateConfirm(false);
+      await handleGenerate();
+      return;
+    }
+    setShowRegenerateConfirm(false);
+    setGenerating(true);
+    try {
+      // Single atomic endpoint: rejects current draft + generates fresh one.
+      // Audit action recorded as draft_regenerated (not draft.rejected + draft.manually_triggered).
+      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/regenerate`, {
+        tone: selectedTone,
+      });
+      onDraftChange();
+      toast.success("New draft generated.");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to regenerate draft. Please try again.");
+      onDraftChange(); // refresh so panel reflects current state
+    } finally {
+      setGenerating(false);
+    }
   };
 
-  // Handle template selection — creates a manual draft via POST /emails/{id}/drafts
+  // ── Send state machine (Item 2) ────────────────────────────────────────────
+
+  const clearSendTimers = useCallback(() => {
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    if (sendIntervalRef.current) clearInterval(sendIntervalRef.current);
+  }, []);
+
+  const cancelSend = useCallback(() => {
+    clearSendTimers();
+    setSendState({ phase: "cancelled" });
+    // Restore to idle briefly so user can send again
+    setTimeout(() => setSendState({ phase: "idle" }), 0);
+  }, [clearSendTimers]);
+
+  const executeSend = useCallback(async () => {
+    if (!draft) return;
+    setSendState({ phase: "sending" });
+    try {
+      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/send`, {
+        idempotency_key: sendIdempotencyKeyRef.current,
+      });
+      const sentAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setSendState({ phase: "sent", sentAt });
+      onDraftChange();
+    } catch (err: unknown) {
+      // 409 = already sent — treat as success per backend idempotency contract
+      if (err instanceof ApiError && err.status === 409) {
+        toast.info("Email was already sent.");
+        setSendState({ phase: "sent", sentAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+        onDraftChange();
+        return;
+      }
+      const message = err instanceof Error ? err.message : "Failed to send email.";
+      setSendState({ phase: "error", message });
+    }
+  }, [draft, thread.id, onDraftChange]);
+
+  /** Called when user confirms the Send confirm dialog */
+  const handleSendWithCountdown = useCallback(() => {
+    setShowSendConfirm(false);
+    // Fresh idempotency key per send attempt
+    sendIdempotencyKeyRef.current = `${draft?.id ?? "unknown"}-${Date.now()}`;
+
+    let remaining = UNDO_COUNTDOWN_SECONDS;
+    setSendState({ phase: "pending_send", countdown: remaining });
+
+    sendIntervalRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearSendTimers();
+        executeSend();
+      } else {
+        setSendState({ phase: "pending_send", countdown: remaining });
+      }
+    }, 1000);
+  }, [draft?.id, clearSendTimers, executeSend]);
+
+  // ── Template handling ──────────────────────────────────────────────────────
+
   const handleTemplateSelect = async (template: KnowledgeEntry) => {
     setCreatingFromTemplate(true);
     try {
@@ -267,14 +349,75 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
   // ── State A: No draft ──────────────────────────────────────────────────────
   if (!draft) {
+    // Item 1: show draft-failed banner when the thread flags a previous failure
+    const hasDraftFailure = thread.draft_generation_failed;
+
     return (
       <div className="bg-white flex flex-col h-full">
         {panelHeader}
         <div className="flex flex-col items-center justify-center flex-1 px-6 text-center gap-4">
-          <FileEdit className="w-10 h-10 text-gray-300" strokeWidth={1.5} />
-          <p className="text-sm text-gray-500">
-            No draft has been generated for this thread yet.
-          </p>
+
+          {/* Item 1 — Draft-generation-failed banner */}
+          {hasDraftFailure ? (
+            <div
+              role="alert"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3 w-full text-left"
+            >
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-amber-900 text-sm">AI draft failed to generate</p>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  {thread.draft_generation_failed_at
+                    ? `Last attempted ${relativeTime(thread.draft_generation_failed_at)}.`
+                    : "The last generation attempt failed."}{" "}
+                  You can retry or write a response manually.
+                </p>
+                <div className="flex items-center gap-2 mt-3">
+                  <Button
+                    size="sm"
+                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={handleGenerate}
+                    disabled={generating}
+                    aria-label="Retry AI draft generation"
+                  >
+                    {generating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      "Retry draft"
+                    )}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-amber-700 hover:text-amber-900 hover:bg-amber-100"
+                    onClick={async () => {
+                      // Create an empty manual draft so the editor opens
+                      try {
+                        await api.post(`/api/v1/emails/${thread.id}/drafts`, { body_text: "" });
+                        onDraftChange();
+                      } catch (err: unknown) {
+                        toast.error(err instanceof Error ? err.message : "Could not create draft.");
+                      }
+                    }}
+                    disabled={generating}
+                    aria-label="Write a manual response"
+                  >
+                    Write manually
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <FileEdit className="w-10 h-10 text-gray-300" strokeWidth={1.5} />
+              <p className="text-sm text-gray-500">
+                No draft has been generated for this thread yet.
+              </p>
+            </>
+          )}
 
           {/* Tone selector */}
           <div className="w-full max-w-[220px]">
@@ -295,40 +438,42 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             </Select>
           </div>
 
-          <div className="flex flex-col gap-2 w-full max-w-[220px]">
-            <Button
-              className="bg-brand-500 hover:bg-brand-600 text-white w-full"
-              onClick={handleGenerate}
-              disabled={generating || creatingFromTemplate}
-            >
-              {generating ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                "Generate AI Draft"
-              )}
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => setShowTemplatePicker(true)}
-              disabled={generating || creatingFromTemplate}
-            >
-              {creatingFromTemplate ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Applying...
-                </>
-              ) : (
-                <>
-                  <LayoutTemplate className="w-4 h-4 mr-2" />
-                  Use Template
-                </>
-              )}
-            </Button>
-          </div>
+          {!hasDraftFailure && (
+            <div className="flex flex-col gap-2 w-full max-w-[220px]">
+              <Button
+                className="bg-brand-500 hover:bg-brand-600 text-white w-full"
+                onClick={handleGenerate}
+                disabled={generating || creatingFromTemplate}
+              >
+                {generating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  "Generate AI Draft"
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => setShowTemplatePicker(true)}
+                disabled={generating || creatingFromTemplate}
+              >
+                {creatingFromTemplate ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Applying...
+                  </>
+                ) : (
+                  <>
+                    <LayoutTemplate className="w-4 h-4 mr-2" />
+                    Use Template
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
         </div>
 
         <TemplatePickerDialog
@@ -378,6 +523,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             </Select>
           </div>
           <div className="flex gap-2">
+            {/* No confirm needed in rejected state — Regenerate proceeds directly */}
             <Button
               className="bg-brand-500 hover:bg-brand-600 text-white flex-1"
               onClick={handleGenerate}
@@ -437,10 +583,17 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     );
   }
 
-  // ── State B: Draft pending or edited (active editing) ─────────────────────
+  // ── State B: Draft pending, edited, or approved (active editing) ───────────
   const displayText = showOriginal
     ? (draft.original_body_text ?? draft.body_text)
     : editedText;
+
+  // Determine if the send-countdown banner is currently active
+  const inSendFlow =
+    sendState.phase === "pending_send" ||
+    sendState.phase === "sending" ||
+    sendState.phase === "sent" ||
+    sendState.phase === "error";
 
   return (
     <div className="bg-white flex flex-col h-full">
@@ -504,64 +657,156 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       )}
 
       {/* Action buttons */}
-      <div className="px-5 py-4 border-t border-gray-200 flex items-center gap-2 flex-shrink-0">
-        {draft.status !== "approved" && (
+      <div className="px-5 py-4 border-t border-gray-200 flex-shrink-0">
+        {/* Item 2 — In-panel send countdown / send state banners */}
+        {draft.status === "approved" && inSendFlow ? (
           <>
-            <Button
-              onClick={handleApprove}
-              disabled={approving}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white"
-              data-shortcut="approve"
-            >
-              <Check className="w-4 h-4 mr-1.5" />
-              {approving ? "Approving..." : "Approve"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowRejectionDialog(true)}
-              disabled={rejecting}
-              className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
-              data-shortcut="reject"
-            >
-              <X className="w-4 h-4 mr-1.5" />
-              Reject
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleGenerate}
-              disabled={generating}
-              title="Regenerate draft with AI"
-            >
-              <RefreshCw className="w-4 h-4 mr-1.5" />
-              {generating ? "Regenerating..." : "Regenerate"}
-            </Button>
-          </>
-        )}
+            {sendState.phase === "pending_send" && (
+              <div
+                aria-live="polite"
+                aria-label={`Sending in ${sendState.countdown} seconds`}
+                className="flex items-center justify-between gap-3 w-full bg-brand-50 border border-brand-200 rounded-md px-4 py-2.5"
+              >
+                <div className="flex items-center gap-3">
+                  {/* Countdown progress ring (SVG) */}
+                  <div className="relative w-8 h-8 flex-shrink-0">
+                    <svg className="w-8 h-8 -rotate-90" viewBox="0 0 32 32" aria-hidden="true">
+                      <circle
+                        cx="16" cy="16" r="12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        className="text-brand-200"
+                      />
+                      <circle
+                        cx="16" cy="16" r="12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        className="text-brand-500"
+                        strokeDasharray={`${2 * Math.PI * 12}`}
+                        strokeDashoffset={`${2 * Math.PI * 12 * (1 - sendState.countdown / UNDO_COUNTDOWN_SECONDS)}`}
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-brand-600">
+                      {sendState.countdown}
+                    </span>
+                  </div>
+                  <span className="text-sm font-medium text-gray-700">
+                    Sending in {sendState.countdown}s…
+                  </span>
+                </div>
+                <Button
+                  ref={cancelSendBtnRef}
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelSend}
+                  aria-label="Cancel send"
+                >
+                  Cancel send
+                </Button>
+              </div>
+            )}
 
-        {draft.status === "approved" && (
-          <>
-            <Button
-              onClick={() => setShowSendConfirm(true)}
-              disabled={sending || undoCountdown !== null || generating}
-              className="bg-brand-500 hover:bg-brand-600 text-white"
-            >
-              <Send className="w-4 h-4 mr-1.5" />
-              {undoCountdown !== null
-                ? `Sending in ${undoCountdown}s…`
-                : sending
-                ? "Sending..."
-                : "Send"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleGenerate}
-              disabled={generating || sending}
-              title="Reject this draft and generate a new one with AI"
-            >
-              <RefreshCw className="w-4 h-4 mr-1.5" />
-              {generating ? "Regenerating..." : "Regenerate"}
-            </Button>
+            {sendState.phase === "sending" && (
+              <div className="flex items-center gap-2 w-full bg-gray-50 border border-gray-200 rounded-md px-4 py-2.5">
+                <Loader2 className="w-4 h-4 animate-spin text-brand-500" />
+                <span className="text-sm text-gray-600">Sending…</span>
+              </div>
+            )}
+
+            {sendState.phase === "sent" && (
+              <div className="flex items-center gap-2 w-full bg-emerald-50 border border-emerald-200 rounded-md px-4 py-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600" />
+                <span className="text-sm font-medium text-emerald-700">
+                  Sent at {sendState.sentAt}
+                </span>
+              </div>
+            )}
+
+            {sendState.phase === "error" && (
+              <div className="flex items-center justify-between gap-3 w-full bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <X className="w-4 h-4 text-red-500 flex-shrink-0" />
+                  <span className="text-sm text-red-700 truncate">{sendState.message}</span>
+                  {draft.send_attempts > 1 && (
+                    <span className="flex-shrink-0 text-xs font-medium text-red-500 bg-red-100 rounded px-1.5 py-0.5">
+                      Attempt {draft.send_attempts}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-red-300 text-red-600 hover:bg-red-100 flex-shrink-0"
+                  onClick={executeSend}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
           </>
+        ) : (
+          /* Normal action buttons when not in send flow */
+          <div className="flex items-center gap-2">
+            {draft.status !== "approved" && (
+              <>
+                <Button
+                  onClick={handleApprove}
+                  disabled={approving}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  data-shortcut="approve"
+                >
+                  <Check className="w-4 h-4 mr-1.5" />
+                  {approving ? "Approving..." : "Approve"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowRejectionDialog(true)}
+                  disabled={rejecting}
+                  className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  data-shortcut="reject"
+                >
+                  <X className="w-4 h-4 mr-1.5" />
+                  Reject
+                </Button>
+                {/* Item 3 — Regenerate triggers confirm dialog when draft exists */}
+                <Button
+                  variant="outline"
+                  onClick={handleRegenerateClick}
+                  disabled={generating}
+                  title="Regenerate draft with AI"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                  {generating ? "Regenerating..." : "Regenerate"}
+                </Button>
+              </>
+            )}
+
+            {draft.status === "approved" && (
+              <>
+                <Button
+                  onClick={() => setShowSendConfirm(true)}
+                  disabled={sendState.phase !== "idle"}
+                  className="bg-brand-500 hover:bg-brand-600 text-white"
+                >
+                  <Send className="w-4 h-4 mr-1.5" />
+                  Send
+                </Button>
+                {/* Item 3 — Regenerate from approved also needs confirm */}
+                <Button
+                  variant="outline"
+                  onClick={handleRegenerateClick}
+                  disabled={generating}
+                  title="Reject this draft and generate a new one with AI"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                  {generating ? "Regenerating..." : "Regenerate"}
+                </Button>
+              </>
+            )}
+          </div>
         )}
       </div>
 
@@ -572,15 +817,27 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         loading={rejecting}
       />
 
+      {/* Item 3 — Regenerate confirm dialog */}
+      <ConfirmDialog
+        open={showRegenerateConfirm}
+        onOpenChange={setShowRegenerateConfirm}
+        title="Discard current draft and regenerate?"
+        description="This will reject the current draft and ask the AI to generate a new one. Any edits you've made will be lost."
+        confirmLabel="Discard & regenerate"
+        confirmVariant="destructive"
+        onConfirm={handleRegenerateConfirmed}
+        loading={generating}
+      />
+
+      {/* Send confirm dialog */}
       <ConfirmDialog
         open={showSendConfirm}
         onOpenChange={setShowSendConfirm}
         title="Send this email?"
-        description={`Send this email to ${thread.client_email}? You'll have 10 seconds to undo.`}
+        description={`Send this email to ${thread.client_email}? You'll have 10 seconds to cancel.`}
         confirmLabel="Send"
         confirmVariant="default"
-        onConfirm={handleSendWithUndo}
-        loading={sending}
+        onConfirm={handleSendWithCountdown}
       />
     </div>
   );

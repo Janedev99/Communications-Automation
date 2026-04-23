@@ -727,14 +727,19 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
             {sendState.phase === "error" && (
               <div className="flex items-center justify-between gap-3 w-full bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <X className="w-4 h-4 text-red-500 flex-shrink-0" />
-                  <span className="text-sm text-red-700">{sendState.message}</span>
+                  <span className="text-sm text-red-700 truncate">{sendState.message}</span>
+                  {draft.send_attempts > 1 && (
+                    <span className="flex-shrink-0 text-xs font-medium text-red-500 bg-red-100 rounded px-1.5 py-0.5">
+                      Attempt {draft.send_attempts}
+                    </span>
+                  )}
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="border-red-300 text-red-600 hover:bg-red-100"
+                  className="border-red-300 text-red-600 hover:bg-red-100 flex-shrink-0"
                   onClick={executeSend}
                 >
                   Retry

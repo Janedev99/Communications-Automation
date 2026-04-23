@@ -454,7 +454,8 @@ def send_draft(
     if not reply_subject or reply_subject.strip().lower() == "re:":
         reply_subject = "Re: (no subject)"
 
-    app_settings = _get_settings()
+    from app.config import get_settings as _get_settings_fn
+    app_settings = _get_settings_fn()
     from_address = app_settings.msgraph_mailbox or app_settings.firm_owner_email
     firm_domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
     outbound_message_id = f"<draft-{draft.id}@{firm_domain}>"
@@ -545,12 +546,6 @@ def send_draft(
     )
 
     return DraftResponseResponse.model_validate(draft)
-
-
-def _get_settings():
-    """Lazy settings access to avoid module-level import during startup."""
-    from app.config import get_settings
-    return get_settings()
 
 
 # ── Regenerate ────────────────────────────────────────────────────────────────

@@ -280,6 +280,19 @@ See `.env.example` for the full list with descriptions.
 
 ---
 
+## Deployment Notes
+
+### Single-worker requirement
+
+The email poller runs inside the application process (started by `app.main:app`'s lifespan handler). **You must deploy with a single worker.** Running multiple Uvicorn/Gunicorn workers will cause each worker to start its own polling loop, resulting in duplicate email processing and concurrent DB writes for the same messages.
+
+- Correct: `uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 1`
+- Wrong: `uvicorn app.main:app --workers 4` or Gunicorn with `--workers 4`
+
+If you need to scale horizontally in the future, extract the poller into a dedicated process (e.g., a separate Celery worker or a standalone script) and ensure only one instance runs at a time via a distributed lock or a single-instance queue.
+
+---
+
 ## License
 
 Proprietary. Built for Schiller CPA.

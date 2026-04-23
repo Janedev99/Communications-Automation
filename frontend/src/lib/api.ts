@@ -62,6 +62,23 @@ async function request<T>(
     throw new ApiError(401, "Unauthorized");
   }
 
+  if (res.status === 403) {
+    // Force-logout on CSRF token mismatch — stale tab or session rotation
+    let isCsrfError = false;
+    try {
+      const body = await res.clone().json();
+      if (typeof body?.detail === "string" && body.detail.toLowerCase().includes("csrf")) {
+        isCsrfError = true;
+      }
+    } catch {
+      // ignore parse errors — treat non-CSRF 403 as normal error below
+    }
+    if (isCsrfError && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+      throw new ApiError(403, "Session expired. Please log in again.");
+    }
+  }
+
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {

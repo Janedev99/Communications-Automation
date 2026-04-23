@@ -349,3 +349,46 @@ def test_client_idempotency_key_prevents_duplicate_send(
     assert len(mock_email_provider.sent_emails) == 1, (
         "Provider must be called exactly once when idempotency key is reused"
     )
+
+
+# ===========================================================================
+# 8. Malformed idempotency key is rejected with 422 (HIGH-3 / TEST-2)
+# ===========================================================================
+
+def test_malformed_idempotency_key_rejected(
+    logged_in_admin,
+    mock_email_provider,
+):
+    """
+    SendDraftRequest.idempotency_key must match ^[A-Za-z0-9_\\-]{1,128}$.
+    Any key containing disallowed characters (null bytes, unicode, spaces,
+    special chars) must return 422 without reaching business logic.
+    """
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+
+    malformed_keys = [
+        "abc\x00def",          # null byte — log injection risk
+        "key with spaces",     # spaces not allowed
+        "key@domain.com",      # @ not in allowed set
+        "a" * 129,             # exceeds max_length of 128
+        "key/slash",           # slash not in allowed set
+        "",                    # empty string (below min_length=1 implied by pattern)
+    ]
+
+    for bad_key in malformed_keys:
+        resp = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
+            json={"idempotency_key": bad_key},
+        )
+        assert resp.status_code == 422, (
+            f"Expected 422 for malformed key {bad_key!r}, got {resp.status_code}: {resp.text}"
+        )
+
+    # Valid key must still work (provider actually sends for approved draft)
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
+        json={"idempotency_key": "valid-key-abc123"},
+    )
+    assert resp.status_code == 200, (
+        f"Expected 200 for valid idempotency key, got {resp.status_code}: {resp.text}"
+    )

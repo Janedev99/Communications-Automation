@@ -30,6 +30,8 @@ import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/types";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
+import { ConfidenceMeter } from "@/components/ui/confidence-meter";
+import { SourcePill } from "@/components/ui/source-pill";
 import type { DraftResponse, EmailThread, KnowledgeEntry } from "@/lib/types";
 
 interface DraftPanelProps {
@@ -329,21 +331,32 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
   // ── Render panel header ────────────────────────────────────────────────────
   const panelHeader = (
-    <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
-      <span className="text-sm font-semibold text-gray-700">Draft Response</span>
-      {draft && (
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "rounded-full px-2.5 py-0.5 text-xs font-medium",
-              DRAFT_STATUS_BADGE_CLASSES[draft.status]
-            )}
-          >
-            {DRAFT_STATUS_LABELS[draft.status]}
-          </span>
-          <span className="text-xs text-gray-400">v{draft.version}</span>
-        </div>
-      )}
+    <div className="px-5 py-4 border-b border-border flex-shrink-0 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-foreground">Draft Response</span>
+        {draft && (
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "rounded-full px-2.5 py-0.5 text-xs font-medium",
+                DRAFT_STATUS_BADGE_CLASSES[draft.status]
+              )}
+            >
+              {DRAFT_STATUS_LABELS[draft.status]}
+            </span>
+            <span className="text-xs text-muted-foreground">v{draft.version}</span>
+          </div>
+        )}
+      </div>
+      {/* Phase 3: AI source + confidence — always show, even before a draft exists */}
+      <div className="flex items-center gap-3">
+        <SourcePill source={thread.categorization_source ?? "claude"} />
+        <ConfidenceMeter
+          value={thread.category_confidence}
+          compact
+          className="flex-1 max-w-xs"
+        />
+      </div>
     </div>
   );
 
@@ -353,7 +366,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     const hasDraftFailure = thread.draft_generation_failed;
 
     return (
-      <div className="bg-white flex flex-col h-full">
+      <div className="bg-card flex flex-col h-full">
         {panelHeader}
         <div className="flex flex-col items-center justify-center flex-1 px-6 text-center gap-4">
 
@@ -412,8 +425,8 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             </div>
           ) : (
             <>
-              <FileEdit className="w-10 h-10 text-gray-300" strokeWidth={1.5} />
-              <p className="text-sm text-gray-500">
+              <FileEdit className="w-10 h-10 text-muted-foreground/60" strokeWidth={1.5} />
+              <p className="text-sm text-muted-foreground">
                 No draft has been generated for this thread yet.
               </p>
             </>
@@ -421,7 +434,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
           {/* Tone selector */}
           <div className="w-full max-w-[220px]">
-            <label className="block text-xs font-medium text-gray-500 mb-1.5 text-left">
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5 text-left">
               Tone
             </label>
             <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
@@ -489,7 +502,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   // ── State C: Draft rejected ────────────────────────────────────────────────
   if (draft.status === "rejected") {
     return (
-      <div className="bg-white flex flex-col h-full">
+      <div className="bg-card flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-red-50 border border-red-200">
@@ -500,15 +513,15 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             )}
           </div>
           <div className="px-5 py-4">
-            <p className="text-sm text-gray-500 leading-relaxed whitespace-pre-wrap">
+            <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
               {draft.body_text}
             </p>
           </div>
         </div>
-        <div className="px-5 py-4 border-t border-gray-200 flex-shrink-0 space-y-3">
+        <div className="px-5 py-4 border-t border-border flex-shrink-0 space-y-3">
           {/* Tone selector before regenerate */}
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">Tone</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Tone</label>
             <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
@@ -562,7 +575,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   // ── State D: Draft sent ────────────────────────────────────────────────────
   if (draft.status === "sent") {
     return (
-      <div className="bg-white flex flex-col h-full">
+      <div className="bg-card flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200">
@@ -574,7 +587,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             )}
           </div>
           <div className="px-5 py-4">
-            <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap">
+            <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
               {draft.body_text}
             </p>
           </div>
@@ -596,7 +609,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     sendState.phase === "error";
 
   return (
-    <div className="bg-white flex flex-col h-full">
+    <div className="bg-card flex flex-col h-full">
       {panelHeader}
 
       {/* Editor */}
@@ -612,20 +625,20 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           onChange={(e) => !showOriginal && handleTextChange(e.target.value)}
           readOnly={showOriginal || draft.status === "approved"}
           className={cn(
-            "flex-1 w-full resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-gray-700 leading-relaxed p-0 min-h-[200px]",
-            draft.status === "approved" && "bg-gray-50"
+            "flex-1 w-full resize-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm text-foreground leading-relaxed p-0 min-h-[200px]",
+            draft.status === "approved" && "bg-muted"
           )}
           placeholder="Draft content will appear here..."
         />
         {autoSaveLabel && !showOriginal && (
-          <p className="text-[10px] text-gray-400 mt-1">{autoSaveLabel}</p>
+          <p className="text-[10px] text-muted-foreground mt-1">{autoSaveLabel}</p>
         )}
       </div>
 
       {/* Version/meta bar */}
       {draft.original_body_text && draft.original_body_text !== draft.body_text && (
-        <div className="px-5 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between flex-shrink-0">
-          <span className="text-xs text-gray-400">
+        <div className="px-5 py-2 bg-muted border-t border-border/60 flex items-center justify-between flex-shrink-0">
+          <span className="text-xs text-muted-foreground">
             Version {draft.version} — Original available
           </span>
           <button
@@ -640,7 +653,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       {/* Tone selector (shown only when draft is pending/edited, not approved) */}
       {draft.status !== "approved" && (
         <div className="px-5 pt-3 pb-1 flex-shrink-0">
-          <label className="block text-xs font-medium text-gray-500 mb-1">Tone override</label>
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Tone override</label>
           <Select value={selectedTone} onValueChange={(v) => v && setSelectedTone(v)}>
             <SelectTrigger className="h-7 text-xs">
               <SelectValue />
@@ -657,7 +670,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       )}
 
       {/* Action buttons */}
-      <div className="px-5 py-4 border-t border-gray-200 flex-shrink-0">
+      <div className="px-5 py-4 border-t border-border flex-shrink-0">
         {/* Item 2 — In-panel send countdown / send state banners */}
         {draft.status === "approved" && inSendFlow ? (
           <>
@@ -693,7 +706,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                       {sendState.countdown}
                     </span>
                   </div>
-                  <span className="text-sm font-medium text-gray-700">
+                  <span className="text-sm font-medium text-foreground">
                     Sending in {sendState.countdown}s…
                   </span>
                 </div>
@@ -710,9 +723,9 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             )}
 
             {sendState.phase === "sending" && (
-              <div className="flex items-center gap-2 w-full bg-gray-50 border border-gray-200 rounded-md px-4 py-2.5">
+              <div className="flex items-center gap-2 w-full bg-muted border border-border rounded-md px-4 py-2.5">
                 <Loader2 className="w-4 h-4 animate-spin text-brand-500" />
-                <span className="text-sm text-gray-600">Sending…</span>
+                <span className="text-sm text-muted-foreground">Sending…</span>
               </div>
             )}
 

@@ -49,18 +49,18 @@ export function KeyboardShortcutsDialog({
         <div className="space-y-4">
           {SHORTCUTS.map((section) => (
             <div key={section.category}>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
                 {section.category}
               </p>
               <div className="space-y-1.5">
                 {section.items.map((item) => (
                   <div key={item.description} className="flex items-center justify-between gap-4">
-                    <span className="text-sm text-gray-600">{item.description}</span>
+                    <span className="text-sm text-muted-foreground">{item.description}</span>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {item.keys.map((key) => (
                         <kbd
                           key={key}
-                          className="px-2 py-0.5 text-xs font-mono bg-gray-100 border border-gray-300 rounded text-gray-700"
+                          className="px-2 py-0.5 text-xs font-mono bg-muted border border-border rounded text-foreground"
                         >
                           {key}
                         </kbd>

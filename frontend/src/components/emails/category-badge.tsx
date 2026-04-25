@@ -12,7 +12,7 @@ export function CategoryBadge({ category, className }: CategoryBadgeProps) {
     <span
       className={cn(
         "rounded-full px-2.5 py-0.5 text-xs font-medium",
-        CATEGORY_BADGE_CLASSES[category] ?? "bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-200",
+        CATEGORY_BADGE_CLASSES[category] ?? "bg-muted text-muted-foreground ring-1 ring-inset ring-border",
         className
       )}
     >

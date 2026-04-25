@@ -50,11 +50,11 @@ export function ChangePasswordForm() {
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6 max-w-md">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Change Password</h3>
+    <div className="bg-card rounded-lg border border-border p-6 max-w-md">
+      <h3 className="text-sm font-semibold text-foreground mb-4">Change Password</h3>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Current password
           </label>
           <div className="relative">
@@ -70,7 +70,7 @@ export function ChangePasswordForm() {
             <button
               type="button"
               onClick={() => setShowCurrent((v) => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
               tabIndex={-1}
               aria-label={showCurrent ? "Hide password" : "Show password"}
             >
@@ -80,7 +80,7 @@ export function ChangePasswordForm() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             New password
           </label>
           <div className="relative">
@@ -99,7 +99,7 @@ export function ChangePasswordForm() {
             <button
               type="button"
               onClick={() => setShowNew((v) => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
               tabIndex={-1}
               aria-label={showNew ? "Hide password" : "Show password"}
             >
@@ -110,7 +110,7 @@ export function ChangePasswordForm() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Confirm new password
           </label>
           <div className="relative">
@@ -130,7 +130,7 @@ export function ChangePasswordForm() {
             <button
               type="button"
               onClick={() => setShowConfirm((v) => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
               tabIndex={-1}
               aria-label={showConfirm ? "Hide password" : "Show password"}
             >

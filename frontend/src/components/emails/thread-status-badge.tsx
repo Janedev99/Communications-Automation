@@ -12,7 +12,7 @@ export function ThreadStatusBadge({ status, className }: ThreadStatusBadgeProps)
     <span
       className={cn(
         "rounded-full px-2.5 py-0.5 text-xs font-medium",
-        STATUS_BADGE_CLASSES[status] ?? "bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-200",
+        STATUS_BADGE_CLASSES[status] ?? "bg-muted text-muted-foreground ring-1 ring-inset ring-border",
         className
       )}
     >

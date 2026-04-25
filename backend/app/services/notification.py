@@ -100,6 +100,51 @@ class NotificationService:
             "client_email": client_email,
         })
 
+    def notify_auto_sent(
+        self,
+        *,
+        thread_id: str,
+        draft_id: str,
+        client_email: str,
+        subject: str,
+        category: str,
+        confidence: float | None,
+    ) -> None:
+        """Audit channel for a T1 auto-send success — fires whenever email leaves the
+        system without staff approval. High-visibility logging."""
+        self._dispatch("thread.auto_sent", {
+            "thread_id": thread_id,
+            "draft_id": draft_id,
+            "client_email": client_email,
+            "subject": subject,
+            "category": category,
+            "confidence": confidence,
+        })
+        logger.warning(
+            "AUTO-SENT — thread=%s client=%s subject=%r category=%s confidence=%s",
+            thread_id, client_email, subject, category, confidence,
+        )
+
+    def notify_auto_send_failed(
+        self,
+        *,
+        thread_id: str,
+        draft_id: str,
+        client_email: str,
+        error: str,
+    ) -> None:
+        """Auto-send attempted but the provider call failed. Staff must follow up."""
+        self._dispatch("thread.auto_send_failed", {
+            "thread_id": thread_id,
+            "draft_id": draft_id,
+            "client_email": client_email,
+            "error": error,
+        })
+        logger.error(
+            "AUTO-SEND FAILED — thread=%s client=%s error=%s",
+            thread_id, client_email, error,
+        )
+
 
 _service: NotificationService | None = None
 

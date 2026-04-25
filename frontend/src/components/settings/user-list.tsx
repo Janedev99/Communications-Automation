@@ -44,7 +44,7 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
 
   if (users.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
         <EmptyState
           icon={Users}
           title="No users found"
@@ -55,23 +55,23 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="bg-card rounded-lg border border-border overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+          <TableRow className="bg-muted/80 hover:bg-accent/80">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Name
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[220px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px]">
               Email
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[100px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px]">
               Role
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[80px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[80px]">
               Active
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
               Created
             </TableHead>
           </TableRow>
@@ -80,16 +80,16 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
           {users.map((user) => (
             <TableRow
               key={user.id}
-              className="border-b border-gray-100 hover:bg-gray-50/60 transition-colors"
+              className="border-b border-border/60 hover:bg-accent/60 transition-colors"
             >
               <TableCell className="px-4 py-3">
-                <span className="text-sm font-medium text-gray-800">{user.name}</span>
+                <span className="text-sm font-medium text-foreground">{user.name}</span>
                 {user.id === currentUserId && (
-                  <span className="ml-2 text-[10px] text-gray-400">(you)</span>
+                  <span className="ml-2 text-[10px] text-muted-foreground">(you)</span>
                 )}
               </TableCell>
               <TableCell className="px-4 py-3 w-[220px]">
-                <span className="text-sm text-gray-600">{user.email}</span>
+                <span className="text-sm text-muted-foreground">{user.email}</span>
               </TableCell>
               <TableCell className="px-4 py-3 w-[100px]">
                 <span
@@ -110,7 +110,7 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
                 />
               </TableCell>
               <TableCell className="px-4 py-3 w-[120px]">
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-muted-foreground">
                   {formatDateShort(user.created_at)}
                 </span>
               </TableCell>

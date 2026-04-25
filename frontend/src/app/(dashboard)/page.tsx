@@ -8,6 +8,7 @@ import { DashboardSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ThreadStatusBadge } from "@/components/emails/thread-status-badge";
 import { SystemStatusStrip } from "@/components/dashboard/system-status-strip";
+import { TierBreakdownCard } from "@/components/dashboard/tier-breakdown-card";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useEmails } from "@/hooks/use-emails";
 import { useEscalations } from "@/hooks/use-escalations";
@@ -128,40 +129,48 @@ export default function DashboardPage() {
               key={card.label}
               href={card.href}
               className={cn(
-                "bg-white rounded-lg border border-gray-200 p-5 border-l-4 cursor-pointer",
-                "hover:shadow-sm hover:border-gray-300 transition-all duration-150",
+                "bg-card rounded-lg border border-border p-5 border-l-4 cursor-pointer",
+                "hover:shadow-sm hover:border-border/80 transition-all duration-150",
                 card.accent
               )}
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     {card.label}
                   </p>
-                  <p className="text-2xl font-bold text-gray-800 mt-1">{card.value}</p>
-                  <p className="text-xs text-gray-400 mt-2">{card.sub}</p>
+                  <p className="text-2xl font-bold text-foreground mt-1">{card.value}</p>
+                  <p className="text-xs text-muted-foreground mt-2">{card.sub}</p>
                 </div>
-                <Icon className="w-5 h-5 text-gray-300 mt-0.5" strokeWidth={1.5} />
+                <Icon className="w-5 h-5 text-muted-foreground/60 mt-0.5" strokeWidth={1.5} />
               </div>
             </Link>
           );
         })}
       </div>
 
+      {/* Tier breakdown — Phase 3 */}
+      <div className="mt-4">
+        <TierBreakdownCard
+          countsByTier={stats?.threads_by_tier}
+          isLoading={statsLoading}
+        />
+      </div>
+
       {/* AI Usage card — admin only */}
       {isAdmin && aiUsage && (
         <div className="mt-4">
-          <div className="bg-white rounded-lg border border-gray-200 border-l-4 border-l-indigo-400 px-5 py-4 flex items-center gap-4">
+          <div className="bg-card rounded-lg border border-border border-l-4 border-l-indigo-400 px-5 py-4 flex items-center gap-4">
             <Cpu className="w-5 h-5 text-indigo-400 flex-shrink-0" strokeWidth={1.5} />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">AI Usage This Month</p>
-              <p className="text-sm font-semibold text-gray-800 mt-0.5">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">AI Usage This Month</p>
+              <p className="text-sm font-semibold text-foreground mt-0.5">
                 {aiUsage.calls_this_month} AI draft{aiUsage.calls_this_month !== 1 ? "s" : ""} generated
                 {costFormatted && (
-                  <span className="text-gray-500 font-normal"> · estimated {costFormatted}</span>
+                  <span className="text-muted-foreground font-normal"> · estimated {costFormatted}</span>
                 )}
               </p>
-              <p className="text-xs text-gray-400 mt-0.5">
+              <p className="text-xs text-muted-foreground mt-0.5">
                 {aiUsage.prompt_tokens.toLocaleString()} prompt tokens · {aiUsage.completion_tokens.toLocaleString()} completion tokens
               </p>
             </div>
@@ -174,18 +183,18 @@ export default function DashboardPage() {
         {/* Recent Threads */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-700">Recent Threads</h2>
+            <h2 className="text-sm font-semibold text-foreground">Recent Threads</h2>
             <Link
               href="/emails"
-              className="text-xs text-brand-500 hover:text-brand-600 transition-colors"
+              className="text-xs text-primary hover:text-primary/80 transition-colors"
             >
               View all
             </Link>
           </div>
-          <div className="bg-white rounded-lg border border-gray-200">
+          <div className="bg-card rounded-lg border border-border">
             {threadsLoading ? (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm text-gray-400">Loading...</p>
+                <p className="text-sm text-muted-foreground">Loading...</p>
               </div>
             ) : threadsError ? (
               <ErrorState
@@ -195,13 +204,13 @@ export default function DashboardPage() {
               />
             ) : threads.length === 0 ? (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm text-gray-400">No recent threads</p>
+                <p className="text-sm text-muted-foreground">No recent threads</p>
               </div>
             ) : (
               threads.map((thread) => (
                 <div
                   key={thread.id}
-                  className="px-4 py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60 cursor-pointer transition-colors"
+                  className="px-4 py-3 border-b border-border/60 last:border-b-0 hover:bg-accent/60 cursor-pointer transition-colors"
                   tabIndex={0}
                   role="button"
                   onClick={() => router.push(`/emails/${thread.id}`)}
@@ -214,10 +223,10 @@ export default function DashboardPage() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 truncate max-w-[280px]">
+                      <p className="text-sm font-medium text-foreground truncate max-w-[280px]">
                         {thread.subject}
                       </p>
-                      <p className="text-xs text-gray-400 mt-0.5">
+                      <p className="text-xs text-muted-foreground mt-0.5">
                         {thread.client_name ?? thread.client_email} ·{" "}
                         {relativeTime(thread.updated_at)}
                       </p>
@@ -235,18 +244,18 @@ export default function DashboardPage() {
         {/* Pending Escalations */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-700">Pending Escalations</h2>
+            <h2 className="text-sm font-semibold text-foreground">Pending Escalations</h2>
             <Link
               href="/escalations"
-              className="text-xs text-brand-500 hover:text-brand-600 transition-colors"
+              className="text-xs text-primary hover:text-primary/80 transition-colors"
             >
               View all
             </Link>
           </div>
-          <div className="bg-white rounded-lg border border-gray-200">
+          <div className="bg-card rounded-lg border border-border">
             {escalationsLoading ? (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm text-gray-400">Loading...</p>
+                <p className="text-sm text-muted-foreground">Loading...</p>
               </div>
             ) : escalationsError ? (
               <ErrorState
@@ -256,13 +265,13 @@ export default function DashboardPage() {
               />
             ) : escalations.length === 0 ? (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm text-gray-400">No pending escalations</p>
+                <p className="text-sm text-muted-foreground">No pending escalations</p>
               </div>
             ) : (
               escalations.map((esc) => (
                 <div
                   key={esc.id}
-                  className="px-4 py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60 cursor-pointer transition-colors"
+                  className="px-4 py-3 border-b border-border/60 last:border-b-0 hover:bg-accent/60 cursor-pointer transition-colors"
                   tabIndex={0}
                   role="button"
                   onClick={() => router.push("/escalations")}
@@ -275,10 +284,10 @@ export default function DashboardPage() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 truncate">
+                      <p className="text-sm font-medium text-foreground truncate">
                         {esc.thread_subject ?? `Thread ${esc.thread_id.slice(0, 8)}…`}
                       </p>
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">
+                      <p className="text-xs text-muted-foreground mt-0.5 truncate">
                         {truncate(esc.reason, 60)}
                       </p>
                     </div>
@@ -301,27 +310,27 @@ export default function DashboardPage() {
       {/* Activity Feed */}
       <div className="mt-6">
         <div className="flex items-center gap-2 mb-3">
-          <Activity className="w-4 h-4 text-gray-400" strokeWidth={1.5} />
-          <h2 className="text-sm font-semibold text-gray-700">Recent Activity</h2>
+          <Activity className="w-4 h-4 text-muted-foreground" strokeWidth={1.5} />
+          <h2 className="text-sm font-semibold text-foreground">Recent Activity</h2>
         </div>
-        <div className="bg-white rounded-lg border border-gray-200">
+        <div className="bg-card rounded-lg border border-border">
           {activityLoading ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-sm text-gray-400">Loading...</p>
+              <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
           ) : activityItems.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-sm text-gray-400">No recent activity</p>
+              <p className="text-sm text-muted-foreground">No recent activity</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-border/60">
               {activityItems.map((item) => (
                 <div key={item.id} className="px-4 py-2.5 flex items-center gap-3">
-                  <div className="w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0" />
-                  <p className="text-sm text-gray-700 flex-1 min-w-0 truncate">
+                  <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 flex-shrink-0" />
+                  <p className="text-sm text-foreground flex-1 min-w-0 truncate">
                     {item.description}
                   </p>
-                  <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
+                  <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap">
                     {relativeTime(item.created_at)}
                   </span>
                 </div>

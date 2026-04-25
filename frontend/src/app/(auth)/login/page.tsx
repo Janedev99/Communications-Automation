@@ -36,26 +36,26 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 w-full max-w-sm p-8">
+    <div className="min-h-screen bg-muted flex items-center justify-center p-4">
+      <div className="bg-card rounded-lg shadow-sm border border-border w-full max-w-sm p-8">
         {/* Brand mark */}
         <div className="flex flex-col items-center">
           <div className="w-10 h-10 rounded-lg bg-brand-500 text-white font-bold text-lg flex items-center justify-center">
             S
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 tracking-tight text-center mt-4">
+          <h1 className="text-2xl font-bold text-foreground tracking-tight text-center mt-4">
             Schiller CPA
           </h1>
-          <p className="text-sm text-gray-500 text-center mt-1">Staff Portal</p>
+          <p className="text-sm text-muted-foreground text-center mt-1">Staff Portal</p>
         </div>
 
-        <div className="border-t border-gray-200 my-6" />
+        <div className="border-t border-border my-6" />
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label
               htmlFor="email"
-              className="block text-sm font-medium text-gray-700 mb-1.5"
+              className="block text-sm font-medium text-foreground mb-1.5"
             >
               Email address
             </label>
@@ -75,7 +75,7 @@ export default function LoginPage() {
           <div>
             <label
               htmlFor="password"
-              className="block text-sm font-medium text-gray-700 mb-1.5"
+              className="block text-sm font-medium text-foreground mb-1.5"
             >
               Password
             </label>

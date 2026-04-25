@@ -24,6 +24,10 @@ export type EscalationStatus = "pending" | "acknowledged" | "resolved";
 export type UserRole = "staff" | "admin";
 export type EntryType = "response_template" | "policy" | "snippet";
 
+// Phase 3 — tier-based triage
+export type ThreadTier = "t1_auto" | "t2_review" | "t3_escalate";
+export type CategorizationSource = "claude" | "rules_fallback" | "manual";
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export interface User {
   id: string;
@@ -87,6 +91,16 @@ export interface EmailThread {
   draft_generation_failed: boolean;
   /** ISO timestamp of the failed generation attempt, or null */
   draft_generation_failed_at: string | null;
+  /** Phase 3: triage tier (t1_auto / t2_review / t3_escalate). Defaults to t2_review server-side. */
+  tier: ThreadTier;
+  /** Phase 3: ISO timestamp when the tier was last assigned. */
+  tier_set_at: string | null;
+  /** Phase 3: who set the tier — "system" for the intake pipeline, or a user's email. */
+  tier_set_by: string | null;
+  /** Phase 3: which engine produced the categorization. */
+  categorization_source: CategorizationSource;
+  /** Phase 3: ISO timestamp when this thread was auto-sent (T1 only), or null. */
+  auto_sent_at: string | null;
 }
 
 export interface EmailThreadListItem {
@@ -106,6 +120,28 @@ export interface EmailThreadListItem {
   message_count: number;
   /** True when the last AI draft generation attempt failed for this thread */
   draft_generation_failed: boolean;
+  /** Phase 3: triage tier */
+  tier: ThreadTier;
+  /** Phase 3: which engine produced the categorization. */
+  categorization_source: CategorizationSource;
+  /** Phase 3: ISO timestamp when this thread was auto-sent (T1 only), or null. */
+  auto_sent_at: string | null;
+}
+
+// ── Tier rules (admin) ────────────────────────────────────────────────────────
+export interface TierRule {
+  id: string;
+  category: EmailCategory;
+  t1_eligible: boolean;
+  t1_min_confidence: number;
+  updated_at: string;
+  updated_by_id: string | null;
+  updated_by_name: string | null;
+}
+
+export interface TierRuleUpdate {
+  t1_eligible?: boolean;
+  t1_min_confidence?: number;
 }
 
 export interface BulkActionParams {
@@ -200,6 +236,8 @@ export interface DashboardStats {
   };
   threads_by_status: Record<string, number>;
   threads_by_category: Record<string, number>;
+  /** Phase 3: thread counts per triage tier. May be absent on older deployments. */
+  threads_by_tier?: Record<string, number>;
   escalations_by_status: Record<string, number>;
   escalations_by_severity: Record<string, number>;
   last_24h: {
@@ -229,6 +267,56 @@ export interface ActivityItem {
   entity_type: string;
   entity_id: string | null;
   created_at: string;
+}
+
+// ── Admin integrations ────────────────────────────────────────────────────────
+export type IntegrationStatus = "healthy" | "degraded" | "down" | "not_configured";
+
+export interface IntegrationItem {
+  id: string;
+  name: string;
+  status: IntegrationStatus;
+  latency_ms: number | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  config: Record<string, unknown>;
+}
+
+export interface IntegrationsResponse {
+  overall_status: IntegrationStatus;
+  shadow_mode: boolean;
+  checked_at: string;
+  items: IntegrationItem[];
+}
+
+// ── System settings (admin) ───────────────────────────────────────────────────
+export interface SystemSetting {
+  key: string;
+  value: string;
+  updated_at: string;
+  updated_by_id: string | null;
+  updated_by_name: string | null;
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  details: Record<string, unknown> | null;
+  user_id: string | null;
+  user_name: string | null;
+  user_email: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface AuditLogResponse {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 // ── API Error ─────────────────────────────────────────────────────────────────

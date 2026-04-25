@@ -75,7 +75,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Full name
             </label>
             <Input
@@ -88,7 +88,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Email address
             </label>
             <Input
@@ -102,7 +102,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Password
             </label>
             <Input
@@ -120,7 +120,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Role
             </label>
             <Select value={role} onValueChange={(v) => v && setRole(v as UserRole)}>

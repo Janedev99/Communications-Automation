@@ -74,7 +74,7 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
   if (escalations.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
         <EmptyState
           icon={AlertTriangle}
           title="No escalations found"
@@ -86,24 +86,24 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
   return (
     <>
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-8" />
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+            <TableRow className="bg-muted/80 hover:bg-accent/80">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-8" />
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Thread
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[220px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px]">
                 Reason
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[100px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px]">
                 Severity
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
                 Status
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
                 Created
               </TableHead>
             </TableRow>
@@ -113,7 +113,7 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
               <React.Fragment key={esc.id}>
                 <TableRow
                   className={cn(
-                    "hover:bg-gray-50/60 cursor-pointer transition-colors border-b border-gray-100 border-l-4",
+                    "hover:bg-accent/60 cursor-pointer transition-colors border-b border-border/60 border-l-4",
                     SEVERITY_ROW_BORDER[esc.severity]
                   )}
                   tabIndex={0}
@@ -125,7 +125,7 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                     }
                   }}
                 >
-                  <TableCell className="px-3 py-3 w-8 text-gray-400">
+                  <TableCell className="px-3 py-3 w-8 text-muted-foreground">
                     {expandedId === esc.id ? (
                       <ChevronDown className="w-4 h-4" />
                     ) : (
@@ -134,18 +134,18 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                   </TableCell>
                   <TableCell className="px-4 py-3">
                     <div className="max-w-[260px]">
-                      <span className="text-sm font-medium text-gray-800 truncate block">
+                      <span className="text-sm font-medium text-foreground truncate block">
                         {esc.thread_subject ?? `Thread ${esc.thread_id.slice(0, 8)}…`}
                       </span>
                       {esc.thread_client_email && (
-                        <span className="text-xs text-gray-400 truncate block">
+                        <span className="text-xs text-muted-foreground truncate block">
                           {esc.thread_client_email}
                         </span>
                       )}
                     </div>
                   </TableCell>
                   <TableCell className="px-4 py-3 w-[220px]">
-                    <span className="text-sm text-gray-600 truncate block max-w-[200px]">
+                    <span className="text-sm text-muted-foreground truncate block max-w-[200px]">
                       {esc.reason}
                     </span>
                   </TableCell>
@@ -170,7 +170,7 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                     </span>
                   </TableCell>
                   <TableCell className="px-4 py-3 w-[120px]">
-                    <span className="text-xs text-gray-400">
+                    <span className="text-xs text-muted-foreground">
                       {relativeTime(esc.created_at)}
                     </span>
                   </TableCell>
@@ -178,10 +178,10 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
                 {/* Expanded detail row */}
                 {expandedId === esc.id && (
-                  <TableRow key={`${esc.id}-expanded`} className="bg-gray-50 border-b border-gray-200">
+                  <TableRow key={`${esc.id}-expanded`} className="bg-muted border-b border-border">
                     <TableCell colSpan={6} className="px-6 py-4">
                       <div className="space-y-3">
-                        <p className="text-sm text-gray-600 leading-relaxed">{esc.reason}</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{esc.reason}</p>
 
                         <div className="flex items-center gap-3">
                           <Link

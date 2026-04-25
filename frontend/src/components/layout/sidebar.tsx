@@ -8,6 +8,8 @@ import {
   Mail,
   AlertTriangle,
   BookOpen,
+  GraduationCap,
+  History,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -15,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
 import { useDashboard } from "@/hooks/use-dashboard";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -48,7 +51,7 @@ function NotificationDot({ show }: { show: boolean }) {
   if (!show) return null;
   return (
     <span
-      className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white"
+      className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-background"
       aria-label="New items"
     />
   );
@@ -87,8 +90,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return pathname.startsWith(href);
   };
 
-  // Item 5 — High/critical escalation badge
-  // Count unresolved escalations with severity high or critical
+  // High/critical escalation badge — count unresolved escalations w/ severity high or critical
   const highCriticalCount =
     (stats?.escalations_by_severity?.["high"] ?? 0) +
     (stats?.escalations_by_severity?.["critical"] ?? 0);
@@ -99,12 +101,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     { label: "Emails", href: "/emails", icon: Mail, badge: hasNewEmails },
     { label: "Escalations", href: "/escalations", icon: AlertTriangle, badge: hasNewEscalations },
     { label: "Knowledge Base", href: "/knowledge", icon: BookOpen, badge: false },
+    { label: "Tutorials", href: "/tutorials", icon: GraduationCap, badge: false },
   ];
 
   return (
     <aside
       className={cn(
-        "flex flex-col bg-gray-50 border-r border-gray-200 transition-all duration-200 ease-in-out flex-shrink-0",
+        "flex flex-col bg-background border-r border-border transition-all duration-200 ease-in-out flex-shrink-0",
         collapsed ? "w-16" : "w-56"
       )}
     >
@@ -120,8 +123,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               S
             </div>
             <div>
-              <div className="text-sm font-bold text-gray-800 leading-tight">Schiller CPA</div>
-              <div className="text-[10px] text-gray-400 leading-tight">Staff Portal</div>
+              <div className="text-sm font-bold text-foreground leading-tight">Schiller CPA</div>
+              <div className="text-[10px] text-muted-foreground leading-tight">Staff Portal</div>
             </div>
           </div>
         )}
@@ -141,8 +144,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
                 active
-                  ? "text-brand-600 bg-white shadow-sm ring-1 ring-gray-200/60 font-semibold"
-                  : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}
             >
               <span className="relative flex-shrink-0">
@@ -154,10 +157,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   {label}
                 </span>
               )}
-              {/* Item 5 — high/critical count badge + overdue pulsing dot */}
+              {/* High/critical count badge + overdue pulsing dot */}
               {!collapsed && isEscalations && highCriticalCount > 0 && (
                 <span className="flex items-center gap-1.5 ml-auto">
-                  {/* Red pulsing dot when there are ANY critical escalations (proxy for overdue) */}
                   {criticalCount > 0 && (
                     <span
                       className="w-2 h-2 rounded-full bg-red-500 animate-pulse motion-reduce:animate-none"
@@ -169,7 +171,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </span>
                 </span>
               )}
-              {/* Collapsed state: show numeric badge above icon when relevant */}
+              {/* Collapsed state: numeric badge above icon */}
               {collapsed && isEscalations && highCriticalCount > 0 && (
                 <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none">
                   {highCriticalCount > 9 ? "9+" : highCriticalCount}
@@ -182,7 +184,21 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* Admin section */}
         {isAdmin && (
           <>
-            <div className={cn("border-t border-gray-200 my-2", collapsed && "mx-1")} />
+            <div className={cn("border-t border-border my-2", collapsed && "mx-1")} />
+            <Link
+              href="/audit-log"
+              title={collapsed ? "Audit Log" : undefined}
+              className={cn(
+                "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
+                collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
+                isActive("/audit-log")
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              )}
+            >
+              <History className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
+              {!collapsed && <span>Audit Log</span>}
+            </Link>
             <Link
               href="/settings"
               title={collapsed ? "Settings" : undefined}
@@ -190,8 +206,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
                 isActive("/settings")
-                  ? "text-brand-600 bg-white shadow-sm ring-1 ring-gray-200/60 font-semibold"
-                  : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}
             >
               <Settings className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
@@ -201,12 +217,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         )}
       </nav>
 
-      {/* Collapse toggle */}
-      <div className="px-2 py-3 border-t border-gray-200">
+      {/* Footer: theme toggle + collapse */}
+      <div className="px-2 py-2 border-t border-border space-y-1">
+        <ThemeToggle collapsed={collapsed} />
         <button
           onClick={onToggle}
           className={cn(
-            "flex items-center rounded-md text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150 w-full",
+            "flex items-center rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors duration-150 w-full",
             collapsed ? "justify-center py-1.5 px-0" : "gap-1.5 px-3 py-1.5"
           )}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}

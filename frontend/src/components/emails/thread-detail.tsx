@@ -78,11 +78,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
   };
 
   return (
-    <div className="flex flex-col h-full bg-white">
+    <div className="flex flex-col h-full bg-card">
       {/* Thread metadata header */}
-      <div className="px-6 py-4 border-b border-gray-200 bg-white flex-shrink-0">
+      <div className="px-6 py-4 border-b border-border bg-card flex-shrink-0">
         <div className="flex items-start justify-between gap-3">
-          <h2 className="text-base font-semibold text-gray-800 leading-snug">{thread.subject}</h2>
+          <h2 className="text-base font-semibold text-foreground leading-snug">{thread.subject}</h2>
 
           {/* Action buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -103,7 +103,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleUnassign}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-gray-500"
+                className="h-7 text-xs gap-1 text-muted-foreground"
               >
                 <UserCircle2 className="w-3.5 h-3.5" />
                 Unassign
@@ -127,7 +127,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleClose}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-gray-600 hover:text-red-600 hover:border-red-200"
+                className="h-7 text-xs gap-1 text-muted-foreground hover:text-red-600 hover:border-red-200"
               >
                 <XCircle className="w-3.5 h-3.5" />
                 Close
@@ -138,7 +138,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
 
         <div className="flex items-center gap-3 mt-2 flex-wrap">
           {thread.client_name && (
-            <span className="text-sm text-gray-600">{thread.client_name}</span>
+            <span className="text-sm text-muted-foreground">{thread.client_name}</span>
           )}
           <button
             type="button"
@@ -151,10 +151,10 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
           <ThreadStatusBadge status={thread.status} />
           <CategoryBadge category={thread.category} />
           {confidence && (
-            <span className="text-xs text-gray-400">{confidence}</span>
+            <span className="text-xs text-muted-foreground">{confidence}</span>
           )}
           {thread.assigned_to_name && (
-            <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <UserCircle2 className="w-3 h-3 text-brand-400" />
               {thread.assigned_to_name}
             </span>
@@ -162,16 +162,16 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
         </div>
 
         {thread.ai_summary && (
-          <div className="mt-3 bg-gray-50 rounded-md px-3 py-2 border border-gray-100">
-            <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-1">
+          <div className="mt-3 bg-muted rounded-md px-3 py-2 border border-border/60">
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
               AI Summary
             </p>
-            <p className="text-sm text-gray-600 leading-relaxed">{thread.ai_summary}</p>
+            <p className="text-sm text-muted-foreground leading-relaxed">{thread.ai_summary}</p>
           </div>
         )}
 
         {thread.suggested_reply_tone && (
-          <p className="text-xs text-gray-400 mt-2">
+          <p className="text-xs text-muted-foreground mt-2">
             Suggested tone: {thread.suggested_reply_tone}
           </p>
         )}
@@ -212,9 +212,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
 
       {/* Messages area */}
       <ScrollArea className="flex-1">
-        <div className="flex flex-col space-y-4 px-6 py-4 bg-gray-50/50">
+        <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50">
           {thread.messages.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">No messages yet.</p>
+            <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>
           ) : (
             thread.messages.map((message) => (
               <MessageBubble key={message.id} message={message} />

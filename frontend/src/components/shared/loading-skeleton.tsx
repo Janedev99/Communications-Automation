@@ -2,7 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function StatCardSkeleton() {
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-5">
+    <div className="bg-card rounded-lg border border-border p-5">
       <Skeleton className="h-3 w-24 mb-3" />
       <Skeleton className="h-8 w-16 mb-2" />
       <Skeleton className="h-2.5 w-20" />
@@ -12,12 +12,12 @@ export function StatCardSkeleton() {
 
 export function TableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200">
+    <div className="bg-card rounded-lg border border-border overflow-hidden">
+      <div className="px-4 py-3 bg-muted/80 border-b border-border">
         <Skeleton className="h-3 w-full" />
       </div>
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="px-4 py-3 border-b border-gray-100 last:border-b-0 flex items-center gap-4">
+        <div key={i} className="px-4 py-3 border-b border-border/60 last:border-b-0 flex items-center gap-4">
           <Skeleton className="h-4 flex-1" />
           <Skeleton className="h-4 w-28" />
           <Skeleton className="h-5 w-20 rounded-full" />
@@ -34,7 +34,7 @@ export function ThreadDetailSkeleton() {
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] h-full">
       {/* Left panel */}
       <div className="p-6 space-y-4">
-        <div className="space-y-2 pb-4 border-b border-gray-200">
+        <div className="space-y-2 pb-4 border-b border-border">
           <Skeleton className="h-5 w-3/4" />
           <div className="flex gap-2 mt-2">
             <Skeleton className="h-5 w-24 rounded-full" />
@@ -48,7 +48,7 @@ export function ThreadDetailSkeleton() {
         </div>
       </div>
       {/* Right panel */}
-      <div className="border-l border-gray-200 p-5 space-y-3">
+      <div className="border-l border-border p-5 space-y-3">
         <Skeleton className="h-4 w-32 mb-4" />
         <Skeleton className="h-48 w-full rounded-md" />
         <div className="flex gap-2 pt-4">

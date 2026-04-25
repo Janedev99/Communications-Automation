@@ -108,14 +108,14 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
         </DialogHeader>
 
         <div className="space-y-4">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Export threads with all messages, drafts, and escalations as a JSON file.
             Leave filters blank to export all threads (up to 500).
           </p>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Client email <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              Client email <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Input
               type="email"
@@ -128,7 +128,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label className="block text-sm font-medium text-foreground mb-1.5">
                 From date
               </label>
               <Input
@@ -139,7 +139,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label className="block text-sm font-medium text-foreground mb-1.5">
                 To date
               </label>
               <Input
@@ -150,7 +150,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
               />
             </div>
           </div>
-          <p className="text-xs text-gray-400">Times are in UTC.</p>
+          <p className="text-xs text-muted-foreground">Times are in UTC.</p>
         </div>
 
         <DialogFooter>

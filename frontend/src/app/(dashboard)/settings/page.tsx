@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import Link from "next/link";
+import { Activity, ChevronRight, Plus, Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
@@ -46,14 +47,53 @@ export default function SettingsPage() {
 
       {/* Password change — available to all users */}
       <section>
-        <h2 className="text-sm font-semibold text-gray-700 mb-3">Account</h2>
+        <h2 className="text-sm font-semibold text-foreground mb-3">Account</h2>
         <ChangePasswordForm />
       </section>
+
+      {/* AI / triage configuration — admin only */}
+      {isAdmin && (
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3">AI &amp; Triage</h2>
+          <div className="space-y-2">
+            <Link
+              href="/settings/triage-rules"
+              className="flex items-center gap-3 p-4 bg-card border border-border rounded-lg hover:bg-accent/40 transition-colors"
+            >
+              <span className="flex items-center justify-center w-9 h-9 rounded-md bg-primary/10 text-primary shrink-0">
+                <Sliders className="w-4 h-4" strokeWidth={1.75} />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-foreground">Triage Rules</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">
+                  Decide which email categories may be auto-handled by AI (T1) and at what confidence.
+                </span>
+              </span>
+              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+            </Link>
+            <Link
+              href="/settings/integrations"
+              className="flex items-center gap-3 p-4 bg-card border border-border rounded-lg hover:bg-accent/40 transition-colors"
+            >
+              <span className="flex items-center justify-center w-9 h-9 rounded-md bg-primary/10 text-primary shrink-0">
+                <Activity className="w-4 h-4" strokeWidth={1.75} />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-foreground">Integrations &amp; Health</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">
+                  Live status of database, Anthropic, email provider, and notifications.
+                </span>
+              </span>
+              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+            </Link>
+          </div>
+        </section>
+      )}
 
       {/* User management — admin only */}
       {isAdmin && (
         <section>
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Team Members</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-3">Team Members</h2>
           {usersError ? (
             <ErrorState
               title="Failed to load users"

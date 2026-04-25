@@ -48,7 +48,7 @@ export function ResolveDialog({
         </DialogHeader>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Resolution notes
           </label>
           <Textarea

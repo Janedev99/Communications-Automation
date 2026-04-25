@@ -18,8 +18,8 @@ export default function DashboardError({ error, reset }: ErrorProps) {
   return (
     <div className="flex flex-col items-center justify-center py-24 px-6 text-center">
       <AlertTriangle className="w-10 h-10 text-red-400 mb-3" strokeWidth={1.5} />
-      <h2 className="text-base font-semibold text-gray-800">Something went wrong</h2>
-      <p className="text-sm text-gray-500 mt-1 max-w-sm">
+      <h2 className="text-base font-semibold text-foreground">Something went wrong</h2>
+      <p className="text-sm text-muted-foreground mt-1 max-w-sm">
         An unexpected error occurred. You can try refreshing the page or clicking the button below.
       </p>
       <Button variant="outline" className="mt-4" onClick={reset}>

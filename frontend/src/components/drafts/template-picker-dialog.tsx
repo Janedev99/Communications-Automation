@@ -48,7 +48,7 @@ export function TemplatePickerDialog({
         </DialogHeader>
 
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -61,12 +61,12 @@ export function TemplatePickerDialog({
         <div className="max-h-80 overflow-y-auto -mx-1">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-center">
-              <FileText className="w-8 h-8 text-gray-300 mb-2" strokeWidth={1.5} />
-              <p className="text-sm text-gray-500">
+              <FileText className="w-8 h-8 text-muted-foreground/60 mb-2" strokeWidth={1.5} />
+              <p className="text-sm text-muted-foreground">
                 {entries.length === 0
                   ? "No response templates found. Add some in the Knowledge Base."
                   : "No templates match your search."}
@@ -80,20 +80,20 @@ export function TemplatePickerDialog({
                   type="button"
                   disabled={loading}
                   onClick={() => onSelect(template)}
-                  className="w-full text-left px-3 py-3 rounded-md hover:bg-gray-50 border border-transparent hover:border-gray-200 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full text-left px-3 py-3 rounded-md hover:bg-accent border border-transparent hover:border-border transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 truncate group-hover:text-brand-600">
+                      <p className="text-sm font-medium text-foreground truncate group-hover:text-brand-600">
                         {template.title}
                       </p>
-                      <p className="text-xs text-gray-500 mt-0.5 line-clamp-2 leading-relaxed">
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
                         {template.content.slice(0, 120)}
                         {template.content.length > 120 ? "…" : ""}
                       </p>
                     </div>
                     {loading ? (
-                      <Loader2 className="w-4 h-4 animate-spin text-gray-400 flex-shrink-0 mt-0.5" />
+                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground flex-shrink-0 mt-0.5" />
                     ) : null}
                   </div>
                 </button>

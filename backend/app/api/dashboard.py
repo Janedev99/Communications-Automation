@@ -78,6 +78,13 @@ def get_stats(
     ).all()
     threads_by_category = {row.category.value: row.count for row in category_rows}
 
+    # ── Threads by tier (Phase 3) ──────────────────────────────────────────────
+    tier_rows = db.execute(
+        select(EmailThread.tier, func.count(EmailThread.id).label("count"))
+        .group_by(EmailThread.tier)
+    ).all()
+    threads_by_tier = {row.tier.value: row.count for row in tier_rows}
+
     # ── Escalations by status ──────────────────────────────────────────────────
     esc_status_rows = db.execute(
         select(Escalation.status, func.count(Escalation.id).label("count"))
@@ -166,6 +173,7 @@ def get_stats(
         },
         "threads_by_status": threads_by_status,
         "threads_by_category": threads_by_category,
+        "threads_by_tier": threads_by_tier,
         "escalations_by_status": escalations_by_status,
         "escalations_by_severity": escalations_by_severity,
         "last_24h": {

@@ -57,11 +57,14 @@ def test_keyword_precheck_forces_escalation(mock_anthropic):
 # 2. Claude API error → fallback escalates
 # ===========================================================================
 
-def test_claude_api_error_fallback_escalates(mock_anthropic):
+def test_claude_api_error_falls_back_to_rules_engine(mock_anthropic):
     """
-    When the Claude API raises an anthropic.APIError, the fallback result
-    must be returned with escalation_needed=True (fail-safe).
+    Phase 3: Claude API error gracefully degrades to the keyword rules engine
+    instead of always escalating. The result is tagged with source=rules_fallback,
+    and confidence is the rules-engine cap (0.5) so tier_engine never auto-sends.
     """
+    from app.models.email import CategorizationSource
+
     mock_anthropic.messages.create.side_effect = anthropic.APIConnectionError(
         request=MagicMock()
     )
@@ -75,10 +78,34 @@ def test_claude_api_error_fallback_escalates(mock_anthropic):
         body="What is the status of my return?",
     )
 
-    assert result.escalation_needed is True, (
-        "API error must trigger the fail-safe fallback with escalation_needed=True"
+    # Source is now rules_fallback (the categorizer wraps the rules-engine
+    # result with the fallback attribution).
+    assert result.source == CategorizationSource.rules_fallback
+    # The rules engine caps confidence at 0.5 — this is what prevents T1.
+    assert result.confidence == 0.5
+
+
+def test_claude_api_error_with_unclassifiable_body_still_escalates(mock_anthropic):
+    """
+    Safety floor: when Claude is down AND the rules engine can't classify the
+    body either, the result must still escalate so a human sees it.
+    """
+    mock_anthropic.messages.create.side_effect = anthropic.APIConnectionError(
+        request=MagicMock()
     )
-    assert result.confidence == 0.0
+
+    from app.services.categorizer import get_categorizer
+
+    svc = get_categorizer()
+    result = svc.categorize(
+        sender="client@example.com",
+        subject="zzz",
+        body="lorem ipsum dolor sit amet — no keywords match here",
+    )
+
+    assert result.escalation_needed is True, (
+        "Rules engine must escalate when it cannot classify (safety floor)."
+    )
 
 
 # ===========================================================================

@@ -26,15 +26,15 @@ export function Header() {
   const pageName = getPageName(pathname);
 
   return (
-    <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-6 flex-shrink-0">
+    <header className="h-14 bg-card border-b border-border flex items-center justify-between px-6 flex-shrink-0">
       {/* Left: breadcrumb */}
-      <span className="text-sm text-gray-500">{pageName}</span>
+      <span className="text-sm text-muted-foreground">{pageName}</span>
 
       {/* Right: user info + logout */}
       <div className="flex items-center gap-3">
         {user && (
           <>
-            <span className="text-sm font-medium text-gray-700">{user.name}</span>
+            <span className="text-sm font-medium text-foreground">{user.name}</span>
             <span
               className={cn(
                 "rounded-full px-2.5 py-0.5 text-xs font-medium",
@@ -45,7 +45,7 @@ export function Header() {
             </span>
             <button
               onClick={logout}
-              className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 transition-colors duration-150"
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
             >
               <LogOut className="w-4 h-4" />
               <span>Sign out</span>

@@ -6,10 +6,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.models.email import (
+    CategorizationSource,
     DraftStatus,
     EmailCategory,
     EmailStatus,
     MessageDirection,
+    ThreadTier,
 )
 
 
@@ -31,6 +33,9 @@ class CategorizationResult(BaseModel):
     escalation_reasons: list[str] = Field(default_factory=list)
     summary: str
     suggested_reply_tone: str = "professional"  # e.g. "professional", "empathetic", "urgent"
+    # Phase 3: tracks which engine produced this result. Defaults to claude
+    # so all existing call sites continue to work.
+    source: CategorizationSource = CategorizationSource.claude
 
 
 # ── EmailMessage schemas ───────────────────────────────────────────────────────
@@ -69,6 +74,12 @@ class EmailThreadResponse(BaseModel):
     # T2.5: Draft generation failure tracking
     draft_generation_failed: bool = False
     draft_generation_failed_at: datetime | None = None
+    # Phase 3: Tier-based triage
+    tier: ThreadTier = ThreadTier.t2_review
+    tier_set_at: datetime | None = None
+    tier_set_by: str | None = None
+    categorization_source: CategorizationSource = CategorizationSource.claude
+    auto_sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[EmailMessageResponse] = Field(default_factory=list)
@@ -90,6 +101,11 @@ class EmailThreadResponse(BaseModel):
             "assigned_to_name": thread.assigned_to.name if thread.assigned_to else None,
             "draft_generation_failed": getattr(thread, "draft_generation_failed", False),
             "draft_generation_failed_at": getattr(thread, "draft_generation_failed_at", None),
+            "tier": thread.tier,
+            "tier_set_at": thread.tier_set_at,
+            "tier_set_by": thread.tier_set_by,
+            "categorization_source": thread.categorization_source,
+            "auto_sent_at": thread.auto_sent_at,
             "created_at": thread.created_at,
             "updated_at": thread.updated_at,
             "messages": thread.messages,
@@ -114,6 +130,10 @@ class EmailThreadListItem(BaseModel):
     assigned_to_name: str | None = None
     # T2.5: Draft generation failure tracking
     draft_generation_failed: bool = False
+    # Phase 3: Tier-based triage
+    tier: ThreadTier = ThreadTier.t2_review
+    categorization_source: CategorizationSource = CategorizationSource.claude
+    auto_sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     message_count: int = 0

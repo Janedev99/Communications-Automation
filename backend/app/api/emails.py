@@ -43,13 +43,16 @@ def _parse_iso_utc(s: str) -> datetime:
     return dt
 from app.database import get_db
 from app.models.email import (
+    CategorizationSource,
     DraftResponse,
     DraftStatus,
     EmailCategory,
     EmailMessage,
     EmailStatus,
     EmailThread,
+    ThreadTier,
 )
+from app.services.tier_engine import decide_tier
 from app.models.escalation import Escalation, EscalationStatus
 from app.models.user import User
 from app.schemas.email import (
@@ -241,12 +244,24 @@ def bulk_action(
                     subject=thread.subject,
                     body=body_text,
                 )
+
+                before_tier = thread.tier
+                before_category = thread.category
+
                 thread.category = result.category
                 thread.category_confidence = result.confidence
                 thread.ai_summary = result.summary
                 thread.suggested_reply_tone = result.suggested_reply_tone
+                thread.categorization_source = result.source
                 thread.status = EmailStatus.categorized
                 thread.updated_at = datetime.now(timezone.utc)
+
+                # Phase 3: re-decide tier (same reason as manual_categorize).
+                tier_decision = decide_tier(db, result=result, source=result.source)
+                thread.tier = tier_decision.tier
+                thread.tier_set_at = datetime.now(timezone.utc)
+                thread.tier_set_by = current_user.email or "bulk-recategorize"
+
                 log_action(
                     db,
                     action="email.bulk_recategorized",
@@ -254,7 +269,17 @@ def bulk_action(
                     entity_id=str(thread.id),
                     user_id=current_user.id,
                     ip_address=get_client_ip(request),
-                    details={"category": result.category.value, "confidence": result.confidence},
+                    details={
+                        "before": {
+                            "category": before_category.value,
+                            "tier": before_tier.value,
+                        },
+                        "after": {
+                            "category": result.category.value,
+                            "tier": tier_decision.tier.value,
+                        },
+                        "confidence": result.confidence,
+                    },
                 )
 
             db.flush()
@@ -419,6 +444,7 @@ def export_threads(
 def list_threads(
     thread_status: EmailStatus | None = Query(default=None, alias="status"),
     category: EmailCategory | None = Query(default=None),
+    tier: ThreadTier | None = Query(default=None, description="Filter by triage tier"),
     client_email: str | None = Query(default=None),
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
     page: int = Query(default=1, ge=1),
@@ -433,6 +459,8 @@ def list_threads(
         query = query.where(EmailThread.status == thread_status)
     if category is not None:
         query = query.where(EmailThread.category == category)
+    if tier is not None:
+        query = query.where(EmailThread.tier == tier)
     if client_email:
         # Escape LIKE wildcards to prevent unintended pattern matching
         safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -555,13 +583,26 @@ def manual_categorize(
         body=body,
     )
 
+    # Capture before-state so the audit row can show tier transitions
+    before_tier = thread.tier
+    before_category = thread.category
+
     # Update thread
     thread.category = result.category
     thread.category_confidence = result.confidence
     thread.ai_summary = result.summary
     thread.suggested_reply_tone = result.suggested_reply_tone
+    thread.categorization_source = result.source
     thread.status = EmailStatus.categorized
     thread.updated_at = datetime.now(timezone.utc)
+
+    # Phase 3: re-decide tier on every recategorize so a manual fix doesn't
+    # leave the thread stuck in a stale tier (a complaint demoted to general
+    # inquiry must lose its T3 label).
+    tier_decision = decide_tier(db, result=result, source=result.source)
+    thread.tier = tier_decision.tier
+    thread.tier_set_at = datetime.now(timezone.utc)
+    thread.tier_set_by = current_user.email or "manual"
 
     # Check escalation
     engine = get_escalation_engine()
@@ -575,7 +616,14 @@ def manual_categorize(
         user_id=current_user.id,
         ip_address=get_client_ip(request),
         details={
-            "category": result.category.value,
+            "before": {
+                "category": before_category.value,
+                "tier": before_tier.value,
+            },
+            "after": {
+                "category": result.category.value,
+                "tier": tier_decision.tier.value,
+            },
             "confidence": result.confidence,
             "escalation_created": escalation is not None,
         },

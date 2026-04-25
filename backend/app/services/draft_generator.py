@@ -331,14 +331,27 @@ class DraftGeneratorService:
             },
         )
 
-        # Fire notification (non-blocking — log on failure)
+        # Fire notification (non-blocking — log on failure).
+        # Suppress draft.ready for T1 threads when auto-send is enabled — the
+        # auto_send module fires its own thread.auto_sent / thread.auto_send_failed
+        # notifications instead. Avoids spamming staff with "draft ready, please
+        # review" pings for emails the AI is about to handle on its own.
         try:
-            notifier = get_notification_service()
-            notifier.notify_draft_ready(
-                thread_id=str(thread.id),
-                draft_id=str(draft.id),
-                client_email=thread.client_email,
-            )
+            from app.models.email import ThreadTier
+            from app.services.auto_send import is_auto_send_enabled
+            should_notify = True
+            if thread.tier == ThreadTier.t1_auto:
+                gates_open, _ = is_auto_send_enabled(db)
+                if gates_open:
+                    should_notify = False
+
+            if should_notify:
+                notifier = get_notification_service()
+                notifier.notify_draft_ready(
+                    thread_id=str(thread.id),
+                    draft_id=str(draft.id),
+                    client_email=thread.client_email,
+                )
         except Exception as exc:
             logger.error("DraftGenerator: failed to send draft.ready notification: %s", exc)
 

@@ -118,8 +118,8 @@ export default function DashboardLayout({
 
   if (authLoading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-50">
-        <Loader2 className="w-6 h-6 animate-spin text-brand-500" />
+      <div className="flex h-screen items-center justify-center bg-background">
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
       </div>
     );
   }

@@ -28,10 +28,19 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models.email import EmailCategory, EmailMessage, EmailStatus, EmailThread, MessageDirection
+from app.models.email import (
+    CategorizationSource,
+    EmailCategory,
+    EmailMessage,
+    EmailStatus,
+    EmailThread,
+    MessageDirection,
+    ThreadTier,
+)
 from app.services.categorizer import get_categorizer
 from app.services.email_provider import RawEmail, get_email_provider
 from app.services.escalation import get_escalation_engine
+from app.services.tier_engine import decide_tier
 from app.utils.audit import log_action
 
 logger = logging.getLogger(__name__)
@@ -234,9 +243,11 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
         body=body,
     )
 
-    # Record successful Anthropic call for health tracking (T1.13)
-    # Only if we reached this point without error (categorizer returns fallback on errors)
-    if result.confidence > 0.0 or not result.escalation_needed:
+    # Record successful Anthropic call for health tracking (T1.13).
+    # ONLY when Claude actually answered — rules-fallback results don't count
+    # as evidence Anthropic is reachable, otherwise the integrations health
+    # page lies during a Claude outage.
+    if result.source == CategorizationSource.claude:
         _record_successful_anthropic_call()
 
     # Update thread with categorization
@@ -244,8 +255,15 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
     thread.category_confidence = result.confidence
     thread.ai_summary = result.summary
     thread.suggested_reply_tone = result.suggested_reply_tone
+    thread.categorization_source = result.source
     thread.status = EmailStatus.categorized
     thread.updated_at = datetime.now(timezone.utc)
+
+    # Phase 3: tier decision (T1 / T2 / T3)
+    tier_decision = decide_tier(db, result=result, source=result.source)
+    thread.tier = tier_decision.tier
+    thread.tier_set_at = datetime.now(timezone.utc)
+    thread.tier_set_by = "system"
 
     # Mark message processed
     message.is_processed = True
@@ -262,6 +280,9 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
             "category": result.category.value,
             "confidence": result.confidence,
             "escalation_needed": result.escalation_needed,
+            "source": result.source.value,
+            "tier": tier_decision.tier.value,
+            "tier_reason": tier_decision.reason,
             "message_id": str(message.id),
         },
     )
@@ -287,9 +308,12 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
         thread.id, message.id, result.category, result.escalation_needed,
     )
 
-    # T1.8: Return thread_id for deferred draft generation only if appropriate
+    # T1.8: Return thread_id for deferred draft generation only if appropriate.
+    # T3 (escalated) skips draft generation. T1 + T2 both get drafts; T1 may
+    # additionally trigger auto-send in a future enhancement (currently shadow-only).
     should_generate_draft = (
         not escalation
+        and tier_decision.tier != ThreadTier.t3_escalate
         and settings.draft_auto_generate
         and not settings.shadow_mode  # T2.4: Shadow mode disables auto-draft
     )
@@ -302,6 +326,9 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
 
     Errors are caught per-thread and stored as draft_generation_failed on the
     thread record so staff can see which threads need manual drafts.
+
+    Phase 3: After a draft is generated for a T1 thread, attempt auto-send
+    (gated by system_settings.auto_send_enabled + config.shadow_mode).
     """
     db = SessionLocal()
     try:
@@ -318,13 +345,27 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
         draft = generator.generate(db, thread)
         db.commit()
 
-        # Record successful Anthropic call for health tracking
+        # Draft generation only happens when Claude responded successfully.
+        # Mark Anthropic reachable for health tracking.
         _record_successful_anthropic_call()
 
         logger.info(
             "Auto-generated draft %s for thread=%s",
             draft.id, thread.id,
         )
+
+        # Phase 3: T1 auto-send. The function manages its own commits so the
+        # persisted state always matches reality even if we rollback below.
+        if thread.tier == ThreadTier.t1_auto:
+            from app.services.auto_send import maybe_auto_send
+            try:
+                maybe_auto_send(db, thread_id=thread.id, draft_id=draft.id)
+            except Exception as exc:
+                # maybe_auto_send is contractually never-raises, but be defensive.
+                logger.error(
+                    "auto_send wrapper unexpectedly raised for thread=%s: %s",
+                    thread.id, exc, exc_info=True,
+                )
     except Exception as exc:
         db.rollback()
         logger.error(

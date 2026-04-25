@@ -6,6 +6,7 @@ import { Download, Search, X } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { EmailFilters } from "@/components/emails/email-filters";
 import { EmailList } from "@/components/emails/email-list";
+import { TierLanesNav, type TierFilter } from "@/components/emails/tier-lanes-nav";
 import { Pagination } from "@/components/shared/pagination";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
@@ -13,8 +14,14 @@ import { ExportDialog } from "@/components/emails/export-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
+import { useDashboard } from "@/hooks/use-dashboard";
 import { useUser } from "@/hooks/use-user";
-import type { BulkActionRequest } from "@/lib/types";
+import type { BulkActionRequest, ThreadTier } from "@/lib/types";
+
+function parseTierParam(raw: string | null): TierFilter {
+  if (raw === "t1_auto" || raw === "t2_review" || raw === "t3_escalate") return raw;
+  return "all";
+}
 
 export default function EmailsPage() {
   const searchParams = useSearchParams();
@@ -23,6 +30,7 @@ export default function EmailsPage() {
   // Filter state — initialised from URL search params
   const [status, setStatus] = useState(searchParams.get("status") ?? "");
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
+  const [tier, setTier] = useState<TierFilter>(parseTierParam(searchParams.get("tier")));
   const [clientEmail, setClientEmail] = useState(searchParams.get("client_email") ?? "");
   const [assignedTo, setAssignedTo] = useState("");
   const [page, setPage] = useState(1);
@@ -42,6 +50,7 @@ export default function EmailsPage() {
     setClientEmail(searchParams.get("client_email") ?? "");
     setStatus(searchParams.get("status") ?? "");
     setCategory(searchParams.get("category") ?? "");
+    setTier(parseTierParam(searchParams.get("tier")));
     setPage(1);
   }, [searchParams]);
 
@@ -50,12 +59,19 @@ export default function EmailsPage() {
   const { threads, total, isLoading, isError, mutate } = useEmails({
     status: isSearchActive ? undefined : (status || undefined),
     category: isSearchActive ? undefined : (category || undefined),
+    tier: isSearchActive || tier === "all" ? undefined : (tier as ThreadTier),
     client_email: isSearchActive ? undefined : (clientEmail || undefined),
     assigned_to: isSearchActive ? undefined : (assignedTo || undefined),
     search: searchTerm || undefined,
     page,
     page_size: 25,
   });
+
+  // Pull tier counts from dashboard stats. SWR caches this independently from the
+  // emails list, so changing tier doesn't refetch counts.
+  const { stats } = useDashboard();
+  const tierCounts = stats?.threads_by_tier;
+  const tierTotal = stats?.totals.threads;
 
   // Clear selection whenever the thread list changes
   useEffect(() => {
@@ -65,10 +81,16 @@ export default function EmailsPage() {
   const handleClear = () => {
     setStatus("");
     setCategory("");
+    setTier("all");
     setClientEmail("");
     setAssignedTo("");
     setSearchInput("");
     setSearchTerm("");
+    setPage(1);
+  };
+
+  const handleTierChange = (next: TierFilter) => {
+    setTier(next);
     setPage(1);
   };
 
@@ -139,7 +161,7 @@ export default function EmailsPage() {
           isAdmin ? (
             <Button
               variant="outline"
-              className="text-gray-600"
+              className="text-muted-foreground"
               onClick={() => setShowExport(true)}
             >
               <Download className="w-4 h-4 mr-1.5" />
@@ -149,9 +171,19 @@ export default function EmailsPage() {
         }
       />
 
+      {/* Tier lanes — hidden during search so search results aren't tier-filtered */}
+      {!isSearchActive && (
+        <TierLanesNav
+          active={tier}
+          counts={tierCounts}
+          total={tierTotal}
+          onChange={handleTierChange}
+        />
+      )}
+
       {/* Global search bar */}
       <div className="relative mb-3">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
         <Input
           value={searchInput}
           onChange={(e) => handleSearchInput(e.target.value)}
@@ -161,7 +193,7 @@ export default function EmailsPage() {
         {searchInput && (
           <button
             onClick={handleClearSearch}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
             aria-label="Clear search"
           >
             <X className="w-3.5 h-3.5" />

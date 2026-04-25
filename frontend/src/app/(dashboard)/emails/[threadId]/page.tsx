@@ -50,7 +50,7 @@ export default function ThreadDetailPage({
   if (!thread) {
     return (
       <div className="flex flex-col items-center justify-center py-24">
-        <p className="text-sm text-gray-500">Thread not found.</p>
+        <p className="text-sm text-muted-foreground">Thread not found.</p>
         <Link
           href="/emails"
           className="mt-3 text-sm text-brand-500 hover:text-brand-600 flex items-center gap-1"
@@ -68,7 +68,7 @@ export default function ThreadDetailPage({
       <div className="px-6 pt-4 pb-2 flex-shrink-0">
         <Link
           href="/emails"
-          className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-muted-foreground transition-colors"
         >
           <ChevronLeft className="w-3.5 h-3.5" />
           Emails
@@ -81,7 +81,7 @@ export default function ThreadDetailPage({
         <ThreadDetail thread={thread} escalation={escalation ?? undefined} onThreadChange={handleThreadChange} />
 
         {/* Right panel: draft workflow */}
-        <div className="border-t lg:border-t-0 lg:border-l border-gray-200 min-h-0 overflow-hidden flex flex-col">
+        <div className="border-t lg:border-t-0 lg:border-l border-border min-h-0 overflow-hidden flex flex-col">
           <DraftPanel
             thread={thread}
             draft={draft}

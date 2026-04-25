@@ -13,6 +13,8 @@ import type {
 interface UseEmailsParams {
   status?: string;
   category?: string;
+  /** Phase 3: filter by triage tier */
+  tier?: string;
   client_email?: string;
   assigned_to?: string;
   search?: string;
@@ -26,6 +28,7 @@ export function useEmails(params: UseEmailsParams = {}) {
     page_size = 25,
     status,
     category,
+    tier,
     client_email,
     assigned_to,
     search,
@@ -43,6 +46,7 @@ export function useEmails(params: UseEmailsParams = {}) {
   } else {
     if (status) searchParams.set("status", status);
     if (category) searchParams.set("category", category);
+    if (tier) searchParams.set("tier", tier);
     if (client_email) searchParams.set("client_email", client_email);
     if (assigned_to) searchParams.set("assigned_to", assigned_to);
   }

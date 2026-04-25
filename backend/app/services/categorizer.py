@@ -21,8 +21,9 @@ import anthropic
 from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import get_settings
-from app.models.email import EmailCategory
+from app.models.email import CategorizationSource, EmailCategory
 from app.schemas.email import CategorizationResult
+from app.services.rules_engine import categorize_with_rules
 from app.utils.sanitize import strip_html
 
 logger = logging.getLogger(__name__)
@@ -205,14 +206,26 @@ def _parse_response(content: str) -> CategorizationResult:
 
 
 def _fallback_result(reason: str) -> CategorizationResult:
+    """Hard fallback used when even the rules engine cannot run (e.g., empty email).
+
+    Always escalates to staff to fail safe.
+    """
     return CategorizationResult(
         category=EmailCategory.uncategorized,
         confidence=0.0,
-        escalation_needed=True,  # Fail safe: escalate if categorization failed
+        escalation_needed=True,
         escalation_reasons=[f"Categorization failed: {reason}"],
         summary="Could not automatically categorize this email.",
         suggested_reply_tone="professional",
+        source=CategorizationSource.rules_fallback,
     )
+
+
+def _rules_fallback(*, sender: str, subject: str, body: str) -> CategorizationResult:
+    """Run the keyword-based rules engine and tag the result with rules_fallback source."""
+    result = categorize_with_rules(sender=sender, subject=subject, body=body)
+    # Override source — rules engine doesn't know it's running as a fallback
+    return result.model_copy(update={"source": CategorizationSource.rules_fallback})
 
 
 def _deterministic_escalation_check(subject: str, body: str) -> bool:
@@ -272,8 +285,19 @@ class CategorizerService:
             try:
                 check_budget()
             except Exception as exc:
-                logger.warning("Categorizer: AI budget exceeded, skipping Claude call: %s", exc)
-                return _fallback_result(f"Budget exceeded: {exc}")
+                logger.warning(
+                    "Categorizer: AI budget exceeded — falling back to rules engine: %s",
+                    exc,
+                )
+                return _rules_fallback(sender=sender, subject=subject, body=body or "")
+
+        # Skip Claude entirely if no API key configured (e.g., local dev).
+        api_key = get_settings().anthropic_api_key
+        if not api_key or api_key.startswith("sk-ant-placeholder"):
+            logger.info(
+                "Categorizer: no real Anthropic key — using rules-fallback engine"
+            )
+            return _rules_fallback(sender=sender, subject=subject, body=body or "")
 
         if not body and not subject:
             return _fallback_result("Empty email")
@@ -326,11 +350,17 @@ class CategorizerService:
             )
             return result
         except anthropic.APIError as exc:
-            logger.error("Categorizer: Anthropic API error: %s", exc)
-            return _fallback_result(f"API error: {exc}")
+            logger.error(
+                "Categorizer: Anthropic API error — falling back to rules engine: %s",
+                exc,
+            )
+            return _rules_fallback(sender=sender, subject=subject, body=body or "")
         except Exception as exc:
-            logger.error("Categorizer: unexpected error: %s", exc, exc_info=True)
-            return _fallback_result(f"Unexpected error: {exc}")
+            logger.error(
+                "Categorizer: unexpected error — falling back to rules engine: %s",
+                exc, exc_info=True,
+            )
+            return _rules_fallback(sender=sender, subject=subject, body=body or "")
 
 
 # Module-level singleton — imported by other services

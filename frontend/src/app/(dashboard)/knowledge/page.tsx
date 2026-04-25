@@ -68,7 +68,7 @@ export default function KnowledgePage() {
           </SelectContent>
         </Select>
 
-        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
           <Switch
             checked={showInactive}
             onCheckedChange={(v) => {

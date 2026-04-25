@@ -27,14 +27,14 @@ function AttachmentBadge({
         "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium",
         dark
           ? "bg-brand-600 text-brand-100"
-          : "bg-gray-100 text-gray-600 border border-gray-200"
+          : "bg-muted text-muted-foreground border border-border"
       )}
       title={attachment.content_type ?? undefined}
     >
       <Paperclip className="w-2.5 h-2.5 flex-shrink-0" />
       <span className="truncate max-w-[140px]">{attachment.filename}</span>
       {attachment.size !== null && (
-        <span className={cn("ml-0.5", dark ? "text-brand-300" : "text-gray-400")}>
+        <span className={cn("ml-0.5", dark ? "text-brand-300" : "text-muted-foreground")}>
           {formatBytes(attachment.size)}
         </span>
       )}
@@ -49,9 +49,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   return (
     <div className={cn("flex flex-col max-w-[75%]", isInbound ? "self-start" : "self-end")}>
       {isInbound ? (
-        <div className="bg-white rounded-xl rounded-tl-sm px-4 py-3 border border-gray-200 shadow-sm">
-          <p className="text-xs font-medium text-gray-500 mb-1">{message.sender}</p>
-          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+        <div className="bg-card rounded-xl rounded-tl-sm px-4 py-3 border border-border shadow-sm">
+          <p className="text-xs font-medium text-muted-foreground mb-1">{message.sender}</p>
+          <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
             {message.body_text ?? "(no content)"}
           </p>
           {hasAttachments && (
@@ -61,7 +61,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               ))}
             </div>
           )}
-          <p className="text-[10px] text-gray-400 mt-2 text-right">
+          <p className="text-[10px] text-muted-foreground mt-2 text-right">
             {formatDate(message.received_at)}
           </p>
         </div>

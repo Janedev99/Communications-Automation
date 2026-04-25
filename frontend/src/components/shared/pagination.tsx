@@ -15,7 +15,7 @@ export function Pagination({ page, pageSize, total, onPageChange }: PaginationPr
 
   return (
     <div className="flex items-center justify-between mt-4 px-1">
-      <span className="text-xs text-gray-400">
+      <span className="text-xs text-muted-foreground">
         {total === 0 ? "No results" : `Showing ${from}–${to} of ${total}`}
       </span>
       <div className="flex items-center gap-2">
@@ -27,7 +27,7 @@ export function Pagination({ page, pageSize, total, onPageChange }: PaginationPr
         >
           <ChevronLeft className="w-4 h-4" />
         </Button>
-        <span className="text-sm font-medium text-gray-600 min-w-[80px] text-center">
+        <span className="text-sm font-medium text-muted-foreground min-w-[80px] text-center">
           Page {page} of {totalPages}
         </span>
         <Button

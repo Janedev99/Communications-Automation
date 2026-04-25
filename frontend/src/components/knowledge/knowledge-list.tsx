@@ -52,7 +52,7 @@ export function KnowledgeList({ entries, onRefresh }: KnowledgeListProps) {
 
   if (entries.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
         <EmptyState
           icon={BookOpen}
           title="No entries found"
@@ -64,29 +64,29 @@ export function KnowledgeList({ entries, onRefresh }: KnowledgeListProps) {
 
   return (
     <>
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow className="bg-gray-50/80 hover:bg-gray-50/80">
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+            <TableRow className="bg-muted/80 hover:bg-accent/80">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Title
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[140px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[140px]">
                 Category
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
                 Type
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[180px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[180px]">
                 Tags
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[70px] text-center">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[70px] text-center">
                 Used
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[120px]">
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
                 Updated
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 w-[80px]" />
+              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[80px]" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -94,15 +94,15 @@ export function KnowledgeList({ entries, onRefresh }: KnowledgeListProps) {
               <TableRow
                 key={entry.id}
                 className={cn(
-                  "border-b border-gray-100 hover:bg-gray-50/60 transition-colors",
+                  "border-b border-border/60 hover:bg-accent/60 transition-colors",
                   !entry.is_active && "opacity-50"
                 )}
               >
                 <TableCell className="px-4 py-3">
-                  <span className="text-sm font-medium text-gray-800">{entry.title}</span>
+                  <span className="text-sm font-medium text-foreground">{entry.title}</span>
                 </TableCell>
                 <TableCell className="px-4 py-3 w-[140px]">
-                  <span className="text-sm text-gray-600">{entry.category ?? "—"}</span>
+                  <span className="text-sm text-muted-foreground">{entry.category ?? "—"}</span>
                 </TableCell>
                 <TableCell className="px-4 py-3 w-[120px]">
                   <span
@@ -119,30 +119,30 @@ export function KnowledgeList({ entries, onRefresh }: KnowledgeListProps) {
                     {(entry.tags ?? []).slice(0, 3).map((tag) => (
                       <span
                         key={tag}
-                        className="bg-gray-100 text-gray-600 rounded-full px-2 py-0.5 text-[10px]"
+                        className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px]"
                       >
                         {tag}
                       </span>
                     ))}
                     {(entry.tags?.length ?? 0) > 3 && (
-                      <span className="text-[10px] text-gray-400">
+                      <span className="text-[10px] text-muted-foreground">
                         +{(entry.tags?.length ?? 0) - 3}
                       </span>
                     )}
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-3 w-[70px] text-center text-sm text-gray-500">
+                <TableCell className="px-4 py-3 w-[70px] text-center text-sm text-muted-foreground">
                   {entry.usage_count}
                 </TableCell>
                 <TableCell className="px-4 py-3 w-[120px]">
-                  <span className="text-xs text-gray-400">
+                  <span className="text-xs text-muted-foreground">
                     {relativeTime(entry.updated_at)}
                   </span>
                 </TableCell>
                 <TableCell className="px-4 py-3 w-[80px]">
                   <DropdownMenu>
                     <DropdownMenuTrigger
-                      className="inline-flex items-center justify-center h-8 w-8 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                      className="inline-flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                       aria-label="Actions"
                     >
                       <MoreHorizontal className="w-4 h-4" />

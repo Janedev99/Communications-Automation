@@ -62,6 +62,30 @@ class DraftStatus(str, enum.Enum):
     send_failed = "send_failed"  # Provider call failed; idempotency key retained for retry
 
 
+class ThreadTier(str, enum.Enum):
+    """Triage tier — decides how a thread is handled.
+
+    t1_auto       — high-confidence, allowlisted category, AI may auto-send.
+    t2_review     — staff must review the AI draft before send (default).
+    t3_escalate   — escalation required, no auto-draft.
+    """
+    t1_auto = "t1_auto"
+    t2_review = "t2_review"
+    t3_escalate = "t3_escalate"
+
+
+class CategorizationSource(str, enum.Enum):
+    """Where the categorization decision came from.
+
+    claude          — Claude API succeeded.
+    rules_fallback  — Claude unavailable; keyword/KB-based fallback.
+    manual          — A user re-categorized the thread by hand.
+    """
+    claude = "claude"
+    rules_fallback = "rules_fallback"
+    manual = "manual"
+
+
 class EmailThread(Base):
     __tablename__ = "email_threads"
 
@@ -102,6 +126,26 @@ class EmailThread(Base):
         Boolean, nullable=False, default=False
     )
     draft_generation_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Phase 3: Tier-based triage — see services/tier_engine.py for assignment logic
+    tier: Mapped[ThreadTier] = mapped_column(
+        Enum(ThreadTier, name="thread_tier"),
+        nullable=False,
+        default=ThreadTier.t2_review,
+        index=True,
+    )
+    tier_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    tier_set_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    categorization_source: Mapped[CategorizationSource] = mapped_column(
+        Enum(CategorizationSource, name="categorization_source"),
+        nullable=False,
+        default=CategorizationSource.claude,
+    )
+    auto_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

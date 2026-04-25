@@ -4,26 +4,62 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 10%;
-    --card: 0 0% 100%;
+    /* Surfaces — canvas is the page bg, card is the raised surface */
+    --background: 240 5% 97%;          /* gray-50 — page canvas */
+    --foreground: 240 10% 10%;         /* near-black — primary text */
+    --card: 0 0% 100%;                 /* white — raised surfaces (header, cards) */
     --card-foreground: 240 10% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 240 10% 10%;
-    --primary: 223 82% 58%;
+
+    /* Brand */
+    --primary: 223 82% 58%;            /* brand-500 #3B6FF0 */
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 5% 96%;
+
+    /* Subtle surfaces / muted text */
+    --secondary: 240 5% 94%;           /* slightly darker than canvas */
     --secondary-foreground: 240 6% 28%;
     --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;
-    --accent: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;    /* secondary text — labels, metadata */
+    --accent: 240 5% 92%;              /* hover bg */
     --accent-foreground: 240 6% 28%;
+
+    /* Status */
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
+
+    /* Borders + focus */
     --border: 240 6% 90%;
     --input: 240 6% 90%;
     --ring: 223 82% 58%;
+
     --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 240 10% 4%;          /* near-black canvas */
+    --foreground: 0 0% 95%;            /* off-white primary text */
+    --card: 240 8% 8%;                 /* slightly raised surface */
+    --card-foreground: 0 0% 95%;
+    --popover: 240 8% 8%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 223 82% 62%;            /* slight lift for dark contrast */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 6% 12%;
+    --secondary-foreground: 0 0% 90%;
+    --muted: 240 6% 14%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 240 6% 16%;
+    --accent-foreground: 0 0% 95%;
+
+    --destructive: 0 65% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 5% 18%;
+    --input: 240 5% 18%;
+    --ring: 223 82% 62%;
   }
 
   * {
@@ -31,7 +67,19 @@
   }
 
   body {
-    @apply bg-gray-50 text-gray-800 font-sans antialiased;
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  /* Respect user's reduced-motion preference globally */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 

@@ -101,7 +101,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Title
             </label>
             <Input
@@ -114,7 +114,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Entry Type
             </label>
             <Select value={entryType} onValueChange={(v) => v && setEntryType(v as EntryType)}>
@@ -130,8 +130,8 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Category <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              Category <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Select value={category || "_all"} onValueChange={(v) => setCategory(!v || v === "_all" ? "" : v)}>
               <SelectTrigger disabled={loading}>
@@ -151,8 +151,8 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Tags <span className="text-gray-400 font-normal">(comma-separated)</span>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              Tags <span className="text-muted-foreground font-normal">(comma-separated)</span>
             </label>
             <Input
               value={tags}
@@ -163,7 +163,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-foreground mb-1.5">
               Content
             </label>
             <Textarea

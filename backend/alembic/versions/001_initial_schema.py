@@ -61,7 +61,7 @@ def upgrade() -> None:
         sa.Column("hashed_password", sa.String(255), nullable=False),
         sa.Column(
             "role",
-            sa.Enum("staff", "admin", name="user_role", create_type=False),
+            postgresql.ENUM("staff", "admin", name="user_role", create_type=False),
             nullable=False,
             server_default="staff",
         ),
@@ -113,7 +113,7 @@ def upgrade() -> None:
         sa.Column("client_name", sa.String(255), nullable=True),
         sa.Column(
             "status",
-            sa.Enum("new", "categorized", "draft_ready", "pending_review",
+            postgresql.ENUM("new", "categorized", "draft_ready", "pending_review",
                     "sent", "escalated", "closed",
                     name="email_status", create_type=False),
             nullable=False,
@@ -121,7 +121,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "category",
-            sa.Enum("status_update", "document_request", "appointment", "clarification",
+            postgresql.ENUM("status_update", "document_request", "appointment", "clarification",
                     "general_inquiry", "complaint", "urgent", "uncategorized",
                     name="email_category", create_type=False),
             nullable=False,
@@ -166,7 +166,7 @@ def upgrade() -> None:
         sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "direction",
-            sa.Enum("inbound", "outbound", name="message_direction", create_type=False),
+            postgresql.ENUM("inbound", "outbound", name="message_direction", create_type=False),
             nullable=False,
             server_default="inbound",
         ),
@@ -192,7 +192,7 @@ def upgrade() -> None:
         sa.Column("body_text", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("pending", "approved", "rejected", "sent",
+            postgresql.ENUM("pending", "approved", "rejected", "sent",
                     name="draft_status", create_type=False),
             nullable=False,
             server_default="pending",
@@ -226,14 +226,14 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column(
             "severity",
-            sa.Enum("low", "medium", "high", "critical",
+            postgresql.ENUM("low", "medium", "high", "critical",
                     name="escalation_severity", create_type=False),
             nullable=False,
             server_default="medium",
         ),
         sa.Column(
             "status",
-            sa.Enum("pending", "acknowledged", "resolved",
+            postgresql.ENUM("pending", "acknowledged", "resolved",
                     name="escalation_status", create_type=False),
             nullable=False,
             server_default="pending",

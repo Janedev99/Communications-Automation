@@ -97,7 +97,7 @@ export function EmailList({
                 className={cn(
                   "transition-colors border-b border-border/60",
                   isSelected
-                    ? "bg-brand-50/60 hover:bg-brand-50"
+                    ? "bg-primary/10 hover:bg-primary/15"
                     : "hover:bg-accent/60"
                 )}
               >

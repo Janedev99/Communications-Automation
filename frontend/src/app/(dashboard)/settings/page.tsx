@@ -69,7 +69,7 @@ export default function SettingsPage() {
                   Decide which email categories may be auto-handled by AI (T1) and at what confidence.
                 </span>
               </span>
-              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden="true" />
             </Link>
             <Link
               href="/settings/integrations"
@@ -84,7 +84,7 @@ export default function SettingsPage() {
                   Live status of database, Anthropic, email provider, and notifications.
                 </span>
               </span>
-              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden="true" />
             </Link>
           </div>
         </section>

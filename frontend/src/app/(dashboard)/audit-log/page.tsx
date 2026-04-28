@@ -269,7 +269,7 @@ export default function AuditLogPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={actionFilter || "__all__"}
-            onValueChange={(v) => setActionFilter(v === "__all__" ? "" : v)}
+            onValueChange={(v) => setActionFilter(v == null || v === "__all__" ? "" : v)}
           >
             <SelectTrigger className="w-[200px] h-8 text-xs">
               <SelectValue placeholder="Any action" />
@@ -286,7 +286,7 @@ export default function AuditLogPage() {
 
           <Select
             value={entityFilter || "__all__"}
-            onValueChange={(v) => setEntityFilter(v === "__all__" ? "" : v)}
+            onValueChange={(v) => setEntityFilter(v == null || v === "__all__" ? "" : v)}
           >
             <SelectTrigger className="w-[160px] h-8 text-xs">
               <SelectValue placeholder="Any entity" />
@@ -303,7 +303,7 @@ export default function AuditLogPage() {
 
           <Select
             value={actorFilter || "__all__"}
-            onValueChange={(v) => setActorFilter(v === "__all__" ? "" : v)}
+            onValueChange={(v) => setActorFilter(v == null || v === "__all__" ? "" : v)}
           >
             <SelectTrigger className="w-[140px] h-8 text-xs">
               <SelectValue placeholder="Any actor" />

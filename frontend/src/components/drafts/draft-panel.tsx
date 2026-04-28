@@ -374,12 +374,16 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           {hasDraftFailure ? (
             <div
               role="alert"
-              className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3 w-full text-left"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-3 w-full text-left"
             >
-              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <AlertTriangle
+                className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-amber-900 text-sm">AI draft failed to generate</p>
-                <p className="text-xs text-amber-800 mt-0.5">
+                <p className="font-semibold text-foreground text-sm">AI draft failed to generate</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
                   {thread.draft_generation_failed_at
                     ? `Last attempted ${relativeTime(thread.draft_generation_failed_at)}.`
                     : "The last generation attempt failed."}{" "}
@@ -388,7 +392,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 <div className="flex items-center gap-2 mt-3">
                   <Button
                     size="sm"
-                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                    className="bg-amber-600 hover:bg-amber-700 text-white dark:bg-amber-500 dark:hover:bg-amber-600"
                     onClick={handleGenerate}
                     disabled={generating}
                     aria-label="Retry AI draft generation"
@@ -405,7 +409,6 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="text-amber-700 hover:text-amber-900 hover:bg-amber-100"
                     onClick={async () => {
                       // Create an empty manual draft so the editor opens
                       try {
@@ -505,11 +508,11 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       <div className="bg-card flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-red-50 border border-red-200">
-            <p className="text-xs font-medium text-red-600 uppercase tracking-wide">Rejected</p>
-            <p className="text-sm text-red-700 mt-1">{draft.rejection_reason}</p>
+          <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30">
+            <p className="text-[11px] font-semibold text-destructive uppercase tracking-wider">Rejected</p>
+            <p className="text-sm text-foreground/90 mt-1 leading-relaxed">{draft.rejection_reason}</p>
             {draft.reviewed_at && (
-              <p className="text-xs text-red-400 mt-2">{formatDate(draft.reviewed_at)}</p>
+              <p className="text-xs text-muted-foreground mt-2">{formatDate(draft.reviewed_at)}</p>
             )}
           </div>
           <div className="px-5 py-4">
@@ -578,10 +581,10 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       <div className="bg-card flex flex-col h-full">
         {panelHeader}
         <div className="flex-1 overflow-y-auto">
-          <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200">
-            <p className="text-sm text-emerald-700 font-medium">Draft sent successfully</p>
+          <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-emerald-500/10 border border-emerald-500/30">
+            <p className="text-sm text-emerald-700 dark:text-emerald-300 font-medium">Draft sent successfully</p>
             {draft.reviewed_at && (
-              <p className="text-xs text-emerald-500 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 Sent {formatDate(draft.reviewed_at)}
               </p>
             )}
@@ -615,8 +618,8 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       {/* Editor */}
       <div className="flex-1 px-5 py-4 overflow-hidden flex flex-col">
         {draft.status === "approved" && (
-          <div className="flex items-center gap-1.5 mb-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
-            <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+          <div className="flex items-center gap-1.5 mb-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-1.5">
+            <Lock className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={1.75} />
             <span>Approved — editing locked</span>
           </div>
         )}
@@ -730,29 +733,29 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             )}
 
             {sendState.phase === "sent" && (
-              <div className="flex items-center gap-2 w-full bg-emerald-50 border border-emerald-200 rounded-md px-4 py-2.5">
-                <CheckCircle className="w-4 h-4 text-emerald-600" />
-                <span className="text-sm font-medium text-emerald-700">
+              <div className="flex items-center gap-2 w-full bg-emerald-500/10 border border-emerald-500/30 rounded-md px-4 py-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" strokeWidth={1.75} />
+                <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
                   Sent at {sendState.sentAt}
                 </span>
               </div>
             )}
 
             {sendState.phase === "error" && (
-              <div className="flex items-center justify-between gap-3 w-full bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+              <div className="flex items-center justify-between gap-3 w-full bg-destructive/10 border border-destructive/30 rounded-md px-4 py-2.5">
                 <div className="flex items-center gap-2 min-w-0">
-                  <X className="w-4 h-4 text-red-500 flex-shrink-0" />
-                  <span className="text-sm text-red-700 truncate">{sendState.message}</span>
+                  <X className="w-4 h-4 text-destructive flex-shrink-0" strokeWidth={2} />
+                  <span className="text-sm text-foreground/90 truncate">{sendState.message}</span>
                   {draft.send_attempts > 1 && (
-                    <span className="flex-shrink-0 text-xs font-medium text-red-500 bg-red-100 rounded px-1.5 py-0.5">
+                    <span className="flex-shrink-0 text-xs font-medium text-destructive bg-destructive/20 rounded px-1.5 py-0.5">
                       Attempt {draft.send_attempts}
                     </span>
                   )}
                 </div>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
-                  className="border-red-300 text-red-600 hover:bg-red-100 flex-shrink-0"
+                  className="flex-shrink-0"
                   onClick={executeSend}
                 >
                   Retry
@@ -768,17 +771,16 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 <Button
                   onClick={handleApprove}
                   disabled={approving}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
                   data-shortcut="approve"
                 >
                   <Check className="w-4 h-4 mr-1.5" />
                   {approving ? "Approving..." : "Approve"}
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   onClick={() => setShowRejectionDialog(true)}
                   disabled={rejecting}
-                  className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
                   data-shortcut="reject"
                 >
                   <X className="w-4 h-4 mr-1.5" />

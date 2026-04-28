@@ -21,22 +21,27 @@ export function Pagination({ page, pageSize, total, onPageChange }: PaginationPr
       <div className="flex items-center gap-2">
         <Button
           variant="outline"
-          size="sm"
+          size="icon-sm"
           onClick={() => onPageChange(page - 1)}
           disabled={page <= 1}
+          aria-label="Previous page"
         >
-          <ChevronLeft className="w-4 h-4" />
+          <ChevronLeft className="w-4 h-4" aria-hidden="true" />
         </Button>
-        <span className="text-sm font-medium text-muted-foreground min-w-[80px] text-center">
+        <span
+          className="text-sm font-medium text-muted-foreground min-w-[80px] text-center tabular-nums"
+          aria-live="polite"
+        >
           Page {page} of {totalPages}
         </span>
         <Button
           variant="outline"
-          size="sm"
+          size="icon-sm"
           onClick={() => onPageChange(page + 1)}
           disabled={page >= totalPages}
+          aria-label="Next page"
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-4 h-4" aria-hidden="true" />
         </Button>
       </div>
     </div>

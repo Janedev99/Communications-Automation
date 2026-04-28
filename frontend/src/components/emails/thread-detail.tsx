@@ -116,7 +116,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleReopen}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+                className="h-7 text-xs gap-1 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
               >
                 <CheckCircle className="w-3.5 h-3.5" />
                 Reopen
@@ -162,11 +162,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
         </div>
 
         {thread.ai_summary && (
-          <div className="mt-3 bg-muted rounded-md px-3 py-2 border border-border/60">
-            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
+          <div className="mt-3 bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
+            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
               AI Summary
             </p>
-            <p className="text-sm text-muted-foreground leading-relaxed">{thread.ai_summary}</p>
+            <p className="text-sm text-foreground/80 leading-relaxed">{thread.ai_summary}</p>
           </div>
         )}
 
@@ -179,12 +179,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
 
       {/* Escalation banner */}
       {escalation && (
-        <div className="mx-6 mt-3 px-4 py-3 rounded-md bg-red-50 border border-red-200 flex-shrink-0">
+        <div className="mx-6 mt-3 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30 flex-shrink-0">
           <div className="flex items-start gap-3">
-            <AlertTriangle className="text-red-500 w-5 h-5 mt-0.5 flex-shrink-0" />
+            <AlertTriangle className="text-destructive w-5 h-5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-medium text-red-700">Escalated</span>
+                <span className="text-sm font-medium text-destructive">Escalated</span>
                 <span
                   className={cn(
                     "rounded-full px-2 py-0.5 text-xs font-medium",
@@ -194,15 +194,15 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                   {SEVERITY_LABELS[escalation.severity]}
                 </span>
               </div>
-              <p className="text-sm text-red-600 mt-1 leading-relaxed">{escalation.reason}</p>
-              <p className="text-xs text-red-400 mt-1">
+              <p className="text-sm text-foreground/90 mt-1 leading-relaxed">{escalation.reason}</p>
+              <p className="text-xs text-muted-foreground mt-1">
                 Created {formatDate(escalation.created_at)}
                 {escalation.assigned_to_id && " · Assigned"}
               </p>
             </div>
             <Link
               href="/escalations"
-              className="text-xs text-red-600 hover:text-red-700 underline flex-shrink-0"
+              className="text-xs font-medium text-destructive hover:underline flex-shrink-0"
             >
               View escalation
             </Link>

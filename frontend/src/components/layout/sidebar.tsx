@@ -51,7 +51,8 @@ function NotificationDot({ show }: { show: boolean }) {
   if (!show) return null;
   return (
     <span
-      className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-background"
+      role="status"
+      className="absolute top-1 right-1 w-2 h-2 rounded-full bg-destructive ring-2 ring-background"
       aria-label="New items"
     />
   );
@@ -159,21 +160,30 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
               {/* High/critical count badge + overdue pulsing dot */}
               {!collapsed && isEscalations && highCriticalCount > 0 && (
-                <span className="flex items-center gap-1.5 ml-auto">
+                <span
+                  className="flex items-center gap-1.5 ml-auto"
+                  aria-label={`${highCriticalCount} high or critical ${highCriticalCount === 1 ? "escalation" : "escalations"}`}
+                >
                   {criticalCount > 0 && (
                     <span
-                      className="w-2 h-2 rounded-full bg-red-500 animate-pulse motion-reduce:animate-none"
-                      aria-label="Critical escalation overdue"
+                      className="w-2 h-2 rounded-full bg-destructive animate-pulse motion-reduce:animate-none"
+                      aria-hidden="true"
                     />
                   )}
-                  <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold">
+                  <span
+                    className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-semibold tabular-nums"
+                    aria-hidden="true"
+                  >
                     {highCriticalCount > 99 ? "99+" : highCriticalCount}
                   </span>
                 </span>
               )}
               {/* Collapsed state: numeric badge above icon */}
               {collapsed && isEscalations && highCriticalCount > 0 && (
-                <span className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none">
+                <span
+                  className="absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-destructive text-destructive-foreground text-[9px] font-semibold leading-none tabular-nums"
+                  aria-label={`${highCriticalCount} high or critical ${highCriticalCount === 1 ? "escalation" : "escalations"}`}
+                >
                   {highCriticalCount > 9 ? "9+" : highCriticalCount}
                 </span>
               )}

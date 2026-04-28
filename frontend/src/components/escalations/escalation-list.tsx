@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import {
   Table,
@@ -178,61 +178,83 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
                 {/* Expanded detail row */}
                 {expandedId === esc.id && (
-                  <TableRow key={`${esc.id}-expanded`} className="bg-muted border-b border-border">
-                    <TableCell colSpan={6} className="px-6 py-4">
-                      <div className="space-y-3">
-                        <p className="text-sm text-muted-foreground leading-relaxed">{esc.reason}</p>
-
-                        <div className="flex items-center gap-3">
-                          <Link
-                            href={`/emails/${esc.thread_id}`}
-                            className="inline-flex items-center gap-1 text-sm text-brand-500 hover:text-brand-600"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            View Thread
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </Link>
+                  <TableRow key={`${esc.id}-expanded`} className="bg-muted/40 border-b border-border hover:bg-muted/40">
+                    <TableCell
+                      colSpan={6}
+                      className="px-6 py-5 whitespace-normal break-words align-top"
+                    >
+                      <div className="max-w-3xl space-y-4">
+                        {/* AI summary card */}
+                        <div className="rounded-md border border-border bg-card p-3.5">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <Sparkles
+                              className="w-3.5 h-3.5 text-muted-foreground"
+                              strokeWidth={1.75}
+                            />
+                            <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                              AI summary
+                            </span>
+                          </div>
+                          <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words">
+                            {esc.reason}
+                          </p>
                         </div>
 
-                        {/* Action buttons based on status */}
-                        {esc.status === "pending" && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleAcknowledge(esc);
-                            }}
-                            disabled={acknowledging === esc.id}
-                          >
-                            {acknowledging === esc.id ? "Acknowledging..." : "Acknowledge"}
-                          </Button>
-                        )}
-
-                        {esc.status === "acknowledged" && (
-                          <Button
-                            size="sm"
-                            className="bg-brand-500 hover:bg-brand-600 text-white"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setResolveEscalation(esc);
-                            }}
-                          >
-                            Resolve
-                          </Button>
-                        )}
-
+                        {/* Resolution notes (resolved only) */}
                         {esc.status === "resolved" && esc.resolution_notes && (
-                          <div className="bg-emerald-50 rounded-md px-3 py-2 border border-emerald-200">
-                            <p className="text-xs font-medium text-emerald-700 mb-1">Resolution Notes</p>
-                            <p className="text-sm text-emerald-700">{esc.resolution_notes}</p>
+                          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3.5">
+                            <p className="text-[11px] font-medium uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-1.5">
+                              Resolution notes
+                            </p>
+                            <p className="text-sm text-emerald-700 dark:text-emerald-300 leading-relaxed whitespace-pre-wrap break-words">
+                              {esc.resolution_notes}
+                            </p>
                             {esc.resolved_at && (
-                              <p className="text-xs text-emerald-500 mt-1">
+                              <p className="text-xs text-emerald-600/80 dark:text-emerald-400/80 mt-2">
                                 Resolved {formatDate(esc.resolved_at)}
                               </p>
                             )}
                           </div>
                         )}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <Link
+                            href={`/emails/${esc.thread_id}`}
+                            className="inline-flex items-center gap-1 text-sm text-brand-500 hover:text-brand-600"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            View thread
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </Link>
+
+                          {esc.status === "pending" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAcknowledge(esc);
+                              }}
+                              disabled={acknowledging === esc.id}
+                            >
+                              {acknowledging === esc.id ? "Acknowledging..." : "Acknowledge"}
+                            </Button>
+                          )}
+
+                          {esc.status === "acknowledged" && (
+                            <Button
+                              size="sm"
+                              className="bg-brand-500 hover:bg-brand-600 text-white"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setResolveEscalation(esc);
+                              }}
+                            >
+                              Resolve
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </TableCell>
                   </TableRow>

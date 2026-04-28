@@ -406,7 +406,7 @@ export default function TutorialsPage() {
       </div>
 
       {/* Two-pane: step list + content */}
-      <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] lg:grid-cols-[260px_1fr] gap-6">
         {/* Step list */}
         <nav aria-label="Tutorial steps" className="space-y-1">
           {STEPS.map((step, idx) => {

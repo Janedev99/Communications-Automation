@@ -20,10 +20,10 @@ interface ChipProps {
 
 function StatusChip({ icon, label, variant, pulse, ariaLabel }: ChipProps) {
   const variantClasses: Record<ChipProps["variant"], string> = {
-    green: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    amber: "bg-amber-50 text-amber-700 border-amber-200",
-    red: "bg-red-50 text-red-700 border-red-200",
-    blue: "bg-blue-50 text-blue-700 border-blue-200",
+    green: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+    amber: "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30",
+    red: "bg-destructive/10 text-destructive border-destructive/30",
+    blue: "bg-primary/10 text-primary border-primary/30",
   };
 
   const dotClasses: Record<ChipProps["variant"], string> = {

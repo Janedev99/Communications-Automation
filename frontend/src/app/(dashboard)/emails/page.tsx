@@ -154,17 +154,13 @@ export default function EmailsPage() {
         title="Emails"
         subtitle={
           clientEmail
-            ? `Showing threads from: ${clientEmail}`
-            : "Manage email threads and responses"
+            ? `Showing threads from ${clientEmail}.`
+            : "Triage incoming threads, review AI drafts, and approve sends."
         }
         actions={
           isAdmin ? (
-            <Button
-              variant="outline"
-              className="text-muted-foreground"
-              onClick={() => setShowExport(true)}
-            >
-              <Download className="w-4 h-4 mr-1.5" />
+            <Button variant="outline" onClick={() => setShowExport(true)}>
+              <Download className="w-4 h-4 mr-1.5" aria-hidden="true" />
               Export
             </Button>
           ) : undefined

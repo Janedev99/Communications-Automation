@@ -36,87 +36,96 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-muted flex items-center justify-center p-4">
-      <div className="bg-card rounded-lg shadow-sm border border-border w-full max-w-sm p-8">
-        {/* Brand mark */}
-        <div className="flex flex-col items-center">
-          <div className="w-10 h-10 rounded-lg bg-brand-500 text-white font-bold text-lg flex items-center justify-center">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Subtle radial accent */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/[0.07] via-transparent to-transparent"
+      />
+
+      <div className="relative w-full max-w-sm">
+        {/* Brand mark — floats above the card */}
+        <div className="flex flex-col items-center mb-6">
+          <div className="w-12 h-12 rounded-xl bg-primary text-primary-foreground font-semibold text-xl flex items-center justify-center shadow-sm ring-1 ring-primary/20">
             S
           </div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight text-center mt-4">
+          <h1 className="text-2xl font-semibold text-foreground tracking-tight mt-4">
             Schiller CPA
           </h1>
-          <p className="text-sm text-muted-foreground text-center mt-1">Staff Portal</p>
+          <p className="text-sm text-muted-foreground mt-1">Staff Portal</p>
         </div>
 
-        <div className="border-t border-border my-6" />
+        <div className="bg-card rounded-xl border border-border shadow-sm p-7">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="email"
+                className="block text-sm font-medium text-foreground mb-1.5"
+              >
+                Email address
+              </label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@schilcpa.com"
+                className="h-10"
+                disabled={loading}
+              />
+            </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-foreground mb-1.5"
-            >
-              Email address
-            </label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@schilcpa.com"
-              className="h-10"
-              disabled={loading}
-            />
-          </div>
+            <div>
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-foreground mb-1.5"
+              >
+                Password
+              </label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="h-10"
+                disabled={loading}
+              />
+            </div>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-foreground mb-1.5"
-            >
-              Password
-            </label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="h-10"
-              disabled={loading}
-            />
-          </div>
-
-          <div className="mt-6">
             <Button
               type="submit"
-              className="w-full h-10 bg-brand-500 hover:bg-brand-600 text-white font-medium"
+              size="lg"
+              className="w-full mt-2"
               disabled={loading}
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" />
                   Signing in...
                 </>
               ) : (
                 "Sign in"
               )}
             </Button>
-          </div>
-        </form>
+          </form>
 
-        {error && (
-          <div
-            role="alert"
-            className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2"
-          >
-            <p className="text-sm text-destructive text-center">{error}</p>
-          </div>
-        )}
+          {error && (
+            <div
+              role="alert"
+              className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2"
+            >
+              <p className="text-sm text-destructive text-center">{error}</p>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground text-center mt-6">
+          Internal use only · {new Date().getFullYear()} Schiller CPA
+        </p>
       </div>
     </div>
   );

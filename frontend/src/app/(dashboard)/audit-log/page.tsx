@@ -260,11 +260,11 @@ export default function AuditLogPage() {
     <div>
       <PageHeader
         title="Audit Log"
-        subtitle="Every state-changing action — who, what, when, before/after."
+        subtitle="A complete record of every state-changing action — who, what, when, and before/after."
       />
 
       {/* Filters */}
-      <div className="bg-card border border-border rounded-lg p-3 mb-4 space-y-3">
+      <div className="bg-card border border-border rounded-xl p-3 mb-4 space-y-3">
         {/* Top row: dropdowns + range chips */}
         <div className="flex flex-wrap items-center gap-2">
           <Select

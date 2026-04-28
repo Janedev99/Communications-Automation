@@ -12,6 +12,10 @@ const PAGE_NAMES: Record<string, string> = {
   "/escalations": "Escalations",
   "/knowledge": "Knowledge Base",
   "/settings": "Settings",
+  "/settings/triage-rules": "Triage Rules",
+  "/settings/integrations": "Integrations",
+  "/audit-log": "Audit Log",
+  "/tutorials": "Tutorials",
 };
 
 function getPageName(pathname: string): string {
@@ -20,35 +24,57 @@ function getPageName(pathname: string): string {
   return "";
 }
 
+function initialsFromName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
+
 export function Header() {
   const pathname = usePathname();
   const { user, logout } = useUser();
   const pageName = getPageName(pathname);
 
   return (
-    <header className="h-14 bg-card border-b border-border flex items-center justify-between px-6 flex-shrink-0">
-      {/* Left: breadcrumb */}
-      <span className="text-sm text-muted-foreground">{pageName}</span>
+    <header className="h-14 bg-card/50 backdrop-blur-sm border-b border-border flex items-center justify-between px-6 flex-shrink-0">
+      {/* Left: page label */}
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-sm font-medium text-foreground truncate">{pageName}</span>
+      </div>
 
-      {/* Right: user info + logout */}
-      <div className="flex items-center gap-3">
+      {/* Right: user */}
+      <div className="flex items-center gap-2">
         {user && (
           <>
-            <span className="text-sm font-medium text-foreground">{user.name}</span>
-            <span
-              className={cn(
-                "rounded-full px-2.5 py-0.5 text-xs font-medium",
-                ROLE_BADGE_CLASSES[user.role]
-              )}
-            >
-              {ROLE_LABELS[user.role]}
-            </span>
+            <div className="flex items-center gap-2.5">
+              <span
+                aria-hidden="true"
+                className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/10 text-primary text-[11px] font-semibold tracking-tight"
+              >
+                {initialsFromName(user.name)}
+              </span>
+              <div className="hidden md:flex flex-col leading-tight">
+                <span className="text-sm font-medium text-foreground">{user.name}</span>
+                <span
+                  className={cn(
+                    "text-[10px] font-medium uppercase tracking-wider",
+                    ROLE_BADGE_CLASSES[user.role].split(" ").find((c) => c.startsWith("text-")) ??
+                      "text-muted-foreground",
+                  )}
+                >
+                  {ROLE_LABELS[user.role]}
+                </span>
+              </div>
+            </div>
             <button
               onClick={logout}
-              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
+              aria-label="Sign out"
+              className="ml-2 inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              title="Sign out"
             >
-              <LogOut className="w-4 h-4" />
-              <span>Sign out</span>
+              <LogOut className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
             </button>
           </>
         )}

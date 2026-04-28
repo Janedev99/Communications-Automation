@@ -49,35 +49,37 @@ export default function EscalationsPage() {
     <div>
       <PageHeader
         title="Escalations"
-        subtitle="Review and resolve escalated threads"
+        subtitle="Items flagged for the firm owner — IRS notices, complaints, and high-stakes threads."
       />
 
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Select value={status} onValueChange={(v: string | null) => handleFilterChange(setStatus)(v ?? "active")}>
-          <SelectTrigger className="w-[180px] h-9 text-sm">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="active">Pending + Acknowledged</SelectItem>
-            <SelectItem value="all">All statuses</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="acknowledged">Acknowledged</SelectItem>
-            <SelectItem value="resolved">Resolved</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="bg-card rounded-xl border border-border p-3 mb-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={status} onValueChange={(v: string | null) => handleFilterChange(setStatus)(v ?? "active")}>
+            <SelectTrigger className="w-[200px] h-9 text-sm">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">Pending + Acknowledged</SelectItem>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="acknowledged">Acknowledged</SelectItem>
+              <SelectItem value="resolved">Resolved</SelectItem>
+            </SelectContent>
+          </Select>
 
-        <Select value={severity || "all"} onValueChange={(v: string | null) => handleFilterChange(setSeverity)(!v || v === "all" ? "" : v)}>
-          <SelectTrigger className="w-[160px] h-9 text-sm">
-            <SelectValue placeholder="All severities" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All severities</SelectItem>
-            <SelectItem value="low">Low</SelectItem>
-            <SelectItem value="medium">Medium</SelectItem>
-            <SelectItem value="high">High</SelectItem>
-            <SelectItem value="critical">Critical</SelectItem>
-          </SelectContent>
-        </Select>
+          <Select value={severity || "all"} onValueChange={(v: string | null) => handleFilterChange(setSeverity)(!v || v === "all" ? "" : v)}>
+            <SelectTrigger className="w-[160px] h-9 text-sm">
+              <SelectValue placeholder="All severities" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All severities</SelectItem>
+              <SelectItem value="low">Low</SelectItem>
+              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="high">High</SelectItem>
+              <SelectItem value="critical">Critical</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {isError ? (

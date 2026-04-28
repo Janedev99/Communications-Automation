@@ -115,16 +115,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Brand area */}
       <div className={cn("px-4 py-5 flex items-center", collapsed && "justify-center px-0")}>
         {collapsed ? (
-          <div className="w-8 h-8 rounded-lg bg-brand-500 text-white font-bold text-sm flex items-center justify-center flex-shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center flex-shrink-0 ring-1 ring-primary/20 shadow-sm">
             S
           </div>
         ) : (
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-brand-500 text-white font-bold text-sm flex items-center justify-center flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center flex-shrink-0 ring-1 ring-primary/20 shadow-sm">
               S
             </div>
-            <div>
-              <div className="text-sm font-bold text-foreground leading-tight">Schiller CPA</div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-foreground leading-tight tracking-tight truncate">
+                Schiller CPA
+              </div>
               <div className="text-[10px] text-muted-foreground leading-tight">Staff Portal</div>
             </div>
           </div>

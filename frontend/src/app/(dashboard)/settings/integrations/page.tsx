@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import {
   Activity,
   ArrowLeft,
+  BookOpen,
   Clock,
   Database,
   Globe,
@@ -16,9 +18,11 @@ import {
 import { PageHeader } from "@/components/layout/page-header";
 import { ErrorState } from "@/components/shared/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SetupGuideDialog } from "@/components/integrations/setup-guide-dialog";
 import { swrFetcher } from "@/lib/api";
 import { useUser } from "@/hooks/use-user";
 import { cn, relativeTime } from "@/lib/utils";
+import { INTEGRATION_GUIDES, type IntegrationGuideId } from "@/lib/integration-guides";
 import type {
   IntegrationItem,
   IntegrationsResponse,
@@ -110,10 +114,17 @@ function CONFIG_LABELS(key: string): string {
 
 // ── Card ──────────────────────────────────────────────────────────────────────
 
-function IntegrationCard({ item }: { item: IntegrationItem }) {
+function IntegrationCard({
+  item,
+  onOpenGuide,
+}: {
+  item: IntegrationItem;
+  onOpenGuide: (id: IntegrationGuideId) => void;
+}) {
   const meta = STATUS_META[item.status];
   const Icon = ICON_MAP[item.id] ?? Globe;
   const latency = formatLatency(item.latency_ms);
+  const hasGuide = item.id in INTEGRATION_GUIDES;
 
   return (
     <div className="bg-card border border-border rounded-lg p-5 flex flex-col">
@@ -204,6 +215,18 @@ function IntegrationCard({ item }: { item: IntegrationItem }) {
           {item.last_error}
         </div>
       )}
+
+      {hasGuide && (
+        <div className="mt-4 pt-4 border-t border-border">
+          <button
+            onClick={() => onOpenGuide(item.id as IntegrationGuideId)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            <BookOpen className="w-3.5 h-3.5" strokeWidth={1.75} />
+            Need help setting this up?
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -236,6 +259,10 @@ export default function IntegrationsPage() {
     swrFetcher,
     { refreshInterval: 30_000 }
   );
+  const [openGuide, setOpenGuide] = useState<IntegrationGuideId | null>(null);
+
+  const emailProviderConfig = data?.items.find((i) => i.id === "email_provider")
+    ?.config?.provider as string | undefined;
 
   if (userLoading) {
     return null;
@@ -332,10 +359,16 @@ export default function IntegrationsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {data.items.map((item) => (
-            <IntegrationCard key={item.id} item={item} />
+            <IntegrationCard key={item.id} item={item} onOpenGuide={setOpenGuide} />
           ))}
         </div>
       )}
+
+      <SetupGuideDialog
+        guideId={openGuide}
+        defaultPathId={emailProviderConfig}
+        onClose={() => setOpenGuide(null)}
+      />
     </div>
   );
 }

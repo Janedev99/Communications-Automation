@@ -129,7 +129,23 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _warn_weak_secret(self) -> "Settings":
-        if self.app_secret_key == "dev-secret-key-replace-in-production":
+        is_dev_secret = self.app_secret_key == "dev-secret-key-replace-in-production"
+        is_placeholder_anthropic = self.anthropic_api_key.startswith("sk-ant-placeholder")
+
+        if self.is_production:
+            if is_dev_secret:
+                raise ValueError(
+                    "APP_SECRET_KEY is the development default but APP_ENV=production. "
+                    "Generate a strong key: python -c \"import secrets; print(secrets.token_hex(32))\""
+                )
+            if is_placeholder_anthropic:
+                raise ValueError(
+                    "ANTHROPIC_API_KEY is a placeholder but APP_ENV=production. "
+                    "Set a real key from https://console.anthropic.com."
+                )
+            return self
+
+        if is_dev_secret:
             import warnings
             warnings.warn(
                 "APP_SECRET_KEY is using the insecure default. "

@@ -39,19 +39,24 @@ export function ResolveDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Resolve Escalation</DialogTitle>
+          <DialogTitle>Resolve escalation</DialogTitle>
           <DialogDescription>
-            Add resolution notes to document how this escalation was handled.
+            Add resolution notes to document how this escalation was handled. They&rsquo;ll
+            be visible in the escalation log.
           </DialogDescription>
         </DialogHeader>
 
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1.5">
+          <label
+            htmlFor="resolution-notes"
+            className="block text-sm font-medium text-foreground mb-1.5"
+          >
             Resolution notes
           </label>
           <Textarea
+            id="resolution-notes"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Describe how this was resolved..."
@@ -63,18 +68,14 @@ export function ResolveDialog({
 
         <DialogFooter>
           <Button
-            variant="ghost"
+            variant="outline"
             onClick={() => handleOpenChange(false)}
             disabled={loading}
           >
             Cancel
           </Button>
-          <Button
-            className="bg-brand-500 hover:bg-brand-600 text-white"
-            onClick={handleSubmit}
-            disabled={loading || !notes.trim()}
-          >
-            {loading ? "Resolving..." : "Mark as Resolved"}
+          <Button onClick={handleSubmit} disabled={loading || !notes.trim()}>
+            {loading ? "Resolving..." : "Mark as resolved"}
           </Button>
         </DialogFooter>
       </DialogContent>

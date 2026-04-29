@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -68,9 +69,13 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Create User</DialogTitle>
+          <DialogTitle>Create user</DialogTitle>
+          <DialogDescription>
+            Add a teammate to the portal. They&rsquo;ll sign in with the email and
+            password you set here.
+          </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -135,15 +140,16 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: CreateUserDi
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)} disabled={loading}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => handleOpenChange(false)}
+              disabled={loading}
+            >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              className="bg-brand-500 hover:bg-brand-600 text-white"
-              disabled={loading || !passwordValid}
-            >
-              {loading ? "Creating..." : "Create User"}
+            <Button type="submit" disabled={loading || !passwordValid}>
+              {loading ? "Creating..." : "Create user"}
             </Button>
           </DialogFooter>
         </form>

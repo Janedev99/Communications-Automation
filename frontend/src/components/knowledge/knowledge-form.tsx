@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -92,11 +93,16 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {isEdit ? "Edit Entry" : "New Knowledge Entry"}
+            {isEdit ? "Edit knowledge entry" : "New knowledge entry"}
           </DialogTitle>
+          <DialogDescription>
+            {isEdit
+              ? "Update an existing template, policy, or snippet that the AI uses for context."
+              : "Add a template, policy, or snippet the AI will pull into matching drafts."}
+          </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -179,7 +185,7 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
           <DialogFooter>
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               onClick={() => onOpenChange(false)}
               disabled={loading}
             >
@@ -187,14 +193,9 @@ export function KnowledgeForm({ open, onOpenChange, entry, onSaved }: KnowledgeF
             </Button>
             <Button
               type="submit"
-              className="bg-brand-500 hover:bg-brand-600 text-white"
               disabled={loading || !title.trim() || !content.trim()}
             >
-              {loading
-                ? "Saving..."
-                : isEdit
-                ? "Save Changes"
-                : "Create Entry"}
+              {loading ? "Saving..." : isEdit ? "Save changes" : "Create entry"}
             </Button>
           </DialogFooter>
         </form>

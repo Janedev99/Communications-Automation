@@ -457,7 +457,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           {!hasDraftFailure && (
             <div className="flex flex-col gap-2 w-full max-w-[220px]">
               <Button
-                className="bg-brand-500 hover:bg-brand-600 text-white w-full"
+                className="w-full"
                 onClick={handleGenerate}
                 disabled={generating || creatingFromTemplate}
               >
@@ -541,7 +541,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           <div className="flex gap-2">
             {/* No confirm needed in rejected state — Regenerate proceeds directly */}
             <Button
-              className="bg-brand-500 hover:bg-brand-600 text-white flex-1"
+              className="flex-1"
               onClick={handleGenerate}
               disabled={generating || creatingFromTemplate}
             >
@@ -681,7 +681,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               <div
                 aria-live="polite"
                 aria-label={`Sending in ${sendState.countdown} seconds`}
-                className="flex items-center justify-between gap-3 w-full bg-brand-50 border border-brand-200 rounded-md px-4 py-2.5"
+                className="flex items-center justify-between gap-3 w-full bg-primary/[0.07] border border-primary/30 rounded-md px-4 py-2.5"
               >
                 <div className="flex items-center gap-3">
                   {/* Countdown progress ring (SVG) */}
@@ -692,14 +692,14 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                         fill="none"
                         stroke="currentColor"
                         strokeWidth="2.5"
-                        className="text-brand-200"
+                        className="text-primary/20"
                       />
                       <circle
                         cx="16" cy="16" r="12"
                         fill="none"
                         stroke="currentColor"
                         strokeWidth="2.5"
-                        className="text-brand-500"
+                        className="text-primary"
                         strokeDasharray={`${2 * Math.PI * 12}`}
                         strokeDashoffset={`${2 * Math.PI * 12 * (1 - sendState.countdown / UNDO_COUNTDOWN_SECONDS)}`}
                         strokeLinecap="round"
@@ -804,9 +804,8 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 <Button
                   onClick={() => setShowSendConfirm(true)}
                   disabled={sendState.phase !== "idle"}
-                  className="bg-brand-500 hover:bg-brand-600 text-white"
                 >
-                  <Send className="w-4 h-4 mr-1.5" />
+                  <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
                   Send
                 </Button>
                 {/* Item 3 — Regenerate from approved also needs confirm */}

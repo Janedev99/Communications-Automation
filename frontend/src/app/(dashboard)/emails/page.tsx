@@ -214,9 +214,10 @@ export default function EmailsPage() {
 
       {/* Bulk action bar */}
       {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg">
-          <span className="text-sm text-brand-700 font-medium">
-            {selectedIds.size} thread{selectedIds.size !== 1 ? "s" : ""} selected
+        <div className="flex items-center gap-3 mb-3 px-3.5 py-2 bg-primary/[0.07] border border-primary/30 rounded-lg">
+          <span className="text-sm font-medium text-foreground">
+            <span className="tabular-nums">{selectedIds.size}</span> thread
+            {selectedIds.size !== 1 ? "s" : ""} selected
           </span>
           <Button
             variant="outline"
@@ -225,11 +226,11 @@ export default function EmailsPage() {
             disabled={bulkLoading}
             className="h-7 text-xs"
           >
-            {bulkLoading ? "Closing..." : "Close Selected"}
+            {bulkLoading ? "Closing..." : "Close selected"}
           </Button>
           <button
             onClick={() => setSelectedIds(new Set())}
-            className="ml-auto text-xs text-brand-500 hover:text-brand-700 transition-colors"
+            className="ml-auto text-xs font-medium text-primary hover:underline transition-colors"
           >
             Clear selection
           </button>

@@ -43,7 +43,7 @@ export default function KnowledgePage() {
         title="Knowledge Base"
         actions={
           <Button
-            className="bg-brand-500 hover:bg-brand-600 text-white"
+
             onClick={() => setCreateOpen(true)}
           >
             <Plus className="w-4 h-4 mr-1.5" />

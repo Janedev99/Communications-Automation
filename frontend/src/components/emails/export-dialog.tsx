@@ -162,7 +162,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
             Cancel
           </Button>
           <Button
-            className="bg-brand-500 hover:bg-brand-600 text-white"
+
             onClick={handleExport}
             disabled={loading}
           >

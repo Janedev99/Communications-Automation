@@ -246,7 +246,7 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                           {esc.status === "acknowledged" && (
                             <Button
                               size="sm"
-                              className="bg-brand-500 hover:bg-brand-600 text-white"
+
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setResolveEscalation(esc);

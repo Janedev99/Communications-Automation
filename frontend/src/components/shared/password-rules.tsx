@@ -48,14 +48,24 @@ export function PasswordRules({ value, id = "password-rules" }: PasswordRulesPro
         return (
           <li key={rule.label} className="flex items-center gap-1.5">
             {passing ? (
-              <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" aria-hidden="true" />
+              <Check
+                className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 flex-shrink-0"
+                strokeWidth={2.5}
+                aria-hidden="true"
+              />
             ) : (
-              <X className="w-3.5 h-3.5 text-red-500 flex-shrink-0" aria-hidden="true" />
+              <X
+                className="w-3.5 h-3.5 text-muted-foreground/60 flex-shrink-0"
+                strokeWidth={2}
+                aria-hidden="true"
+              />
             )}
             <span
               className={cn(
-                "text-xs",
-                passing ? "text-emerald-700" : "text-red-600"
+                "text-xs transition-colors",
+                passing
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : "text-muted-foreground"
               )}
             >
               {rule.label}

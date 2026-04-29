@@ -138,7 +138,7 @@ export function ChangePasswordForm() {
             </button>
           </div>
           {confirmPassword && !passwordsMatch && (
-            <p className="text-xs text-red-500 mt-1">Passwords do not match.</p>
+            <p className="text-xs text-destructive mt-1">Passwords do not match.</p>
           )}
         </div>
 

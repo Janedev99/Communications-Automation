@@ -101,7 +101,8 @@ function RuleCard({ rule, onUpdate }: RuleCardProps) {
   return (
     <div
       className={cn(
-        "bg-card border border-border rounded-lg p-5",
+        "bg-card border border-border rounded-xl p-5 transition-colors",
+        rule.t1_eligible && !isLocked && "border-emerald-500/30 ring-1 ring-emerald-500/10",
         isLocked && "opacity-90"
       )}
     >
@@ -323,7 +324,7 @@ export default function TriageRulesPage() {
       {/* Master kill switch */}
       <div
         className={cn(
-          "rounded-lg border p-5 mb-3 transition-colors",
+          "rounded-xl border p-5 mb-3 transition-colors",
           autoSendEnabled
             ? "bg-emerald-500/10 border-emerald-500/30"
             : "bg-amber-500/10 border-amber-500/30"
@@ -428,9 +429,9 @@ export default function TriageRulesPage() {
       </div>
 
       {/* Sub-summary: how many categories are flipped on */}
-      <div className="rounded-lg border border-border bg-card px-4 py-3 mb-6">
+      <div className="rounded-xl border border-border bg-card px-4 py-3 mb-6">
         <p className="text-sm text-muted-foreground">
-          <strong className="text-foreground font-semibold">{enabledCount}</strong>{" "}
+          <strong className="text-foreground font-semibold tabular-nums">{enabledCount}</strong>{" "}
           {enabledCount === 1 ? "category is" : "categories are"} marked T1-eligible below.{" "}
           {!autoSendEnabled && (
             <span className="opacity-80">

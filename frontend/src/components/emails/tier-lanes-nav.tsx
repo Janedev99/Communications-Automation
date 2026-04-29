@@ -24,10 +24,10 @@ interface Lane {
 }
 
 const LANES: Lane[] = [
-  { id: "all",         label: "All",          icon: LayoutGrid,     iconClass: "text-muted-foreground", countKey: null },
-  { id: "t1_auto",     label: "Auto-handled", icon: Zap,            iconClass: "text-emerald-500",      countKey: "t1_auto" },
-  { id: "t2_review",   label: "For review",   icon: Inbox,          iconClass: "text-muted-foreground", countKey: "t2_review" },
-  { id: "t3_escalate", label: "Escalated",    icon: AlertTriangle,  iconClass: "text-red-500",          countKey: "t3_escalate" },
+  { id: "all",         label: "All",          icon: LayoutGrid,     iconClass: "text-muted-foreground",                  countKey: null },
+  { id: "t1_auto",     label: "Auto-handled", icon: Zap,            iconClass: "text-emerald-600 dark:text-emerald-400", countKey: "t1_auto" },
+  { id: "t2_review",   label: "For review",   icon: Inbox,          iconClass: "text-muted-foreground",                  countKey: "t2_review" },
+  { id: "t3_escalate", label: "Escalated",    icon: AlertTriangle,  iconClass: "text-destructive",                       countKey: "t3_escalate" },
 ];
 
 function fmt(n: number | undefined): string {

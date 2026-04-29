@@ -40,26 +40,34 @@ export function RejectionDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Reject Draft</DialogTitle>
+          <DialogTitle>Reject draft</DialogTitle>
           <DialogDescription>
-            Please provide a reason for rejection so the AI can improve the next draft.
+            Tell the AI what to change so the next draft lands better.
           </DialogDescription>
         </DialogHeader>
 
-        <Textarea
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="What should be changed..."
-          rows={4}
-          className="text-sm"
-          disabled={loading}
-        />
+        <div>
+          <label
+            htmlFor="rejection-reason"
+            className="block text-sm font-medium text-foreground mb-1.5"
+          >
+            Reason
+          </label>
+          <Textarea
+            id="rejection-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Tone is too formal, missed mentioning the deadline..."
+            rows={4}
+            disabled={loading}
+          />
+        </div>
 
         <DialogFooter>
           <Button
-            variant="ghost"
+            variant="outline"
             onClick={() => handleOpenChange(false)}
             disabled={loading}
           >
@@ -70,7 +78,7 @@ export function RejectionDialog({
             onClick={handleSubmit}
             disabled={loading || !reason.trim()}
           >
-            {loading ? "Rejecting..." : "Reject Draft"}
+            {loading ? "Rejecting..." : "Reject draft"}
           </Button>
         </DialogFooter>
       </DialogContent>

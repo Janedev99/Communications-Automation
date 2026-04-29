@@ -42,25 +42,28 @@ export function KeyboardShortcutsDialog({
 }: KeyboardShortcutsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Keyboard Shortcuts</DialogTitle>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
+        <div className="space-y-5 -mx-1">
           {SHORTCUTS.map((section) => (
             <div key={section.category}>
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-1">
                 {section.category}
               </p>
-              <div className="space-y-1.5">
+              <div className="rounded-md border border-border bg-card divide-y divide-border/60 overflow-hidden">
                 {section.items.map((item) => (
-                  <div key={item.description} className="flex items-center justify-between gap-4">
-                    <span className="text-sm text-muted-foreground">{item.description}</span>
+                  <div
+                    key={item.description}
+                    className="flex items-center justify-between gap-4 px-3 py-2"
+                  >
+                    <span className="text-sm text-foreground/90">{item.description}</span>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {item.keys.map((key) => (
                         <kbd
                           key={key}
-                          className="px-2 py-0.5 text-xs font-mono bg-muted border border-border rounded text-foreground"
+                          className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 text-[11px] font-mono font-medium bg-muted text-foreground rounded ring-1 ring-border"
                         >
                           {key}
                         </kbd>

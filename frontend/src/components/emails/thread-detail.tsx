@@ -80,9 +80,30 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
   return (
     <div className="flex flex-col h-full bg-card">
       {/* Thread metadata header */}
-      <div className="px-6 py-4 border-b border-border bg-card flex-shrink-0">
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-base font-semibold text-foreground leading-snug">{thread.subject}</h2>
+      <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-semibold text-foreground leading-snug tracking-tight">
+              {thread.subject}
+            </h2>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap text-sm">
+              {thread.client_name && (
+                <span className="font-medium text-foreground/90">{thread.client_name}</span>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(
+                    `/emails?client_email=${encodeURIComponent(thread.client_email)}`,
+                  )
+                }
+                className="text-muted-foreground hover:text-foreground hover:underline transition-colors"
+                title="View all emails from this client"
+              >
+                {thread.client_email}
+              </button>
+            </div>
+          </div>
 
           {/* Action buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -92,9 +113,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleClaim}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1"
+                className="h-8 text-xs gap-1.5"
               >
-                <UserCircle2 className="w-3.5 h-3.5" />
+                <UserCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Claim
               </Button>
             ) : (
@@ -103,9 +124,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleUnassign}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-muted-foreground"
+                className="h-8 text-xs gap-1.5 text-muted-foreground"
               >
-                <UserCircle2 className="w-3.5 h-3.5" />
+                <UserCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Unassign
               </Button>
             )}
@@ -116,53 +137,49 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleReopen}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
+                className="h-8 text-xs gap-1.5 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
               >
-                <CheckCircle className="w-3.5 h-3.5" />
+                <CheckCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Reopen
               </Button>
             ) : (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={handleClose}
                 disabled={!!actionLoading}
-                className="h-7 text-xs gap-1 text-muted-foreground hover:text-red-600 hover:border-red-200"
+                className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-destructive"
               >
-                <XCircle className="w-3.5 h-3.5" />
+                <XCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Close
               </Button>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-3 mt-2 flex-wrap">
-          {thread.client_name && (
-            <span className="text-sm text-muted-foreground">{thread.client_name}</span>
-          )}
-          <button
-            type="button"
-            onClick={() => router.push(`/emails?client_email=${encodeURIComponent(thread.client_email)}`)}
-            className="text-sm text-brand-500 hover:text-brand-600 hover:underline transition-colors"
-            title="View all emails from this client"
-          >
-            {thread.client_email}
-          </button>
+        {/* Metadata chip row */}
+        <div className="flex items-center gap-2 mt-3 flex-wrap">
           <ThreadStatusBadge status={thread.status} />
           <CategoryBadge category={thread.category} />
           {confidence && (
-            <span className="text-xs text-muted-foreground">{confidence}</span>
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground tabular-nums">
+              {confidence}
+            </span>
           )}
           {thread.assigned_to_name && (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <UserCircle2 className="w-3 h-3 text-brand-400" />
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+              <UserCircle2
+                className="w-3 h-3 text-muted-foreground/70"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
               {thread.assigned_to_name}
             </span>
           )}
         </div>
 
         {thread.ai_summary && (
-          <div className="mt-3 bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
+          <div className="mt-4 bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
             <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
               AI Summary
             </p>

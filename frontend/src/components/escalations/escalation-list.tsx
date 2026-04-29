@@ -74,11 +74,11 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
   if (escalations.length === 0) {
     return (
-      <div className="bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
         <EmptyState
           icon={AlertTriangle}
           title="No escalations found"
-          description="Try adjusting your filters"
+          description="Try adjusting your filters."
         />
       </div>
     );
@@ -86,34 +86,35 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
 
   return (
     <>
-      <div className="bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow className="bg-muted/80 hover:bg-accent/80">
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-8" />
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-8 py-2.5" />
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground py-2.5">
                 Thread
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px]">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px] py-2.5">
                 Reason
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px]">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px] py-2.5">
                 Severity
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px] py-2.5">
                 Status
               </TableHead>
-              <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px] py-2.5">
                 Created
               </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {escalations.map((esc) => (
+            {escalations.map((esc, idx) => (
               <React.Fragment key={esc.id}>
                 <TableRow
                   className={cn(
-                    "hover:bg-accent/60 cursor-pointer transition-colors border-b border-border/60 border-l-4",
+                    "hover:bg-accent/40 cursor-pointer transition-colors border-l-4",
+                    expandedId !== esc.id && idx !== escalations.length - 1 && "border-b border-border/50",
                     SEVERITY_ROW_BORDER[esc.severity]
                   )}
                   tabIndex={0}
@@ -127,9 +128,9 @@ export function EscalationList({ escalations, onRefresh }: EscalationListProps) 
                 >
                   <TableCell className="px-3 py-3 w-8 text-muted-foreground">
                     {expandedId === esc.id ? (
-                      <ChevronDown className="w-4 h-4" />
+                      <ChevronDown className="w-4 h-4" aria-hidden="true" />
                     ) : (
-                      <ChevronRight className="w-4 h-4" />
+                      <ChevronRight className="w-4 h-4" aria-hidden="true" />
                     )}
                   </TableCell>
                   <TableCell className="px-4 py-3">

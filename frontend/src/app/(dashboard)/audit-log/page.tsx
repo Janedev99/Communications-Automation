@@ -375,10 +375,14 @@ export default function AuditLogPage() {
       ) : isLoading || !data ? (
         <TableSkeleton rows={8} />
       ) : data.items.length === 0 ? (
-        <div className="bg-card border border-border rounded-lg p-12 text-center">
-          <History className="w-10 h-10 text-muted-foreground mx-auto" strokeWidth={1.5} />
-          <h3 className="text-base font-semibold text-foreground mt-3">No audit entries</h3>
-          <p className="text-sm text-muted-foreground mt-1">
+        <div className="bg-card border border-border rounded-xl p-12 text-center">
+          <History
+            className="w-10 h-10 text-muted-foreground/60 mx-auto"
+            strokeWidth={1.5}
+            aria-hidden="true"
+          />
+          <h3 className="text-sm font-semibold text-foreground mt-3">No audit entries</h3>
+          <p className="text-sm text-muted-foreground mt-1 max-w-sm mx-auto">
             {hasActiveFilter
               ? "Nothing matches the current filters."
               : "No state changes have been logged yet."}
@@ -386,7 +390,7 @@ export default function AuditLogPage() {
           {hasActiveFilter && (
             <button
               onClick={handleClearFilters}
-              className="text-sm text-primary hover:underline mt-3"
+              className="text-sm font-medium text-primary hover:underline mt-3"
             >
               Clear filters
             </button>
@@ -394,24 +398,24 @@ export default function AuditLogPage() {
         </div>
       ) : (
         <>
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
             <table className="w-full">
               <thead>
-                <tr className="bg-muted/80 border-b border-border">
-                  <th className="px-3 py-2 w-8" />
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <tr className="bg-muted/40 border-b border-border">
+                  <th className="px-3 py-2.5 w-8" />
+                  <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     When
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Who
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Action
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <th className="px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Entity
                   </th>
-                  <th className="px-3 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <th className="px-3 py-2.5 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Diff
                   </th>
                 </tr>

@@ -37,21 +37,21 @@ export function EmailList({
 
   if (threads.length === 0) {
     return (
-      <div className="bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
         <EmptyState
           icon={Mail}
           title="No threads found"
-          description="Try adjusting your filters"
+          description="Try adjusting your filters or wait for the next poll cycle."
         />
       </div>
     );
   }
 
   return (
-    <div className="bg-card rounded-lg border border-border overflow-hidden">
+    <div className="bg-card rounded-xl border border-border overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-muted/80 hover:bg-accent/80">
+          <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
             {hasBulkMode && (
               <TableHead className="w-10 px-3">
                 <input
@@ -59,46 +59,48 @@ export function EmailList({
                   checked={allSelected}
                   onChange={onSelectAll}
                   aria-label="Select all threads"
-                  className="h-4 w-4 rounded border-border text-brand-500 focus:ring-brand-400 cursor-pointer"
+                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary/30 cursor-pointer"
                 />
               </TableHead>
             )}
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground py-2.5">
               Subject
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[160px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[160px] py-2.5">
               Client
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px] py-2.5">
               Category
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px] py-2.5">
               Status
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[130px] py-2.5">
               Assigned
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[70px] text-center">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[60px] text-center py-2.5">
               Msgs
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[110px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[110px] py-2.5">
               Updated
             </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {threads.map((thread) => {
+          {threads.map((thread, idx) => {
             const isSelected = selectedIds.has(thread.id);
+            const isLast = idx === threads.length - 1;
             return (
               <TableRow
                 key={thread.id}
                 data-thread-row="true"
                 data-thread-id={thread.id}
                 className={cn(
-                  "transition-colors border-b border-border/60",
+                  "group transition-colors",
+                  !isLast && "border-b border-border/50",
                   isSelected
-                    ? "bg-primary/10 hover:bg-primary/15"
-                    : "hover:bg-accent/60"
+                    ? "bg-primary/[0.06] hover:bg-primary/[0.09]"
+                    : "hover:bg-accent/40"
                 )}
               >
                 {hasBulkMode && (
@@ -108,7 +110,7 @@ export function EmailList({
                       checked={isSelected}
                       onChange={() => onToggleSelect!(thread.id)}
                       aria-label={`Select thread: ${thread.subject}`}
-                      className="h-4 w-4 rounded border-border text-brand-500 focus:ring-brand-400 cursor-pointer"
+                      className="h-4 w-4 rounded border-border text-primary focus:ring-primary/30 cursor-pointer"
                     />
                   </TableCell>
                 )}
@@ -125,7 +127,7 @@ export function EmailList({
                 >
                   <span className="inline-flex items-center gap-2">
                     <TierBadge tier={thread.tier ?? "t2_review"} variant="glyph" />
-                    <span className="text-sm font-medium text-foreground truncate block max-w-[260px]">
+                    <span className="text-sm font-medium text-foreground truncate block max-w-[260px] group-hover:text-foreground">
                       {thread.subject}
                     </span>
                     {thread.draft_generation_failed && (
@@ -134,7 +136,8 @@ export function EmailList({
                         className="flex-shrink-0"
                       >
                         <AlertTriangle
-                          className="w-3.5 h-3.5 text-red-500"
+                          className="w-3.5 h-3.5 text-destructive"
+                          strokeWidth={2}
                           aria-label="Draft generation failed"
                         />
                       </span>
@@ -145,7 +148,7 @@ export function EmailList({
                   className="px-4 py-3 w-[160px] cursor-pointer"
                   onClick={() => router.push(`/emails/${thread.id}`)}
                 >
-                  <span className="text-sm text-muted-foreground truncate block">
+                  <span className="text-sm text-foreground/80 truncate block">
                     {thread.client_name ?? thread.client_email}
                   </span>
                 </TableCell>
@@ -166,16 +169,20 @@ export function EmailList({
                   onClick={() => router.push(`/emails/${thread.id}`)}
                 >
                   {thread.assigned_to_name ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                      <UserCircle2 className="w-3.5 h-3.5 text-brand-400 flex-shrink-0" />
+                    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <UserCircle2
+                        className="w-3.5 h-3.5 text-muted-foreground/70 flex-shrink-0"
+                        strokeWidth={1.75}
+                        aria-hidden="true"
+                      />
                       <span className="truncate max-w-[90px]">{thread.assigned_to_name}</span>
                     </span>
                   ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
+                    <span className="text-xs text-muted-foreground/60">—</span>
                   )}
                 </TableCell>
                 <TableCell
-                  className="px-4 py-3 w-[70px] text-center text-sm text-muted-foreground cursor-pointer"
+                  className="px-4 py-3 w-[60px] text-center text-sm text-muted-foreground tabular-nums cursor-pointer"
                   onClick={() => router.push(`/emails/${thread.id}`)}
                 >
                   {thread.message_count}
@@ -184,7 +191,7 @@ export function EmailList({
                   className="px-4 py-3 w-[110px] cursor-pointer"
                   onClick={() => router.push(`/emails/${thread.id}`)}
                 >
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
                     {relativeTime(thread.updated_at)}
                   </span>
                 </TableCell>

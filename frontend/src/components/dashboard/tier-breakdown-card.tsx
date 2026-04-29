@@ -62,7 +62,7 @@ export function TierBreakdownCard({ countsByTier, isLoading }: TierBreakdownCard
     total > 0 ? (n / total) * 100 : 0;
 
   return (
-    <div className="bg-card rounded-lg border border-border p-5">
+    <div className="bg-card rounded-xl border border-border p-5">
       <div className="flex items-baseline justify-between mb-1">
         <h2 className="text-sm font-semibold text-foreground">Triage Distribution</h2>
         <span className="text-xs text-muted-foreground tabular-nums">

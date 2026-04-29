@@ -44,43 +44,46 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
 
   if (users.length === 0) {
     return (
-      <div className="bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
         <EmptyState
           icon={Users}
           title="No users found"
-          description="Create the first team member"
+          description="Create the first team member to get started."
         />
       </div>
     );
   }
 
   return (
-    <div className="bg-card rounded-lg border border-border overflow-hidden">
+    <div className="bg-card rounded-xl border border-border overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-muted/80 hover:bg-accent/80">
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground py-2.5">
               Name
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[220px] py-2.5">
               Email
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[100px] py-2.5">
               Role
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[80px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[80px] py-2.5">
               Active
             </TableHead>
-            <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px]">
+            <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-[120px] py-2.5">
               Created
             </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {users.map((user) => (
+          {users.map((user, idx) => (
             <TableRow
               key={user.id}
-              className="border-b border-border/60 hover:bg-accent/60 transition-colors"
+              className={cn(
+                "transition-colors hover:bg-accent/40",
+                idx !== users.length - 1 && "border-b border-border/50"
+              )}
             >
               <TableCell className="px-4 py-3">
                 <span className="text-sm font-medium text-foreground">{user.name}</span>

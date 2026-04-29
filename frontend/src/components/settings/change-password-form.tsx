@@ -50,7 +50,7 @@ export function ChangePasswordForm() {
   };
 
   return (
-    <div className="bg-card rounded-lg border border-border p-6 max-w-md">
+    <div className="bg-card rounded-xl border border-border p-6 max-w-md">
       <h3 className="text-sm font-semibold text-foreground mb-4">Change Password</h3>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>

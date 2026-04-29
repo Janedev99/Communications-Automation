@@ -2,7 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function StatCardSkeleton() {
   return (
-    <div className="bg-card rounded-lg border border-border p-5">
+    <div className="bg-card rounded-xl border border-border p-5">
       <Skeleton className="h-3 w-24 mb-3" />
       <Skeleton className="h-8 w-16 mb-2" />
       <Skeleton className="h-2.5 w-20" />
@@ -12,7 +12,7 @@ export function StatCardSkeleton() {
 
 export function TableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
-    <div className="bg-card rounded-lg border border-border overflow-hidden">
+    <div className="bg-card rounded-xl border border-border overflow-hidden">
       <div className="px-4 py-3 bg-muted/80 border-b border-border">
         <Skeleton className="h-3 w-full" />
       </div>

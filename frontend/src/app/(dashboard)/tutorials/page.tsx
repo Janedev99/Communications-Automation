@@ -83,8 +83,8 @@ function DraftPanelDemo() {
         Hi Maria,
         <br />
         <br />
-        Glad you received the documents. Let us know once you've had a chance to review,
-        and we'll get the next round started.
+        Glad you received the documents. Let us know once you&apos;ve had a chance to review,
+        and we&apos;ll get the next round started.
         <br />
         <br />
         Best,

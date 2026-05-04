@@ -76,3 +76,6 @@ backend/venv/
 
 # Claude Code local agent state (not part of the product)
 .claude/
+
+# Internal-only sales/demo material — not for client-facing repos
+docs/CLIENT_DEMO_SCRIPT.md

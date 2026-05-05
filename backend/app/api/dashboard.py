@@ -107,8 +107,15 @@ def get_stats(
     escalations_by_status = {row.status.value: row.count for row in esc_status_rows}
 
     # ── Escalations by severity ────────────────────────────────────────────────
+    # Counts UNRESOLVED escalations only (status in {pending, acknowledged}).
+    # Both consumers — the dashboard "Open Escalations" card and the sidebar
+    # red badge — communicate "needs attention right now," and including
+    # resolved escalations from months ago painted both red for no reason.
+    # Resolved-inclusive analytics can re-add an explicit
+    # `escalations_by_severity_all_time` field when needed.
     esc_severity_rows = db.execute(
         select(Escalation.severity, func.count(Escalation.id).label("count"))
+        .where(Escalation.status != EscalationStatus.resolved)
         .group_by(Escalation.severity)
     ).all()
     escalations_by_severity = {row.severity.value: row.count for row in esc_severity_rows}

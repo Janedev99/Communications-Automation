@@ -6,7 +6,51 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+// Base UI's <Select.Value/> resolves the displayed label from the `items` prop on
+// <Select.Root/>. Without it, the trigger renders the raw value (e.g. "__all__"
+// or "auth.login") instead of the human-readable label that lives inside
+// <SelectItem>'s children. To keep call sites idiomatic ("just write the items
+// inline") we walk the React children at render time and build a value→label
+// map in a context that <SelectValue/> can read.
+type SelectLabelMap = ReadonlyMap<unknown, React.ReactNode>
+
+const SelectItemsContext = React.createContext<SelectLabelMap | null>(null)
+
+function collectItemLabels(
+  children: React.ReactNode,
+  map: Map<unknown, React.ReactNode>,
+): void {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return
+    const props = child.props as { value?: unknown; children?: React.ReactNode }
+    // Any child that owns a `value` prop is treated as a leaf SelectItem.
+    // Wrappers (SelectGroup, fragments, conditionals) just delegate to their
+    // own children, so recursion handles arbitrary nesting.
+    if ("value" in props && props.value !== undefined) {
+      map.set(props.value, props.children)
+    }
+    if (props.children !== undefined) {
+      collectItemLabels(props.children, map)
+    }
+  })
+}
+
+function Select<Value, Multiple extends boolean | undefined = false>({
+  children,
+  ...props
+}: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const labelMap = React.useMemo(() => {
+    const map = new Map<unknown, React.ReactNode>()
+    collectItemLabels(children, map)
+    return map
+  }, [children])
+
+  return (
+    <SelectItemsContext.Provider value={labelMap}>
+      <SelectPrimitive.Root {...props}>{children}</SelectPrimitive.Root>
+    </SelectItemsContext.Provider>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
@@ -18,13 +62,47 @@ function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   )
 }
 
-function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
+function SelectValue({
+  className,
+  placeholder,
+  children: childrenProp,
+  ...props
+}: SelectPrimitive.Value.Props) {
+  const labelMap = React.useContext(SelectItemsContext)
+
+  // If the call site provided its own children (string, node, or render fn),
+  // honor it — the wrapper's auto-resolution is purely a default.
+  if (childrenProp !== undefined) {
+    return (
+      <SelectPrimitive.Value
+        data-slot="select-value"
+        className={cn("flex flex-1 text-left", className)}
+        placeholder={placeholder}
+        {...props}
+      >
+        {childrenProp}
+      </SelectPrimitive.Value>
+    )
+  }
+
   return (
     <SelectPrimitive.Value
       data-slot="select-value"
       className={cn("flex flex-1 text-left", className)}
+      placeholder={placeholder}
       {...props}
-    />
+    >
+      {(value: unknown) => {
+        // No selection yet → defer to Base UI's built-in placeholder rendering.
+        if (value == null || value === "") return placeholder
+        if (labelMap?.has(value)) {
+          const label = labelMap.get(value)
+          // Empty/null label → fall back to the value so the trigger isn't blank.
+          return label != null && label !== "" ? label : String(value)
+        }
+        return String(value)
+      }}
+    </SelectPrimitive.Value>
   )
 }
 

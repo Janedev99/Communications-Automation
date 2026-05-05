@@ -70,6 +70,30 @@ export interface EmailMessage {
   direction: "inbound" | "outbound";
   is_processed: boolean;
   attachments: AttachmentInfo[] | null;
+  /** Per-message save state (independent from thread.is_saved) */
+  is_saved: boolean;
+  saved_folder: string | null;
+  saved_note: string | null;
+  saved_at: string | null;
+  saved_by_id: string | null;
+}
+
+/** Cross-thread saved-message entry returned by /api/v1/emails/saved/messages. */
+export interface SavedMessageItem {
+  id: string;
+  thread_id: string;
+  sender: string;
+  recipient: string | null;
+  body_text: string | null;
+  received_at: string;
+  direction: "inbound" | "outbound";
+  saved_folder: string | null;
+  saved_note: string | null;
+  saved_at: string | null;
+  /** Denormalised parent-thread context for list rendering */
+  thread_subject: string;
+  thread_client_email: string;
+  thread_client_name: string | null;
 }
 
 export interface EmailThread {
@@ -113,7 +137,10 @@ export interface EmailThread {
 export interface SavedFolder {
   /** Folder name. Null indicates the unsorted/unfiled saved bucket. */
   name: string | null;
+  /** Total count = thread_count + message_count. */
   count: number;
+  thread_count: number;
+  message_count: number;
 }
 
 export interface EmailThreadListItem {

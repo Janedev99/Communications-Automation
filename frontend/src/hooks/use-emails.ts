@@ -9,6 +9,7 @@ import type {
   EmailThreadListItem,
   PaginatedResponse,
   SavedFolder,
+  SavedMessageItem,
 } from "@/lib/types";
 
 interface UseEmailsParams {
@@ -115,6 +116,49 @@ export function useSavedFolders() {
   );
   return {
     folders: data ?? [],
+    isLoading,
+    isError: !!error,
+    mutate,
+  };
+}
+
+// ── Save / unsave individual message ──────────────────────────────────────────
+
+export function saveMessage(
+  threadId: string,
+  messageId: string,
+  body: SaveThreadBody,
+): Promise<EmailThread> {
+  return api.post<EmailThread>(
+    `/api/v1/emails/${threadId}/messages/${messageId}/save`,
+    body,
+  );
+}
+
+export function unsaveMessage(threadId: string, messageId: string): Promise<EmailThread> {
+  return api.post<EmailThread>(
+    `/api/v1/emails/${threadId}/messages/${messageId}/unsave`,
+    {},
+  );
+}
+
+interface UseSavedMessagesParams {
+  /** Filter by folder. Empty string = unfiled bucket. Undefined = all. */
+  folder?: string;
+}
+
+export function useSavedMessages(params: UseSavedMessagesParams = {}) {
+  const sp = new URLSearchParams();
+  if (params.folder !== undefined) sp.set("folder", params.folder);
+  const qs = sp.toString();
+  const key = `/api/v1/emails/saved/messages${qs ? `?${qs}` : ""}`;
+  const { data, error, isLoading, mutate } = useSWR<SavedMessageItem[]>(
+    key,
+    swrFetcher,
+    { refreshInterval: 30_000 },
+  );
+  return {
+    messages: data ?? [],
     isLoading,
     isError: !!error,
     mutate,

@@ -11,9 +11,15 @@ function ScrollArea({
   ...props
 }: ScrollAreaPrimitive.Root.Props) {
   return (
+    // min-h-0 / min-w-0 are critical when ScrollArea is a flex or grid child:
+    // flex items default to min-height: auto (content size), which prevents
+    // them from shrinking below their content — defeating the whole point of
+    // a scroll area inside a bounded layout. Setting them to 0 lets the
+    // parent's height actually constrain the viewport, so internal overflow
+    // routes through the scrollbar instead of spilling out.
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
-      className={cn("relative", className)}
+      className={cn("relative min-h-0 min-w-0", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport

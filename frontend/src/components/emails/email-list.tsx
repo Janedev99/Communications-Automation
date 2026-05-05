@@ -9,7 +9,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AlertTriangle, Mail, UserCircle2 } from "lucide-react";
+import {
+  AlertTriangle,
+  BookmarkCheck,
+  HelpCircle,
+  Mail,
+  UserCircle2,
+  Zap,
+} from "lucide-react";
 import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -90,6 +97,13 @@ export function EmailList({
           {threads.map((thread, idx) => {
             const isSelected = selectedIds.has(thread.id);
             const isLast = idx === threads.length - 1;
+            // Item E: emails the AI couldn't classify confidently land here.
+            // Jane explicitly asked about a "surprise box" — we mark these
+            // rows so they stand out within the For Review lane.
+            const isUncategorized = thread.category === "uncategorized";
+            // Item C: T1 threads where the AI sent the reply autonomously.
+            // Jane asked "where is that indication?" — make it unmistakable.
+            const wasAutoSent = !!thread.auto_sent_at;
             return (
               <TableRow
                 key={thread.id}
@@ -100,6 +114,8 @@ export function EmailList({
                   !isLast && "border-b border-border/50",
                   isSelected
                     ? "bg-primary/[0.06] hover:bg-primary/[0.09]"
+                    : isUncategorized
+                    ? "bg-amber-500/[0.04] hover:bg-amber-500/[0.08] border-l-2 border-l-amber-500/50"
                     : "hover:bg-accent/40"
                 )}
               >
@@ -130,6 +146,43 @@ export function EmailList({
                     <span className="text-sm font-medium text-foreground truncate block max-w-[260px] group-hover:text-foreground">
                       {thread.subject}
                     </span>
+                    {thread.is_saved && (
+                      <span
+                        title={
+                          thread.saved_folder
+                            ? `Saved in "${thread.saved_folder}"`
+                            : "Saved"
+                        }
+                        className="flex-shrink-0 text-amber-600 dark:text-amber-400"
+                      >
+                        <BookmarkCheck
+                          className="w-3.5 h-3.5 fill-current"
+                          strokeWidth={1.75}
+                          aria-label="Saved"
+                        />
+                      </span>
+                    )}
+                    {wasAutoSent && (
+                      <span
+                        title="AI auto-replied — no review needed"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
+                      >
+                        <Zap className="w-3 h-3" strokeWidth={2.25} aria-hidden="true" />
+                        AI sent
+                      </span>
+                    )}
+                    {isUncategorized && (
+                      <span
+                        title="AI couldn't classify this email — needs human triage"
+                        className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
+                      >
+                        <HelpCircle
+                          className="w-3.5 h-3.5"
+                          strokeWidth={2}
+                          aria-label="Uncategorized — needs triage"
+                        />
+                      </span>
+                    )}
                     {thread.draft_generation_failed && (
                       <span
                         title="AI draft generation failed for this thread"

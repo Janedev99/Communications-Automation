@@ -55,12 +55,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
 
   const openSaveForThread = () => {
     setSaveMessageId(null);
-    openSaveForThread();
+    setShowSaveDialog(true);
   };
 
   const openSaveForMessage = (messageId: string) => {
     setSaveMessageId(messageId);
-    openSaveForThread();
+    setShowSaveDialog(true);
   };
 
   const confidence = thread.category_confidence

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-import anthropic
+from app.services.llm_client import LLMError, get_llm_client
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import get_settings
@@ -134,19 +134,17 @@ def _format_thread_messages(messages: list[EmailMessage]) -> str:
 
 class DraftGeneratorService:
     """
-    Service that generates AI draft replies for email threads using Claude.
+    Service that generates AI draft replies for email threads.
 
-    Instantiate once and reuse — the Anthropic client is thread-safe.
+    Uses the configured LLM provider (anthropic | openai_compat — see
+    app.services.llm_client). Instantiate once and reuse — the underlying
+    SDK clients are thread-safe.
     """
 
     def __init__(self) -> None:
         settings = get_settings()
-        # T1.7: 30-second timeout for all API calls
-        self._client = anthropic.Anthropic(
-            api_key=settings.anthropic_api_key,
-            timeout=30.0,
-        )
-        self._model = settings.claude_model
+        self._client = get_llm_client()
+        self._model = self._client.model
         self._temperature = settings.draft_temperature
         self._max_tokens = settings.draft_max_tokens
         self._firm_name = settings.firm_name
@@ -243,18 +241,19 @@ class DraftGeneratorService:
             len(entries),
         )
 
-        # Call Claude
-        response = self._client.messages.create(
-            model=self._model,
+        # Call the LLM (provider-agnostic via llm_client abstraction).
+        # LLMError is raised on transport / quota / parse errors at the SDK
+        # level — callers (api/drafts.py) catch it and surface a 502.
+        llm_result = self._client.complete(
+            system=system_prompt,
+            user=user_prompt,
             max_tokens=self._max_tokens,
             temperature=self._temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
         )
 
-        raw_body = response.content[0].text.strip() if response.content else ""
-        prompt_tokens = response.usage.input_tokens if response.usage else None
-        completion_tokens = response.usage.output_tokens if response.usage else None
+        raw_body = llm_result.text.strip()
+        prompt_tokens = llm_result.prompt_tokens
+        completion_tokens = llm_result.completion_tokens
 
         # Validate the draft body using Pydantic — catches empty/too-short output.
         # min_length=20 rejects degenerate responses that are too brief to be useful.
@@ -274,18 +273,18 @@ class DraftGeneratorService:
             ) from exc
 
         # T2.3: Record token usage for budget tracking
-        if response.usage:
+        if prompt_tokens is not None or completion_tokens is not None:
             try:
                 from app.services.ai_budget import record_usage
                 record_usage(
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
+                    input_tokens=prompt_tokens or 0,
+                    output_tokens=completion_tokens or 0,
                 )
             except Exception as exc:
                 logger.warning("DraftGenerator: failed to record token usage: %s", exc)
 
         if not draft_body:
-            raise ValueError("Claude returned an empty draft body.")
+            raise ValueError("LLM returned an empty draft body.")
 
         logger.info(
             "DraftGenerator: draft generated for thread=%s prompt_tokens=%s completion_tokens=%s",

@@ -221,6 +221,13 @@ def mock_anthropic(mocker):
     """
     Patch the Anthropic SDK to return a canned non-escalating response.
     Tests can override `mock_anthropic.messages.create.return_value`.
+
+    The patch target moved with the LLM provider abstraction: the SDK is
+    now imported lazily inside `app.services.llm_client.AnthropicLLMClient`,
+    not directly in `categorizer`. Tests still get the same `messages.create`
+    surface to manipulate, but they need to remember to also reset the
+    llm_client singleton (we do it via reset_llm_client()) so the freshly
+    patched class is picked up on the next call.
     """
     canned = MagicMock()
     canned.content = [MagicMock(
@@ -233,12 +240,21 @@ def mock_anthropic(mocker):
     )]
     canned.usage = MagicMock(input_tokens=100, output_tokens=50)
 
-    mock_cls = mocker.patch("app.services.categorizer.anthropic.Anthropic")
+    # The llm_client module imports anthropic lazily, so mock the imported
+    # symbol there. The categorizer doesn't own the SDK anymore.
+    import anthropic as _real_anthropic
+    mock_cls = mocker.patch("anthropic.Anthropic")
     mock_instance = mock_cls.return_value
     mock_instance.messages.create.return_value = canned
 
+    # Reset both the categorizer singleton and the llm_client singleton so
+    # the next get_llm_client() / get_categorizer() call rebuilds against
+    # the freshly mocked SDK.
+    from app.services import llm_client as _llm_module
+    _llm_module.reset_llm_client()
     _cat_module._categorizer = None
     yield mock_instance
+    _llm_module.reset_llm_client()
     _cat_module._categorizer = None
 
 

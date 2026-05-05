@@ -69,7 +69,9 @@ const STATUS_META: Record<
 
 const ICON_MAP: Record<string, LucideIcon> = {
   postgres: Database,
-  anthropic: Sparkles,
+  // The card id is "llm" (provider-agnostic); the displayed name reflects
+  // whichever provider is active (Anthropic / RunPod / OpenAI-compatible).
+  llm: Sparkles,
   email_provider: Mail,
   notifications: Activity,
 };
@@ -103,6 +105,7 @@ function CONFIG_LABELS(key: string): string {
     provider: "Provider",
     model: "Model",
     api_key: "API key",
+    base_url: "Endpoint URL",
     tokens_today: "Tokens today",
     daily_budget: "Daily budget",
     budget_pct_used: "Budget used",

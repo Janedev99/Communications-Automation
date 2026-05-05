@@ -1,6 +1,6 @@
 export type IntegrationGuideId =
   | "postgres"
-  | "anthropic"
+  | "llm"
   | "email_provider"
   | "notifications";
 
@@ -79,56 +79,95 @@ export const INTEGRATION_GUIDES: Record<IntegrationGuideId, IntegrationGuide> = 
       "After saving the connection string and letting the portal redeploy, the status pill on this card should turn green within a minute.",
   },
 
-  anthropic: {
-    id: "anthropic",
-    title: "Anthropic Claude",
+  llm: {
+    id: "llm",
+    title: "AI provider",
     intro:
-      "Claude is the AI that reads incoming emails, decides which category they belong to, and drafts the suggested replies. Without an API key, drafts won't generate and the portal will fall back to keyword-based rules.",
+      "The AI that reads incoming emails, decides which category they belong to, and drafts the suggested replies. Without it the portal falls back to keyword-based rules. Two paths are supported: Anthropic Claude (cloud, simplest setup) and an OpenAI-compatible endpoint like RunPod (self-hosted, keeps client data on rented hardware).",
     whoSetsThisUp:
-      "Anyone with admin access to a credit card. You'll create an Anthropic account, generate an API key, and paste it into the portal's environment. Total time: about 5 minutes.",
-    steps: [
+      "Anthropic: anyone with admin access to a credit card — about 5 minutes total. RunPod: someone comfortable provisioning a serverless GPU endpoint (or your IT contractor / Gar). Either way, the cutover is just a few environment variables.",
+    paths: [
       {
-        title: "Create an Anthropic account",
-        body: "Go to console.anthropic.com and sign up if you don't have an account already. Add a payment method — Claude is pay-as-you-go, typically a few dollars a month for a small firm.",
-        link: { label: "Open Anthropic Console", href: "https://console.anthropic.com" },
+        id: "anthropic",
+        label: "Anthropic Claude",
+        description:
+          "Cloud-hosted, pay-as-you-go. Simplest path; the firm's data passes through Anthropic's servers (covered by their commercial terms — they don't train on it).",
+        steps: [
+          {
+            title: "Create an Anthropic account",
+            body: "Go to console.anthropic.com and sign up if you don't have an account already. Add a payment method — Claude is pay-as-you-go, typically a few dollars a month for a small firm.",
+            link: { label: "Open Anthropic Console", href: "https://console.anthropic.com" },
+          },
+          {
+            title: "Generate an API key",
+            body: "In the console, go to Settings → API Keys → Create Key. Give it a name like \"Jane Portal\". Copy the key immediately — it starts with sk-ant- and you won't be able to see it again after closing the dialog.",
+          },
+          {
+            title: "Set the provider env vars",
+            body: "In your hosting environment (Railway → portal service → Variables), set both variables below. Save.",
+            envVar: "LLM_PROVIDER",
+            envExample: "anthropic",
+            note:
+              "Also set ANTHROPIC_API_KEY=sk-ant-api03-... (the key you just copied).",
+          },
+          {
+            title: "(Optional) Set a daily spending cap",
+            body: "Set a daily token budget — once hit, the portal stops calling Claude for the rest of the day and falls back to rules. Default is 1,000,000 tokens (~$3-15 depending on model). Lower for safety while piloting.",
+            envVar: "DAILY_TOKEN_BUDGET",
+            envExample: "500000",
+          },
+        ],
       },
       {
-        title: "Generate an API key",
-        body: "In the console, go to Settings → API Keys → Create Key. Give it a name like \"Jane Portal\". Copy the key immediately — it starts with sk-ant- and you won't be able to see it again after closing the dialog.",
-      },
-      {
-        title: "Paste the key into the portal's environment",
-        body: "In your hosting environment (Railway → portal service → Variables), set the variable below to the key you just copied. Save.",
-        envVar: "ANTHROPIC_API_KEY",
-        envExample: "sk-ant-api03-...",
-      },
-      {
-        title: "(Optional) Set a daily spending cap",
-        body: "Set a daily token budget — once hit, the portal stops calling Claude for the rest of the day and falls back to rules. Default is 1,000,000 tokens (~$3-15 depending on model). Lower for safety while piloting.",
-        envVar: "DAILY_TOKEN_BUDGET",
-        envExample: "500000",
-      },
-      {
-        title: "Wait for the next deploy",
-        body: "Save your environment variables and let the portal redeploy (about 60 seconds). The Anthropic card on this page should flip to Healthy after the next email is processed.",
+        id: "openai_compat",
+        label: "RunPod (self-hosted)",
+        description:
+          "A Gemma model running on rented GPU hardware via vLLM, exposed through an OpenAI-compatible API. Client data stays inside the firm's rented hardware. Approved on the 05/02 product call.",
+        steps: [
+          {
+            title: "Provision a vLLM endpoint on RunPod",
+            body: "On runpod.io, create a serverless endpoint using their vLLM template. Choose the Gemma model size that fits your budget (e.g. google/gemma-2-27b-it). RunPod gives you an endpoint id like 'abc12345'.",
+            link: { label: "Open RunPod", href: "https://www.runpod.io/console/serverless" },
+          },
+          {
+            title: "Generate a RunPod API key",
+            body: "Settings → API Keys → Create. Copy it — you'll paste it as LLM_API_KEY below.",
+          },
+          {
+            title: "Set the provider env vars",
+            body: "In your hosting environment, set the four variables below. The base URL pattern is https://api.runpod.ai/v2/<endpoint-id>/openai/v1.",
+            envVar: "LLM_PROVIDER",
+            envExample: "openai_compat",
+            note:
+              "Also set: LLM_API_KEY=<runpod-key>, LLM_BASE_URL=https://api.runpod.ai/v2/<id>/openai/v1, LLM_MODEL=google/gemma-2-27b-it (or whichever model you deployed).",
+          },
+          {
+            title: "Restart the portal",
+            body: "Save your environment variables and let the portal redeploy (about 60 seconds). This card should flip to Healthy after the next email is processed.",
+          },
+        ],
       },
     ],
     commonIssues: [
       {
-        problem: "Status shows \"Not configured\" with key value \"placeholder\"",
+        problem: "Status shows \"Not configured\" with API key \"placeholder\" (Anthropic path)",
         fix: "The portal is running with the demo placeholder key. Replace ANTHROPIC_API_KEY with a real key from console.anthropic.com.",
       },
       {
+        problem: "Status shows \"Not configured\" with last_error mentioning LLM_API_KEY or LLM_BASE_URL",
+        fix: "LLM_PROVIDER=openai_compat but at least one of LLM_API_KEY / LLM_BASE_URL is empty. Fill them in (RunPod console for the key, the endpoint URL pattern is in the docs).",
+      },
+      {
         problem: "Drafts stopped generating mid-day, status shows \"Degraded\"",
-        fix: "You probably hit the daily token budget. Check \"Budget used\" on the card — if it's at 100%, raise DAILY_TOKEN_BUDGET or wait until tomorrow.",
+        fix: "You probably hit the daily token budget (Anthropic) or the RunPod endpoint went cold. Check \"Budget used\" on the card and the RunPod console respectively.",
       },
       {
         problem: "Status shows \"Healthy\" but no drafts are appearing on emails",
-        fix: "Check the Audit Log page for draft generation errors. The most common cause is a billing issue on the Anthropic account — log in to console.anthropic.com to check.",
+        fix: "Check the Audit Log page for draft generation errors. The most common causes are a billing issue on the upstream account, or SHADOW_MODE=true / DRAFT_AUTO_GENERATE=false in the portal config.",
       },
     ],
     verify:
-      "Once the key is set, the status pill turns green and \"Tokens today\" updates as new emails come in. You can also re-categorize any email manually to force a fresh Claude call.",
+      "Once the provider env vars are set, the status pill turns green and \"Tokens today\" updates as new emails come in. You can also re-categorize any email manually to force a fresh LLM call.",
   },
 
   email_provider: {

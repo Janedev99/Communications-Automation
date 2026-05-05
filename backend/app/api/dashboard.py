@@ -26,7 +26,10 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # Thresholds for health indicators (T1.13)
 _POLLER_HEALTHY_THRESHOLD_MINUTES = 10
-_ANTHROPIC_HEALTHY_THRESHOLD_MINUTES = 15
+# Renamed from _ANTHROPIC_HEALTHY_*; the LLM provider is now pluggable
+# (anthropic | openai_compat / RunPod) so the field name reflects the role
+# rather than the vendor.
+_LLM_HEALTHY_THRESHOLD_MINUTES = 15
 
 # ── Human-readable action descriptions ────────────────────────────────────────
 
@@ -263,11 +266,11 @@ def health_check() -> dict[str, Any]:
     """
     Public health check endpoint. Does not require authentication.
 
-    T1.13: Returns database reachability, poller health, and Anthropic reachability.
+    T1.13: Returns database reachability, poller health, and LLM reachability.
       - poller_healthy: True if last_successful_poll_at < 10 min ago
-      - anthropic_reachable: True if last successful Anthropic call < 15 min ago
+      - llm_reachable:  True if last successful LLM call < 15 min ago
     """
-    from app.services.email_intake import last_successful_poll_at, last_successful_anthropic_at
+    from app.services.email_intake import last_successful_poll_at, last_successful_llm_at
 
     db_ok = check_db_connection()
     now = datetime.now(timezone.utc)
@@ -279,23 +282,23 @@ def health_check() -> dict[str, Any]:
         age_minutes = (now - last_successful_poll_at).total_seconds() / 60
         poller_healthy = age_minutes < _POLLER_HEALTHY_THRESHOLD_MINUTES
 
-    anthropic_reachable: bool
-    if last_successful_anthropic_at is None:
-        # If we've never made an Anthropic call yet, don't flag as unreachable
+    llm_reachable: bool
+    if last_successful_llm_at is None:
+        # If we've never made an LLM call yet, don't flag as unreachable
         # (system may have just started with no emails yet)
-        anthropic_reachable = True
+        llm_reachable = True
     else:
-        age_minutes = (now - last_successful_anthropic_at).total_seconds() / 60
-        anthropic_reachable = age_minutes < _ANTHROPIC_HEALTHY_THRESHOLD_MINUTES
+        age_minutes = (now - last_successful_llm_at).total_seconds() / 60
+        llm_reachable = age_minutes < _LLM_HEALTHY_THRESHOLD_MINUTES
 
     overall = db_ok and poller_healthy
     return {
         "status": "ok" if overall else "degraded",
         "database": "connected" if db_ok else "unreachable",
         "poller_healthy": poller_healthy,
-        "anthropic_reachable": anthropic_reachable,
+        "llm_reachable": llm_reachable,
         "last_successful_poll_at": last_successful_poll_at.isoformat() if last_successful_poll_at else None,
-        "last_successful_anthropic_at": last_successful_anthropic_at.isoformat() if last_successful_anthropic_at else None,
+        "last_successful_llm_at": last_successful_llm_at.isoformat() if last_successful_llm_at else None,
         "timestamp": now.isoformat(),
     }
 
@@ -311,10 +314,10 @@ def system_status(
       - shadow_mode: whether auto-draft generation is disabled
       - last_successful_poll_at: ISO timestamp or null
       - poller_healthy: bool
-      - anthropic_reachable: bool
+      - llm_reachable: bool
     """
     from app.config import get_settings
-    from app.services.email_intake import last_successful_poll_at, last_successful_anthropic_at
+    from app.services.email_intake import last_successful_poll_at, last_successful_llm_at
 
     settings = get_settings()
     now = datetime.now(timezone.utc)
@@ -326,17 +329,17 @@ def system_status(
         age_minutes = (now - last_successful_poll_at).total_seconds() / 60
         poller_healthy = age_minutes < _POLLER_HEALTHY_THRESHOLD_MINUTES
 
-    anthropic_reachable: bool
-    if last_successful_anthropic_at is None:
-        anthropic_reachable = True
+    llm_reachable: bool
+    if last_successful_llm_at is None:
+        llm_reachable = True
     else:
-        age_minutes = (now - last_successful_anthropic_at).total_seconds() / 60
-        anthropic_reachable = age_minutes < _ANTHROPIC_HEALTHY_THRESHOLD_MINUTES
+        age_minutes = (now - last_successful_llm_at).total_seconds() / 60
+        llm_reachable = age_minutes < _LLM_HEALTHY_THRESHOLD_MINUTES
 
     return {
         "shadow_mode": settings.shadow_mode,
         "last_successful_poll_at": last_successful_poll_at.isoformat() if last_successful_poll_at else None,
         "poller_healthy": poller_healthy,
-        "anthropic_reachable": anthropic_reachable,
+        "llm_reachable": llm_reachable,
         "timestamp": now.isoformat(),
     }

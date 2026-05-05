@@ -20,7 +20,6 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -44,6 +43,7 @@ from app.schemas.email import (
 )
 from app.services.draft_generator import get_draft_generator
 from app.services.email_provider import get_email_provider
+from app.services.llm_client import LLMError
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
 
@@ -177,7 +177,7 @@ def generate_draft(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         )
-    except anthropic.APIError as exc:
+    except LLMError as exc:
         logger.error(
             "Draft generation API error for thread=%s: %s", thread_id, exc, exc_info=True
         )
@@ -699,7 +699,7 @@ def regenerate_draft(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         )
-    except anthropic.APIError as exc:
+    except LLMError as exc:
         logger.error(
             "Draft regeneration API error for thread=%s: %s", thread_id, exc, exc_info=True
         )

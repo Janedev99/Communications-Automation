@@ -10,7 +10,7 @@ Responsibilities:
   6. Trigger categorization for each new inbound message
   7. Trigger escalation check on categorization result
   8. Generate AI drafts in a SEPARATE transaction after poll commits (T1.8)
-  9. Track last_successful_poll_at + last_successful_anthropic_at (T1.13)
+  9. Track last_successful_poll_at + last_successful_llm_at (T1.13)
 
 This module also exposes `start_polling_loop()` which is called once
 from the FastAPI lifespan as a background asyncio task.
@@ -51,7 +51,10 @@ settings = get_settings()
 # They are read by the dashboard health endpoint (no locking needed for V1 — only
 # one writer, reads are eventually consistent which is fine for a health probe).
 last_successful_poll_at: datetime | None = None
-last_successful_anthropic_at: datetime | None = None
+# Renamed from last_successful_anthropic_at when the LLM provider became
+# pluggable (anthropic | openai_compat / RunPod). The dashboard health field
+# was renamed in lockstep (`llm_reachable` instead of `anthropic_reachable`).
+last_successful_llm_at: datetime | None = None
 
 
 def _record_successful_poll() -> None:
@@ -59,9 +62,9 @@ def _record_successful_poll() -> None:
     last_successful_poll_at = datetime.now(timezone.utc)
 
 
-def _record_successful_anthropic_call() -> None:
-    global last_successful_anthropic_at
-    last_successful_anthropic_at = datetime.now(timezone.utc)
+def _record_successful_llm_call() -> None:
+    global last_successful_llm_at
+    last_successful_llm_at = datetime.now(timezone.utc)
 
 
 # ── Bounce detection (T1.9) ───────────────────────────────────────────────────
@@ -248,7 +251,7 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
     # as evidence Anthropic is reachable, otherwise the integrations health
     # page lies during a Claude outage.
     if result.source == CategorizationSource.claude:
-        _record_successful_anthropic_call()
+        _record_successful_llm_call()
 
     # Update thread with categorization
     thread.category = result.category
@@ -347,7 +350,7 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
 
         # Draft generation only happens when Claude responded successfully.
         # Mark Anthropic reachable for health tracking.
-        _record_successful_anthropic_call()
+        _record_successful_llm_call()
 
         logger.info(
             "Auto-generated draft %s for thread=%s",

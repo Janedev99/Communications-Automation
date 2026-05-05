@@ -237,7 +237,9 @@ export interface SystemStatus {
   shadow_mode: boolean;
   last_successful_poll_at: string | null;
   poller_healthy: boolean;
-  anthropic_reachable: boolean;
+  /** Renamed from anthropic_reachable when the LLM provider became pluggable
+   *  (anthropic | openai_compat / RunPod / vLLM). Carries the same semantic. */
+  llm_reachable: boolean;
 }
 
 // ── Escalation ────────────────────────────────────────────────────────────────

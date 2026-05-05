@@ -27,7 +27,7 @@ These are set on the **Railway service** (not the repo). Copy from `.env.example
 | `APP_ENV` | `production` |
 | `APP_SECRET_KEY` | `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `DATABASE_URL` | Postgres service → Connect tab → "Postgres Connection URL" (must use `postgresql+psycopg2://` dialect — convert if needed) |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com → Settings → API Keys |
+| LLM credentials | Pick **one**: <br>• `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY=sk-ant-...` (https://console.anthropic.com), **or** <br>• `LLM_PROVIDER=openai_compat` + `LLM_API_KEY=...` + `LLM_BASE_URL=https://api.runpod.ai/v2/<endpoint-id>/openai/v1` + `LLM_MODEL=google/gemma-2-27b-it` (per the 05/02 RunPod migration). |
 | `EMAIL_PROVIDER` | `msgraph` (M365) or `imap` |
 | `CORS_ORIGINS` | The frontend service's public URL (no localhost in production) |
 | `ADMIN_EMAIL` | Jane's email |

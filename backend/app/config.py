@@ -39,10 +39,14 @@ class Settings(BaseSettings):
     # APIs onto a self-hosted Gemma model on RunPod (data stays inside the
     # firm's rented hardware). RunPod's serverless GPU endpoints expose an
     # OpenAI-compatible API, so "openai_compat" works for RunPod, OpenAI
-    # proper, vLLM, and llama.cpp's server. "anthropic" is kept as a fallback
-    # so the existing dev .env + test fixtures keep working while Gar
-    # provisions the RunPod endpoint.
-    llm_provider: Literal["anthropic", "openai_compat"] = "anthropic"
+    # proper, vLLM, and llama.cpp's server.
+    #
+    # Default is "openai_compat" — that is the canonical path for this
+    # deployment. "anthropic" is now an explicit opt-in for environments
+    # that still want Claude (notably the test suite, which mocks the
+    # anthropic SDK; tests/conftest.py pins LLM_PROVIDER=anthropic before
+    # importing the app so existing fixtures keep working).
+    llm_provider: Literal["anthropic", "openai_compat"] = "openai_compat"
     llm_api_key: str = ""
     llm_base_url: str = ""  # e.g. https://api.runpod.ai/v2/<endpoint-id>/openai/v1
     llm_model: str = ""  # falls back to claude_model when provider=anthropic

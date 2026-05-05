@@ -50,6 +50,18 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
   const { user } = useUser();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  // When set, the dialog targets a single message rather than the whole thread.
+  const [saveMessageId, setSaveMessageId] = useState<string | null>(null);
+
+  const openSaveForThread = () => {
+    setSaveMessageId(null);
+    openSaveForThread();
+  };
+
+  const openSaveForMessage = (messageId: string) => {
+    setSaveMessageId(messageId);
+    openSaveForThread();
+  };
 
   const confidence = thread.category_confidence
     ? `AI: ${Math.round(thread.category_confidence * 100)}% confident`
@@ -154,7 +166,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowSaveDialog(true)}
+                onClick={() => openSaveForThread()}
                 disabled={!!actionLoading}
                 className="h-8 text-xs gap-1.5 text-amber-700 dark:text-amber-300 border-amber-500/40 hover:bg-amber-500/10"
                 title={
@@ -170,7 +182,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setShowSaveDialog(true)}
+                onClick={() => openSaveForThread()}
                 disabled={!!actionLoading}
                 className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
                 title="Save this thread to a folder"
@@ -359,7 +371,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
             <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>
           ) : (
             thread.messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onRequestSave={openSaveForMessage}
+                onChange={onThreadChange}
+              />
             ))
           )}
         </div>
@@ -369,6 +386,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
         open={showSaveDialog}
         onOpenChange={setShowSaveDialog}
         thread={thread}
+        target={
+          saveMessageId
+            ? { kind: "message", messageId: saveMessageId }
+            : { kind: "thread" }
+        }
         onSaved={() => onThreadChange?.()}
       />
     </div>

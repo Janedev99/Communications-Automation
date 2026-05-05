@@ -233,8 +233,27 @@ class EmailMessage(Base):
     # Attachment metadata: list of {filename, size, content_type}
     attachments: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # Per-message save (mirrors EmailThread save columns) — per Jane: she
+    # most often saves *individual* emails, not entire threads. Both
+    # granularities are independent: a saved thread doesn't auto-save its
+    # messages, and a saved message doesn't auto-save its thread.
+    is_saved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    saved_folder: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    saved_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    saved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    saved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Relationships
     thread: Mapped["EmailThread"] = relationship("EmailThread", back_populates="messages")
+    saved_by: Mapped["User | None"] = relationship(  # type: ignore[name-defined]
+        "User", foreign_keys=[saved_by_id]
+    )
 
     def __repr__(self) -> str:
         return (

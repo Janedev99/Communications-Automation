@@ -66,6 +66,7 @@ from app.schemas.email import (
     ManualDraftRequest,
     SaveThreadRequest,
     SavedFolder,
+    SavedMessageItem,
     StatusChangeRequest,
     UpdateDraftRequest,
 )
@@ -834,20 +835,236 @@ def list_saved_folders(
     db: Session = Depends(get_db),
 ) -> list[SavedFolder]:
     """
-    List distinct saved folders + per-folder counts. The unsorted bucket
-    (saved threads with no folder) appears as an entry with ``name=None``.
+    List distinct saved folders + per-folder counts.
+
+    Counts cover BOTH saved threads and saved individual messages, so the
+    /saved view's folder rail accurately reflects how many items live in
+    each folder regardless of granularity. Each row also breaks down
+    thread_count vs message_count for UIs that need to distinguish.
+
+    The unsorted bucket (no folder) appears as an entry with ``name=None``.
     """
-    rows = db.execute(
+    thread_rows = db.execute(
         select(
-            EmailThread.saved_folder,
+            EmailThread.saved_folder.label("folder"),
             func.count(EmailThread.id).label("count"),
         )
         .where(EmailThread.is_saved == True)  # noqa: E712
         .group_by(EmailThread.saved_folder)
-        .order_by(EmailThread.saved_folder.asc().nullsfirst())
     ).all()
 
-    return [SavedFolder(name=row.saved_folder, count=row.count) for row in rows]
+    message_rows = db.execute(
+        select(
+            EmailMessage.saved_folder.label("folder"),
+            func.count(EmailMessage.id).label("count"),
+        )
+        .where(EmailMessage.is_saved == True)  # noqa: E712
+        .group_by(EmailMessage.saved_folder)
+    ).all()
+
+    # Merge by folder name, preserving the threads/messages split.
+    aggregated: dict[str | None, dict[str, int]] = {}
+    for row in thread_rows:
+        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
+        bucket["threads"] += row.count
+    for row in message_rows:
+        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
+        bucket["messages"] += row.count
+
+    # Stable sort: unfiled (None) first, then folders alphabetically.
+    def _sort_key(name: str | None) -> tuple[int, str]:
+        return (0, "") if name is None else (1, name.lower())
+
+    folders = [
+        SavedFolder(
+            name=name,
+            count=counts["threads"] + counts["messages"],
+            thread_count=counts["threads"],
+            message_count=counts["messages"],
+        )
+        for name, counts in sorted(aggregated.items(), key=lambda kv: _sort_key(kv[0]))
+    ]
+    return folders
+
+
+# ── Save / unsave individual message ──────────────────────────────────────────
+
+
+def _get_message_or_404(
+    db: Session, *, thread_id: uuid.UUID, message_id: uuid.UUID
+) -> EmailMessage:
+    """Fetch a message scoped to a thread or raise 404."""
+    msg = db.execute(
+        select(EmailMessage)
+        .options(selectinload(EmailMessage.saved_by))
+        .where(
+            EmailMessage.id == message_id,
+            EmailMessage.thread_id == thread_id,
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found in this thread.",
+        )
+    return msg
+
+
+@router.post(
+    "/{thread_id}/messages/{message_id}/save",
+    response_model=EmailThreadResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def save_message(
+    request: Request,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: SaveThreadRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Save a single message inside a thread.
+
+    Per Jane: she usually wants to keep a single email rather than the
+    whole thread. Per-message and per-thread saves are independent — a
+    saved message does not save its parent thread, and unsaving a thread
+    leaves any saved messages intact.
+
+    Returns the parent thread so the client gets fresh state for the
+    detail view in one round trip.
+    """
+    msg = _get_message_or_404(db, thread_id=thread_id, message_id=message_id)
+
+    folder = body.folder.strip() if body.folder else None
+    note = body.note.strip() if body.note else None
+
+    was_saved = msg.is_saved
+    msg.is_saved = True
+    msg.saved_folder = folder or None
+    msg.saved_note = note or None
+    msg.saved_at = datetime.now(timezone.utc)
+    msg.saved_by_id = current_user.id
+
+    db.flush()
+
+    log_action(
+        db,
+        action="email.message_saved" if not was_saved else "email.message_save_updated",
+        entity_type="email_message",
+        entity_id=str(msg.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "thread_id": str(thread_id),
+            "folder": folder,
+            "has_note": note is not None,
+        },
+    )
+
+    # Return refreshed thread so the UI can re-render the bubble + dialog state.
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one()
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.post(
+    "/{thread_id}/messages/{message_id}/unsave",
+    response_model=EmailThreadResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def unsave_message(
+    request: Request,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """Idempotent un-save for a single message."""
+    msg = _get_message_or_404(db, thread_id=thread_id, message_id=message_id)
+
+    if msg.is_saved:
+        prior_folder = msg.saved_folder
+        msg.is_saved = False
+        msg.saved_folder = None
+        msg.saved_note = None
+        msg.saved_at = None
+        msg.saved_by_id = None
+        db.flush()
+
+        log_action(
+            db,
+            action="email.message_unsaved",
+            entity_type="email_message",
+            entity_id=str(msg.id),
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            details={
+                "thread_id": str(thread_id),
+                "prior_folder": prior_folder,
+            },
+        )
+
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one()
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.get("/saved/messages", response_model=list[SavedMessageItem])
+def list_saved_messages(
+    folder: str | None = Query(default=None, description="Filter to a specific folder; empty string for unfiled"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SavedMessageItem]:
+    """
+    Cross-thread list of saved individual messages with denormalised
+    parent-thread context. Sorted newest-saved first.
+    """
+    query = (
+        select(EmailMessage, EmailThread)
+        .join(EmailThread, EmailThread.id == EmailMessage.thread_id)
+        .where(EmailMessage.is_saved == True)  # noqa: E712
+        .order_by(EmailMessage.saved_at.desc().nullslast())
+    )
+    if folder is not None:
+        if folder == "":
+            query = query.where(EmailMessage.saved_folder.is_(None))
+        else:
+            query = query.where(EmailMessage.saved_folder == folder)
+
+    rows = db.execute(query).all()
+    return [
+        SavedMessageItem(
+            id=msg.id,
+            thread_id=msg.thread_id,
+            sender=msg.sender,
+            recipient=msg.recipient,
+            body_text=msg.body_text,
+            received_at=msg.received_at,
+            direction=msg.direction,
+            saved_folder=msg.saved_folder,
+            saved_note=msg.saved_note,
+            saved_at=msg.saved_at,
+            thread_subject=thread.subject,
+            thread_client_email=thread.client_email,
+            thread_client_name=thread.client_name,
+        )
+        for msg, thread in rows
+    ]
 
 
 # ── Manual status change ──────────────────────────────────────────────────────

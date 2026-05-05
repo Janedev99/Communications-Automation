@@ -8,6 +8,7 @@ import type {
   EmailThread,
   EmailThreadListItem,
   PaginatedResponse,
+  SavedFolder,
 } from "@/lib/types";
 
 interface UseEmailsParams {
@@ -17,6 +18,10 @@ interface UseEmailsParams {
   tier?: string;
   client_email?: string;
   assigned_to?: string;
+  /** When true, only saved threads. When false, only un-saved. Omit for both. */
+  saved?: boolean;
+  /** Filter by saved folder. Empty string targets the unfiled bucket. */
+  folder?: string;
   search?: string;
   page?: number;
   page_size?: number;
@@ -31,6 +36,8 @@ export function useEmails(params: UseEmailsParams = {}) {
     tier,
     client_email,
     assigned_to,
+    saved,
+    folder,
     search,
   } = params;
 
@@ -49,6 +56,8 @@ export function useEmails(params: UseEmailsParams = {}) {
     if (tier) searchParams.set("tier", tier);
     if (client_email) searchParams.set("client_email", client_email);
     if (assigned_to) searchParams.set("assigned_to", assigned_to);
+    if (saved !== undefined) searchParams.set("saved", String(saved));
+    if (folder !== undefined) searchParams.set("folder", folder);
   }
 
   const base = isSearching ? "/api/v1/emails/search" : "/api/v1/emails";
@@ -81,4 +90,33 @@ export function changeThreadStatus(threadId: string, newStatus: string): Promise
 
 export function bulkAction(body: BulkActionRequest): Promise<BulkActionResponse> {
   return api.post<BulkActionResponse>("/api/v1/emails/bulk", body);
+}
+
+// ── Save / unsave thread ──────────────────────────────────────────────────────
+
+export interface SaveThreadBody {
+  folder?: string | null;
+  note?: string | null;
+}
+
+export function saveThread(threadId: string, body: SaveThreadBody): Promise<EmailThread> {
+  return api.post<EmailThread>(`/api/v1/emails/${threadId}/save`, body);
+}
+
+export function unsaveThread(threadId: string): Promise<EmailThread> {
+  return api.post<EmailThread>(`/api/v1/emails/${threadId}/unsave`, {});
+}
+
+export function useSavedFolders() {
+  const { data, error, isLoading, mutate } = useSWR<SavedFolder[]>(
+    "/api/v1/emails/saved/folders",
+    swrFetcher,
+    { refreshInterval: 30_000 },
+  );
+  return {
+    folders: data ?? [],
+    isLoading,
+    isError: !!error,
+    mutate,
+  };
 }

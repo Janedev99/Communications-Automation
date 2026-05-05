@@ -101,6 +101,19 @@ export interface EmailThread {
   categorization_source: CategorizationSource;
   /** Phase 3: ISO timestamp when this thread was auto-sent (T1 only), or null. */
   auto_sent_at: string | null;
+  /** Save-to-folder state */
+  is_saved: boolean;
+  saved_folder: string | null;
+  saved_note: string | null;
+  saved_at: string | null;
+  saved_by_id: string | null;
+  saved_by_name: string | null;
+}
+
+export interface SavedFolder {
+  /** Folder name. Null indicates the unsorted/unfiled saved bucket. */
+  name: string | null;
+  count: number;
 }
 
 export interface EmailThreadListItem {
@@ -126,6 +139,9 @@ export interface EmailThreadListItem {
   categorization_source: CategorizationSource;
   /** Phase 3: ISO timestamp when this thread was auto-sent (T1 only), or null. */
   auto_sent_at: string | null;
+  /** Save-to-folder state */
+  is_saved: boolean;
+  saved_folder: string | null;
 }
 
 // ── Tier rules (admin) ────────────────────────────────────────────────────────

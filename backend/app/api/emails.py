@@ -64,6 +64,8 @@ from app.schemas.email import (
     EmailThreadListResponse,
     EmailThreadResponse,
     ManualDraftRequest,
+    SaveThreadRequest,
+    SavedFolder,
     StatusChangeRequest,
     UpdateDraftRequest,
 )
@@ -447,6 +449,8 @@ def list_threads(
     tier: ThreadTier | None = Query(default=None, description="Filter by triage tier"),
     client_email: str | None = Query(default=None),
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
+    saved: bool | None = Query(default=None, description="Filter to saved threads only"),
+    folder: str | None = Query(default=None, description="Filter to a specific saved folder"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -459,6 +463,19 @@ def list_threads(
         query = query.where(EmailThread.status == thread_status)
     if category is not None:
         query = query.where(EmailThread.category == category)
+    if saved is True:
+        query = query.where(EmailThread.is_saved == True)  # noqa: E712
+    elif saved is False:
+        query = query.where(EmailThread.is_saved == False)  # noqa: E712
+    if folder is not None:
+        # Empty string folder means "saved but unsorted" — match NULL saved_folder.
+        if folder == "":
+            query = query.where(
+                EmailThread.is_saved == True,  # noqa: E712
+                EmailThread.saved_folder.is_(None),
+            )
+        else:
+            query = query.where(EmailThread.saved_folder == folder)
     if tier is not None:
         # The Escalated tab is what users mental-model as "everything that
         # needs Jane's attention." Tier and status are stored independently and
@@ -703,6 +720,134 @@ def assign_thread(
 
     db.refresh(thread)
     return EmailThreadResponse.from_thread(thread)
+
+
+# ── Save / unsave thread + folders ────────────────────────────────────────────
+
+
+@router.post("/{thread_id}/save", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def save_thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    body: SaveThreadRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Save a thread for later — Jane's Outlook-folder workflow, in-app.
+
+    Pass ``folder`` to file it under a named folder (e.g. a client name);
+    omit it to save without a folder. Re-saving an already-saved thread
+    overwrites the folder/note (same idempotent behaviour as Outlook flag).
+    """
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    folder = body.folder.strip() if body.folder else None
+    note = body.note.strip() if body.note else None
+
+    was_saved = thread.is_saved
+    thread.is_saved = True
+    thread.saved_folder = folder or None
+    thread.saved_note = note or None
+    thread.saved_at = datetime.now(timezone.utc)
+    thread.saved_by_id = current_user.id
+    thread.updated_at = datetime.now(timezone.utc)
+
+    db.flush()
+
+    log_action(
+        db,
+        action="email.saved" if not was_saved else "email.save_updated",
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "folder": folder,
+            "has_note": note is not None,
+        },
+    )
+
+    db.refresh(thread)
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.post("/{thread_id}/unsave", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def unsave_thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """Remove a thread from saved. Idempotent — succeeds even if not saved."""
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    if thread.is_saved:
+        prior_folder = thread.saved_folder
+        thread.is_saved = False
+        thread.saved_folder = None
+        thread.saved_note = None
+        thread.saved_at = None
+        thread.saved_by_id = None
+        thread.updated_at = datetime.now(timezone.utc)
+        db.flush()
+
+        log_action(
+            db,
+            action="email.unsaved",
+            entity_type="email_thread",
+            entity_id=str(thread.id),
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            details={"prior_folder": prior_folder},
+        )
+
+    db.refresh(thread)
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.get("/saved/folders", response_model=list[SavedFolder])
+def list_saved_folders(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SavedFolder]:
+    """
+    List distinct saved folders + per-folder counts. The unsorted bucket
+    (saved threads with no folder) appears as an entry with ``name=None``.
+    """
+    rows = db.execute(
+        select(
+            EmailThread.saved_folder,
+            func.count(EmailThread.id).label("count"),
+        )
+        .where(EmailThread.is_saved == True)  # noqa: E712
+        .group_by(EmailThread.saved_folder)
+        .order_by(EmailThread.saved_folder.asc().nullsfirst())
+    ).all()
+
+    return [SavedFolder(name=row.saved_folder, count=row.count) for row in rows]
 
 
 # ── Manual status change ──────────────────────────────────────────────────────

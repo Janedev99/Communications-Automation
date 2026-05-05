@@ -8,6 +8,7 @@ import {
   Mail,
   AlertTriangle,
   BookOpen,
+  Bookmark,
   GraduationCap,
   History,
   Settings,
@@ -101,6 +102,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     { label: "Dashboard", href: "/", icon: LayoutDashboard, badge: false },
     { label: "Emails", href: "/emails", icon: Mail, badge: hasNewEmails },
     { label: "Escalations", href: "/escalations", icon: AlertTriangle, badge: hasNewEscalations },
+    { label: "Saved", href: "/saved", icon: Bookmark, badge: false },
     { label: "Knowledge Base", href: "/knowledge", icon: BookOpen, badge: false },
     { label: "Tutorials", href: "/tutorials", icon: GraduationCap, badge: false },
   ];

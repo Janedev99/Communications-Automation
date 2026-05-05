@@ -21,6 +21,12 @@ import warnings
 # ── Set env vars BEFORE any app import (settings is lru_cache'd) ──────────────
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["ANTHROPIC_API_KEY"] = "test-anthropic-key"
+# Pin tests to the anthropic provider regardless of the system default.
+# The mock_anthropic fixture patches anthropic.Anthropic, and the existing
+# test surface was written against the anthropic message shape, so we keep
+# the test environment on that path even after openai_compat became the
+# default for production deployments.
+os.environ["LLM_PROVIDER"] = "anthropic"
 os.environ["APP_SECRET_KEY"] = "test-secret-key-32-chars-minimum!!"
 os.environ["APP_ENV"] = "development"
 os.environ["EMAIL_PROVIDER"] = "imap"

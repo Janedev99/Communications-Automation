@@ -460,7 +460,21 @@ def list_threads(
     if category is not None:
         query = query.where(EmailThread.category == category)
     if tier is not None:
-        query = query.where(EmailThread.tier == tier)
+        # The Escalated tab is what users mental-model as "everything that
+        # needs Jane's attention." Tier and status are stored independently and
+        # can drift (bulk re-categorize touches one but not the other; resolved
+        # escalations clear status but leave tier; pre-tier-migration rows may
+        # also be inconsistent). Match either column for t3 so a status-only
+        # escalation never disappears from the tab.
+        if tier == ThreadTier.t3_escalate:
+            query = query.where(
+                or_(
+                    EmailThread.tier == ThreadTier.t3_escalate,
+                    EmailThread.status == EmailStatus.escalated,
+                )
+            )
+        else:
+            query = query.where(EmailThread.tier == tier)
     if client_email:
         # Escape LIKE wildcards to prevent unintended pattern matching
         safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

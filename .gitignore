@@ -1,3 +1,8 @@
+# Local dev artifacts (logs, browser-test outputs)
+.dev-logs/
+.playwright-mcp/
+/*.png
+
 # Python
 __pycache__/
 *.py[cod]

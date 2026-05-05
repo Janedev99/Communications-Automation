@@ -5,6 +5,7 @@ POST   /emails/{thread_id}/generate-draft         — trigger AI draft generatio
 GET    /drafts                                     — list all drafts (cross-thread)
 GET    /emails/{thread_id}/drafts/{draft_id}       — get single draft with full detail
 POST   /emails/{thread_id}/drafts/{draft_id}/approve — approve a pending/edited draft
+POST   /emails/{thread_id}/drafts/{draft_id}/revert  — un-approve so staff can edit further
 POST   /emails/{thread_id}/drafts/{draft_id}/reject  — reject a draft (requires reason)
 POST   /emails/{thread_id}/drafts/{draft_id}/send    — send an approved draft via email
 
@@ -266,6 +267,81 @@ def approve_draft(
         user_id=current_user.id,
         ip_address=get_client_ip(request),
         details={"thread_id": str(thread_id), "version": draft.version},
+    )
+
+    return DraftResponseResponse.model_validate(draft)
+
+
+# ── Revert ────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/emails/{thread_id}/drafts/{draft_id}/revert",
+    response_model=DraftResponseResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def revert_draft(
+    request: Request,
+    thread_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DraftResponseResponse:
+    """
+    Revert an approved draft back to an editable state.
+
+    Use when staff approved a draft but then wants to add or adjust the
+    response without discarding the existing text (which is what regenerate
+    does). The draft moves back to ``pending`` (or ``edited`` if the body
+    diverges from the original AI text), so the editor unlocks.
+
+    Only drafts with status ``approved`` can be reverted, and only when the
+    thread itself hasn't been sent.
+    """
+    thread = _get_thread_or_404(thread_id, db)
+    draft = _get_draft_or_404(draft_id, thread_id, db)
+
+    if draft.status != DraftStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot revert a draft with status '{draft.status.value}'. "
+                "Only approved drafts can be reverted."
+            ),
+        )
+
+    if thread.status in (EmailStatus.sent, EmailStatus.closed):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot revert a draft for a thread with status '{thread.status.value}'.",
+        )
+
+    # If the body diverges from the original AI text, "edited" reflects history
+    # better than "pending" — staff already edited this draft once.
+    has_edits = bool(
+        draft.original_body_text
+        and draft.body_text
+        and draft.body_text != draft.original_body_text
+    )
+    new_status = DraftStatus.edited if has_edits else DraftStatus.pending
+
+    draft.status = new_status
+    # Keep reviewed_by_id / reviewed_at as-is — they record the prior approval
+    # and the revert is captured separately in the audit log.
+    db.flush()
+
+    log_action(
+        db,
+        action="draft.reverted",
+        entity_type="draft_response",
+        entity_id=str(draft.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "thread_id": str(thread_id),
+            "version": draft.version,
+            "new_status": new_status.value,
+        },
     )
 
     return DraftResponseResponse.model_validate(draft)

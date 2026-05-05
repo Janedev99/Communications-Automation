@@ -12,6 +12,7 @@ import {
   RefreshCw,
   AlertTriangle,
   CheckCircle,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -68,6 +69,7 @@ const UNDO_COUNTDOWN_SECONDS = 10;
 export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const [generating, setGenerating] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [reverting, setReverting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
@@ -183,6 +185,20 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       toast.error(err instanceof Error ? err.message : "Failed to approve draft.");
     } finally {
       setApproving(false);
+    }
+  };
+
+  const handleRevert = async () => {
+    if (!draft) return;
+    setReverting(true);
+    try {
+      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/revert`);
+      onDraftChange();
+      toast.success("Reverted — the draft is editable again.");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to revert draft.");
+    } finally {
+      setReverting(false);
     }
   };
 
@@ -803,16 +819,27 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               <>
                 <Button
                   onClick={() => setShowSendConfirm(true)}
-                  disabled={sendState.phase !== "idle"}
+                  disabled={sendState.phase !== "idle" || reverting}
                 >
                   <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
                   Send
+                </Button>
+                {/* Revert keeps the text — the safer alternative to Regenerate
+                    when staff just wants to add or tweak the response. */}
+                <Button
+                  variant="outline"
+                  onClick={handleRevert}
+                  disabled={reverting || generating}
+                  title="Un-approve so you can edit this draft again — keeps the text"
+                >
+                  <Undo2 className="w-4 h-4 mr-1.5" />
+                  {reverting ? "Reverting..." : "Revert to edit"}
                 </Button>
                 {/* Item 3 — Regenerate from approved also needs confirm */}
                 <Button
                   variant="outline"
                   onClick={handleRegenerateClick}
-                  disabled={generating}
+                  disabled={generating || reverting}
                   title="Reject this draft and generate a new one with AI"
                 >
                   <RefreshCw className="w-4 h-4 mr-1.5" />

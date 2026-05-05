@@ -12,13 +12,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_user
 from app.database import check_db_connection, get_db
 from app.models.audit import AuditLog
-from app.models.email import DraftResponse, DraftStatus, EmailCategory, EmailStatus, EmailThread, KnowledgeEntry
+from app.models.email import DraftResponse, DraftStatus, EmailCategory, EmailStatus, EmailThread, KnowledgeEntry, ThreadTier
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
 from app.models.user import User
 
@@ -84,6 +84,20 @@ def get_stats(
         .group_by(EmailThread.tier)
     ).all()
     threads_by_tier = {row.tier.value: row.count for row in tier_rows}
+
+    # The Escalated lane in the UI matches "tier=t3_escalate OR status=escalated"
+    # (the two columns can drift — see comment in api/emails.py:list_threads).
+    # Recount t3 to include status-only escalations so the tab badge matches the
+    # list it links to.
+    t3_combined = db.execute(
+        select(func.count(EmailThread.id)).where(
+            or_(
+                EmailThread.tier == ThreadTier.t3_escalate,
+                EmailThread.status == EmailStatus.escalated,
+            )
+        )
+    ).scalar_one()
+    threads_by_tier[ThreadTier.t3_escalate.value] = t3_combined
 
     # ── Escalations by status ──────────────────────────────────────────────────
     esc_status_rows = db.execute(

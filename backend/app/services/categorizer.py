@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from app.config import get_settings
 from app.models.email import CategorizationSource, EmailCategory
 from app.schemas.email import CategorizationResult
+from app.services.pii_detector import detect_pii, summarize_pii
 from app.services.rules_engine import categorize_with_rules
 from app.utils.sanitize import strip_html
 
@@ -225,7 +226,23 @@ def _rules_fallback(*, sender: str, subject: str, body: str) -> CategorizationRe
     """Run the keyword-based rules engine and tag the result with rules_fallback source."""
     result = categorize_with_rules(sender=sender, subject=subject, body=body)
     # Override source — rules engine doesn't know it's running as a fallback
-    return result.model_copy(update={"source": CategorizationSource.rules_fallback})
+    result = result.model_copy(update={"source": CategorizationSource.rules_fallback})
+
+    # PII detection runs in the rules-fallback path too — Claude being down
+    # is precisely when we *most* want a deterministic safety net.
+    pii_hits = detect_pii(subject=subject, body=body or "")
+    if pii_hits:
+        pii_reason = summarize_pii(pii_hits)
+        merged_reasons = [pii_reason] + [
+            r for r in result.escalation_reasons if pii_reason not in r
+        ]
+        result = result.model_copy(
+            update={
+                "escalation_needed": True,
+                "escalation_reasons": merged_reasons,
+            }
+        )
+    return result
 
 
 def _deterministic_escalation_check(subject: str, body: str) -> bool:
@@ -339,14 +356,34 @@ class CategorizerService:
                     suggested_reply_tone=result.suggested_reply_tone,
                 )
 
+            # PII override: clients occasionally email SSN/EIN/W-2 directly.
+            # We refuse to let Claude auto-handle these — escalate to staff
+            # with the canonical "sensitive client data" reason so escalation
+            # severity mapping picks it up and the UI can flag it distinctly.
+            pii_hits = detect_pii(subject=subject, body=body or "")
+            if pii_hits:
+                pii_reason = summarize_pii(pii_hits)
+                merged_reasons = [pii_reason] + [
+                    r for r in result.escalation_reasons if pii_reason not in r
+                ]
+                result = CategorizationResult(
+                    category=result.category,
+                    confidence=result.confidence,
+                    escalation_needed=True,
+                    escalation_reasons=merged_reasons,
+                    summary=result.summary,
+                    suggested_reply_tone=result.suggested_reply_tone,
+                )
+
             logger.info(
                 "Categorizer: email from %s → category=%s confidence=%.2f escalate=%s "
-                "(forced=%s)",
+                "(forced=%s pii=%s)",
                 sender,
                 result.category,
                 result.confidence,
                 result.escalation_needed,
                 force_escalate,
+                [h.kind for h in pii_hits],
             )
             return result
         except anthropic.APIError as exc:

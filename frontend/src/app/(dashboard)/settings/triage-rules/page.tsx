@@ -185,7 +185,7 @@ function RuleCard({ rule, onUpdate }: RuleCardProps) {
             aria-valuemax={99}
           />
           <p className="text-xs text-muted-foreground mt-2">
-            Higher = more conservative. Below {(draftThreshold * 100).toFixed(0)}% the AI's
+            Higher = more conservative. Below {(draftThreshold * 100).toFixed(0)}% the AI&apos;s
             output goes to staff review instead of auto-sending.
           </p>
         </div>

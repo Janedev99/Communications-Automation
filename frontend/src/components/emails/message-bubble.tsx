@@ -162,7 +162,7 @@ export function MessageBubble({
           <span>{formatDate(message.received_at)}</span>
           {message.is_saved && message.saved_folder && (
             <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-              · saved in "{message.saved_folder}"
+              · saved in &quot;{message.saved_folder}&quot;
             </span>
           )}
         </p>
@@ -197,7 +197,7 @@ export function MessageBubble({
         <span>{formatDate(message.received_at)}</span>
         {message.is_saved && message.saved_folder && (
           <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-            · saved in "{message.saved_folder}"
+            · saved in &quot;{message.saved_folder}&quot;
           </span>
         )}
       </p>

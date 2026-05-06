@@ -12,6 +12,24 @@ import type {
   SavedMessageItem,
 } from "@/lib/types";
 
+/** Sort axes accepted by GET /api/v1/emails. Keep in sync with backend. */
+export type ThreadSort =
+  | "updated_desc"
+  | "updated_asc"
+  | "subject_asc"
+  | "subject_desc"
+  | "client_asc"
+  | "client_desc";
+
+/** Sort axes accepted by GET /api/v1/emails/saved/messages. */
+export type SavedMessageSort =
+  | "saved_desc"
+  | "saved_asc"
+  | "subject_asc"
+  | "subject_desc"
+  | "client_asc"
+  | "client_desc";
+
 interface UseEmailsParams {
   status?: string;
   category?: string;
@@ -23,6 +41,8 @@ interface UseEmailsParams {
   saved?: boolean;
   /** Filter by saved folder. Empty string targets the unfiled bucket. */
   folder?: string;
+  /** Sort axis. Defaults to most-recently-updated first server-side. */
+  sort?: ThreadSort;
   search?: string;
   page?: number;
   page_size?: number;
@@ -39,6 +59,7 @@ export function useEmails(params: UseEmailsParams = {}) {
     assigned_to,
     saved,
     folder,
+    sort,
     search,
   } = params;
 
@@ -59,6 +80,7 @@ export function useEmails(params: UseEmailsParams = {}) {
     if (assigned_to) searchParams.set("assigned_to", assigned_to);
     if (saved !== undefined) searchParams.set("saved", String(saved));
     if (folder !== undefined) searchParams.set("folder", folder);
+    if (sort) searchParams.set("sort", sort);
   }
 
   const base = isSearching ? "/api/v1/emails/search" : "/api/v1/emails";
@@ -145,11 +167,14 @@ export function unsaveMessage(threadId: string, messageId: string): Promise<Emai
 interface UseSavedMessagesParams {
   /** Filter by folder. Empty string = unfiled bucket. Undefined = all. */
   folder?: string;
+  /** Sort axis. Defaults to most-recently-saved first server-side. */
+  sort?: SavedMessageSort;
 }
 
 export function useSavedMessages(params: UseSavedMessagesParams = {}) {
   const sp = new URLSearchParams();
   if (params.folder !== undefined) sp.set("folder", params.folder);
+  if (params.sort) sp.set("sort", params.sort);
   const qs = sp.toString();
   const key = `/api/v1/emails/saved/messages${qs ? `?${qs}` : ""}`;
   const { data, error, isLoading, mutate } = useSWR<SavedMessageItem[]>(
@@ -163,4 +188,15 @@ export function useSavedMessages(params: UseSavedMessagesParams = {}) {
     isError: !!error,
     mutate,
   };
+}
+
+/**
+ * Delete a saved folder. Backend refuses with 409 if the folder still
+ * has any saved threads or messages — caller should surface the error
+ * message to the user as a "move items first" prompt.
+ */
+export function deleteSavedFolder(folder: string): Promise<void> {
+  return api.delete<void>(
+    `/api/v1/emails/saved/folders/${encodeURIComponent(folder)}`,
+  );
 }

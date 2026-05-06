@@ -18,9 +18,9 @@ import threading
 import uuid
 from collections import defaultdict
 from datetime import datetime, date, timezone
-from typing import AsyncGenerator, DefaultDict
+from typing import AsyncGenerator, DefaultDict, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -452,6 +452,14 @@ def list_threads(
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
     saved: bool | None = Query(default=None, description="Filter to saved threads only"),
     folder: str | None = Query(default=None, description="Filter to a specific saved folder"),
+    sort: Literal[
+        "updated_desc", "updated_asc",
+        "subject_asc", "subject_desc",
+        "client_asc", "client_desc",
+    ] = Query(
+        default="updated_desc",
+        description="Sort order. Defaults to most-recently-updated first.",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -529,12 +537,24 @@ def list_threads(
         .subquery()
     )
 
+    # Sort options. lower() on text sorts so client_email/subject sorts are
+    # case-insensitive, which matches user mental-model ("Apex" and "apex"
+    # belong next to each other, not in different halves of the list").
+    sort_clause = {
+        "updated_desc": EmailThread.updated_at.desc(),
+        "updated_asc": EmailThread.updated_at.asc(),
+        "subject_asc": func.lower(EmailThread.subject).asc(),
+        "subject_desc": func.lower(EmailThread.subject).desc(),
+        "client_asc": func.lower(EmailThread.client_email).asc(),
+        "client_desc": func.lower(EmailThread.client_email).desc(),
+    }[sort]
+
     paged_query = (
         select(EmailThread, func.coalesce(msg_count_subq.c.message_count, 0).label("message_count"))
         .outerjoin(msg_count_subq, EmailThread.id == msg_count_subq.c.thread_id)
         .options(selectinload(EmailThread.assigned_to))
         .where(query.whereclause if query.whereclause is not None else True)
-        .order_by(EmailThread.updated_at.desc())
+        .order_by(sort_clause)
         .offset(offset)
         .limit(page_size)
     )
@@ -887,6 +907,78 @@ def list_saved_folders(
     return folders
 
 
+@router.delete(
+    "/saved/folders/{folder_name}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf)],
+)
+def delete_saved_folder(
+    request: Request,
+    folder_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    Delete a named saved folder.
+
+    Folders aren't first-class entities — they're just distinct values of
+    the ``saved_folder`` column on email_threads and email_messages. So
+    "deleting" a folder really means refusing to do anything destructive
+    if items still live in it.
+
+    Behavior:
+      - Folder is empty (no threads or messages reference the name)
+        → 204. Idempotent on repeat calls and on names that never existed,
+        which keeps the UI's "delete button on an empty rail entry"
+        affordance simple — clicking it always succeeds.
+      - Folder still has saved items → 409 with a clear error so the
+        client can tell the user "move or unsave the items first."
+
+    Frontend should refresh /saved/folders after a 204.
+    """
+    if not folder_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Folder name cannot be empty.",
+        )
+
+    thread_count = db.execute(
+        select(func.count(EmailThread.id)).where(
+            EmailThread.is_saved == True,  # noqa: E712
+            EmailThread.saved_folder == folder_name,
+        )
+    ).scalar_one()
+    message_count = db.execute(
+        select(func.count(EmailMessage.id)).where(
+            EmailMessage.is_saved == True,  # noqa: E712
+            EmailMessage.saved_folder == folder_name,
+        )
+    ).scalar_one()
+    total = thread_count + message_count
+
+    if total > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Folder \"{folder_name}\" is not empty "
+                f"({thread_count} thread(s), {message_count} email(s)). "
+                "Move or unsave them before deleting the folder."
+            ),
+        )
+
+    log_action(
+        db,
+        action="email.folder_deleted",
+        entity_type="saved_folder",
+        entity_id=folder_name[:64],  # entity_id is a string column
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={"folder": folder_name},
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ── Save / unsave individual message ──────────────────────────────────────────
 
 
@@ -1027,18 +1119,39 @@ def unsave_message(
 @router.get("/saved/messages", response_model=list[SavedMessageItem])
 def list_saved_messages(
     folder: str | None = Query(default=None, description="Filter to a specific folder; empty string for unfiled"),
+    sort: Literal[
+        "saved_desc", "saved_asc",
+        "subject_asc", "subject_desc",
+        "client_asc", "client_desc",
+    ] = Query(
+        default="saved_desc",
+        description="Sort order. Defaults to most-recently-saved first.",
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[SavedMessageItem]:
     """
     Cross-thread list of saved individual messages with denormalised
-    parent-thread context. Sorted newest-saved first.
+    parent-thread context. Sort axis defaults to saved-at desc; subject
+    and client sorts are case-insensitive (lower()) so human eyes don't
+    see "Apex" and "apex" split across the list.
     """
+    # Note: subject + client sort against the parent THREAD, not the
+    # message itself — the message has no subject and the from-address
+    # may differ across replies in the same thread (e.g. CC chains).
+    sort_clause = {
+        "saved_desc": EmailMessage.saved_at.desc().nullslast(),
+        "saved_asc": EmailMessage.saved_at.asc().nullsfirst(),
+        "subject_asc": func.lower(EmailThread.subject).asc(),
+        "subject_desc": func.lower(EmailThread.subject).desc(),
+        "client_asc": func.lower(EmailThread.client_email).asc(),
+        "client_desc": func.lower(EmailThread.client_email).desc(),
+    }[sort]
     query = (
         select(EmailMessage, EmailThread)
         .join(EmailThread, EmailThread.id == EmailMessage.thread_id)
         .where(EmailMessage.is_saved == True)  # noqa: E712
-        .order_by(EmailMessage.saved_at.desc().nullslast())
+        .order_by(sort_clause)
     )
     if folder is not None:
         if folder == "":

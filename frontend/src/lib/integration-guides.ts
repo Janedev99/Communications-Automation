@@ -251,11 +251,11 @@ export const INTEGRATION_GUIDES: Record<IntegrationGuideId, IntegrationGuide> = 
       },
       {
         problem: "Emails arrive but no drafts are generated",
-        fix: "That means the email provider is fine, but Claude is unavailable. Check the Anthropic card — it's probably not configured or out of budget.",
+        fix: "That means the email provider is fine, but the AI is unavailable. Check the AI provider card above — it's probably not configured (Anthropic key missing, or RunPod base URL not set), or out of budget.",
       },
     ],
     verify:
-      "Send a test email to the configured mailbox. Within 60 seconds, it should appear in the Emails page with an AI category and a draft reply (assuming Claude is also configured).",
+      "Send a test email to the configured mailbox. Within 60 seconds, it should appear in the Emails page with an AI category and a draft reply (assuming the AI provider is also configured).",
   },
 
   notifications: {

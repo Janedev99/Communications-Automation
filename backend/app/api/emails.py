@@ -22,7 +22,7 @@ from typing import AsyncGenerator, DefaultDict, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
@@ -923,18 +923,24 @@ def delete_saved_folder(
 
     Folders aren't first-class entities — they're just distinct values of
     the ``saved_folder`` column on email_threads and email_messages. So
-    "deleting" a folder really means refusing to do anything destructive
-    if items still live in it.
+    "deleting a folder" follows the Outlook / Gmail-label model: the
+    folder *label* goes away, but every item that was filed under it
+    stays saved (it just becomes unfiled).
 
-    Behavior:
-      - Folder is empty (no threads or messages reference the name)
-        → 204. Idempotent on repeat calls and on names that never existed,
-        which keeps the UI's "delete button on an empty rail entry"
-        affordance simple — clicking it always succeeds.
-      - Folder still has saved items → 409 with a clear error so the
-        client can tell the user "move or unsave the items first."
+    Atomically:
+      - Sets saved_folder = NULL on every saved thread that referenced
+        this folder.
+      - Sets saved_folder = NULL on every saved message that referenced
+        this folder.
+      - is_saved stays true on every affected row, so users keep their
+        items in the Saved view — they just move into the "No folder"
+        bucket on the rail.
+      - The folder name disappears from /saved/folders the next time
+        it's read, since folders are derived from distinct column values.
 
-    Frontend should refresh /saved/folders after a 204.
+    Always returns 204 (idempotent — deleting a never-existed folder
+    name is a no-op). Audit log captures the count of items that were
+    moved out so admins can reconstruct the action later.
     """
     if not folder_name.strip():
         raise HTTPException(
@@ -942,29 +948,26 @@ def delete_saved_folder(
             detail="Folder name cannot be empty.",
         )
 
-    thread_count = db.execute(
-        select(func.count(EmailThread.id)).where(
+    now = datetime.now(timezone.utc)
+
+    threads_unfiled = db.execute(
+        update(EmailThread)
+        .where(
             EmailThread.is_saved == True,  # noqa: E712
             EmailThread.saved_folder == folder_name,
         )
-    ).scalar_one()
-    message_count = db.execute(
-        select(func.count(EmailMessage.id)).where(
+        .values(saved_folder=None, updated_at=now)
+    ).rowcount or 0
+    messages_unfiled = db.execute(
+        update(EmailMessage)
+        .where(
             EmailMessage.is_saved == True,  # noqa: E712
             EmailMessage.saved_folder == folder_name,
         )
-    ).scalar_one()
-    total = thread_count + message_count
+        .values(saved_folder=None)
+    ).rowcount or 0
 
-    if total > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Folder \"{folder_name}\" is not empty "
-                f"({thread_count} thread(s), {message_count} email(s)). "
-                "Move or unsave them before deleting the folder."
-            ),
-        )
+    db.flush()
 
     log_action(
         db,
@@ -973,7 +976,11 @@ def delete_saved_folder(
         entity_id=folder_name[:64],  # entity_id is a string column
         user_id=current_user.id,
         ip_address=get_client_ip(request),
-        details={"folder": folder_name},
+        details={
+            "folder": folder_name,
+            "threads_unfiled": threads_unfiled,
+            "messages_unfiled": messages_unfiled,
+        },
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -615,6 +615,154 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     );
   }
 
+  // ── State E: Draft send_failed — recovery flow ────────────────────────────
+  // Reached when a previous send attempt failed at the provider AND the user
+  // navigated away before retrying. The in-panel send error UI in State B only
+  // shows while the user is still in the same session as the failure; once
+  // they come back, sendState resets to idle but draft.status is "send_failed",
+  // which used to fall through to State B's editor with non-functional buttons
+  // (Approve/Reject 409'd because of the state machine; Regenerate too, until
+  // the backend was extended). This branch surfaces a clear recovery affordance:
+  // retry the same draft, or regenerate a fresh one.
+  if (draft.status === "send_failed") {
+    // Direct retry — no 10-second undo countdown. The user is consciously
+    // retrying after a known failure, so a "wait, are you sure?" delay would
+    // be more annoying than helpful.
+    const handleRetrySend = () => {
+      if (!draft) return;
+      sendIdempotencyKeyRef.current = `${draft.id}-retry-${Date.now()}`;
+      executeSend();
+    };
+
+    // While the retry is in flight (or just finished/errored), show the
+    // inline banner instead of the action buttons — same shape as the
+    // approved-state send banners so the visual language is consistent.
+    const inRetryFlow =
+      sendState.phase === "sending" ||
+      sendState.phase === "sent" ||
+      sendState.phase === "error";
+
+    return (
+      <div className="bg-card flex flex-col h-full">
+        {panelHeader}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30">
+            <div className="flex items-start gap-2">
+              <AlertTriangle
+                className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] font-semibold text-destructive uppercase tracking-wider">
+                  Send failed
+                </p>
+                <p className="text-sm text-foreground/90 mt-1 leading-relaxed">
+                  The last attempt to deliver this email did not succeed.
+                  {draft.send_attempts > 0 &&
+                    ` ${draft.send_attempts} attempt${
+                      draft.send_attempts === 1 ? "" : "s"
+                    } so far.`}{" "}
+                  You can retry sending the same draft, or regenerate a fresh
+                  response with the AI.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="px-5 py-4">
+            <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+              {draft.body_text}
+            </p>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 border-t border-border flex-shrink-0">
+          {inRetryFlow ? (
+            <>
+              {sendState.phase === "sending" && (
+                <div className="flex items-center gap-2 w-full bg-muted border border-border rounded-md px-4 py-2.5">
+                  <Loader2 className="w-4 h-4 animate-spin text-brand-500" />
+                  <span className="text-sm text-muted-foreground">Sending…</span>
+                </div>
+              )}
+
+              {sendState.phase === "sent" && (
+                <div className="flex items-center gap-2 w-full bg-emerald-500/10 border border-emerald-500/30 rounded-md px-4 py-2.5">
+                  <CheckCircle
+                    className="w-4 h-4 text-emerald-600 dark:text-emerald-400"
+                    strokeWidth={1.75}
+                  />
+                  <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                    Sent at {sendState.sentAt}
+                  </span>
+                </div>
+              )}
+
+              {sendState.phase === "error" && (
+                <div className="flex items-center justify-between gap-3 w-full bg-destructive/10 border border-destructive/30 rounded-md px-4 py-2.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <X
+                      className="w-4 h-4 text-destructive flex-shrink-0"
+                      strokeWidth={2}
+                    />
+                    <span className="text-sm text-foreground/90 truncate">
+                      {sendState.message}
+                    </span>
+                    {draft.send_attempts > 1 && (
+                      <span className="flex-shrink-0 text-xs font-medium text-destructive bg-destructive/20 rounded px-1.5 py-0.5">
+                        Attempt {draft.send_attempts}
+                      </span>
+                    )}
+                  </div>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="flex-shrink-0"
+                    onClick={executeSend}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleRetrySend}
+                disabled={generating}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              >
+                <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
+                Retry send
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleRegenerateClick}
+                disabled={generating}
+                title="Discard this draft and ask the AI for a new response"
+              >
+                <RefreshCw className="w-4 h-4 mr-1.5" />
+                {generating ? "Regenerating..." : "Regenerate"}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Regenerate confirm dialog — same flow as State B but copy reflects the failed-send context */}
+        <ConfirmDialog
+          open={showRegenerateConfirm}
+          onOpenChange={setShowRegenerateConfirm}
+          title="Discard this draft and regenerate?"
+          description="The current draft will be rejected and the AI will generate a new one. The failed attempt stays in the audit log."
+          confirmLabel="Discard & regenerate"
+          confirmVariant="destructive"
+          onConfirm={handleRegenerateConfirmed}
+          loading={generating}
+        />
+      </div>
+    );
+  }
+
   // ── State B: Draft pending, edited, or approved (active editing) ───────────
   const displayText = showOriginal
     ? (draft.original_body_text ?? draft.body_text)

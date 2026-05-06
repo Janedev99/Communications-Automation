@@ -160,13 +160,13 @@ function SourceExplainer() {
       <div className="flex items-start gap-3 p-3 bg-card border border-border rounded-md">
         <SourcePill source="claude" />
         <p className="text-sm text-muted-foreground flex-1">
-          Default. Claude Sonnet read and classified the email with full context.
+          Default. The AI model read and classified the email with full context.
         </p>
       </div>
       <div className="flex items-start gap-3 p-3 bg-card border border-border rounded-md">
         <SourcePill source="rules_fallback" />
         <p className="text-sm text-muted-foreground flex-1">
-          Claude was unavailable (no API key, budget hit, or network error). The system
+          The AI was unavailable (no key, budget hit, or network error). The system
           fell back to keyword matching. Confidence is capped at 50% so these never auto-send.
         </p>
       </div>
@@ -252,7 +252,7 @@ const STEPS: Step[] = [
     title: "Where the AI's Decision Came From",
     icon: ShieldCheck,
     description:
-      "Each draft and category shows a source pill telling you which engine produced the result. Trust Claude pills more than Rules pills — Claude has full reading comprehension; the rules engine only matches keywords and is used as a safety fallback.",
+      "Each draft and category shows a source pill telling you which engine produced the result. Trust AI pills more than Rules pills — the AI has full reading comprehension; the rules engine only matches keywords and is used as a safety fallback.",
     visual: SourceExplainer,
   },
   {

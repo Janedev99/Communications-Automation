@@ -649,19 +649,29 @@ def regenerate_draft(
         audit trail rather than leaving the system in a silent broken state
       - The UI never needs to fire two separate requests with a race window
 
-    Only drafts with status ``pending`` or ``edited`` can be regenerated.
+    Allowed source statuses:
+      - ``pending`` / ``edited`` — staff doesn't like the AI's draft, wants
+        a fresh attempt before approving.
+      - ``send_failed`` — the previous send attempt failed at the provider.
+        Letting staff regenerate from this state means they can rewrite a
+        draft that may be triggering downstream errors (e.g. content the
+        provider rejects) instead of being stuck retrying the same body.
     """
     check_ai_rate_limit(current_user.id)
 
     thread = _get_thread_or_404(thread_id, db)
     draft = _get_draft_or_404(draft_id, thread_id, db)
 
-    if draft.status not in (DraftStatus.pending, DraftStatus.edited):
+    if draft.status not in (
+        DraftStatus.pending,
+        DraftStatus.edited,
+        DraftStatus.send_failed,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Cannot regenerate a draft with status '{draft.status.value}'. "
-                "Only pending or edited drafts can be regenerated."
+                "Only pending, edited, or send_failed drafts can be regenerated."
             ),
         )
 

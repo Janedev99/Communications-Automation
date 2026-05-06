@@ -13,17 +13,22 @@ const META: Record<
   CategorizationSource,
   { icon: typeof Sparkles; label: string; classes: string; tooltip: string }
 > = {
+  // NOTE on the "claude" key: this is the backend `categorization_source` enum
+  // value (kept stable so we don't break a database migration just to relabel).
+  // The user-visible label/tooltip have been generalised to "AI" because the
+  // production deployment now runs a self-hosted Gemma model on RunPod, not
+  // Claude. See backend/app/services/llm_client.py for the provider story.
   claude: {
     icon: Sparkles,
-    label: "Claude",
+    label: "AI",
     classes: "bg-violet-500/15 text-violet-700 dark:text-violet-300 ring-violet-500/30",
-    tooltip: "Categorized by Claude (high-quality model)",
+    tooltip: "Categorized by the AI model",
   },
   rules_fallback: {
     icon: Filter,
     label: "Rules",
     classes: "bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30",
-    tooltip: "Keyword-based fallback used (Claude was unavailable)",
+    tooltip: "Keyword-based fallback used (AI was unavailable)",
   },
   manual: {
     icon: UserCircle2,

@@ -401,7 +401,7 @@ def main() -> None:
                 "gather for her individual tax return. She mentions she had freelance income "
                 "this year in addition to her W-2 from her primary employer."
             ),
-            suggested_reply_tone="friendly",
+            suggested_reply_tone="professional",
             created_at=days_ago(2),
             updated_at=days_ago(2, hour=11, minute=0),
         )
@@ -657,7 +657,7 @@ def main() -> None:
                 "CPA from her previous accountant. She is self-employed (freelance writer) and "
                 "owns a rental property. She wants to know about services and pricing."
             ),
-            suggested_reply_tone="friendly",
+            suggested_reply_tone="professional",
             created_at=hours_ago(6),
             updated_at=hours_ago(5),
         )
@@ -740,7 +740,7 @@ def main() -> None:
                 "days a week and uses a co-working space two days. He is confused about the "
                 "rules around exclusive use."
             ),
-            suggested_reply_tone="educational",
+            suggested_reply_tone="direct",
             created_at=days_ago(2),
             updated_at=days_ago(1, hour=16, minute=20),
         )
@@ -1017,7 +1017,7 @@ def main() -> None:
                 "significantly higher income in 2025 than 2024 and is worried about "
                 "underpayment penalties. Needs urgent attention due to the upcoming deadline."
             ),
-            suggested_reply_tone="reassuring",
+            suggested_reply_tone="empathetic",
             created_at=hours_ago(4),
             updated_at=hours_ago(4),
         )
@@ -1079,7 +1079,7 @@ def main() -> None:
                 "completed 2025 tax return. She is pleased with the service and mentioned "
                 "she referred two friends to the firm."
             ),
-            suggested_reply_tone="warm",
+            suggested_reply_tone="empathetic",
             created_at=days_ago(7),
             updated_at=days_ago(6, hour=11, minute=0),
         )

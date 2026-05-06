@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.services.llm_client import LLMError, get_llm_client
+from app.services.llm_client import LLMError, get_llm_client, is_llm_configured
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import get_settings
@@ -178,6 +178,28 @@ class DraftGeneratorService:
         """
         from sqlalchemy import select
         from app.utils.audit import log_action
+
+        # Provider-config guard — raise a clear error when no LLM has real
+        # credentials. Without this, an unconfigured openai_compat provider
+        # would send a stale/placeholder key to OpenAI's default endpoint
+        # and surface as a cryptic 401-derived "AI service error" 502.
+        # The drafts API turns ValueError into a 409 with the message
+        # passed through verbatim, so the admin sees exactly what to fix.
+        if not is_llm_configured():
+            settings = get_settings()
+            if settings.llm_provider == "openai_compat":
+                raise ValueError(
+                    "AI provider is not configured. Set LLM_API_KEY and "
+                    "LLM_BASE_URL (e.g. https://api.runpod.ai/v2/<endpoint-id>"
+                    "/openai/v1) in the portal's environment, or switch "
+                    "LLM_PROVIDER to 'anthropic' and set ANTHROPIC_API_KEY."
+                )
+            raise ValueError(
+                "AI provider is not configured. Set ANTHROPIC_API_KEY to a "
+                "real key (current value is empty or a placeholder), or "
+                "switch LLM_PROVIDER to 'openai_compat' with the RunPod / "
+                "OpenAI credentials."
+            )
 
         # T2.3: Budget guard — raise BudgetExceededError before calling Claude
         try:

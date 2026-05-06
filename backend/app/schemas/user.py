@@ -75,6 +75,12 @@ class LoginResponse(BaseModel):
     user: UserResponse
     session_id: uuid.UUID
     expires_at: datetime
+    # Cross-origin SPAs cannot read the csrf_token cookie via document.cookie
+    # because the cookie is scoped to the API's origin, not the SPA's. We
+    # return the token in the body so the frontend can store it (e.g., in
+    # localStorage) and echo it back as X-CSRF-Token on state-changing
+    # requests. The same value is also Set-Cookie'd for same-origin clients.
+    csrf_token: str
 
 
 class MeResponse(BaseModel):

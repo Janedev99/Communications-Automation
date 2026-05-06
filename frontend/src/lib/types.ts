@@ -50,6 +50,7 @@ export interface LoginResponse {
   user: User;
   session_id: string;
   expires_at: string;
+  csrf_token: string;
 }
 
 // ── Email ─────────────────────────────────────────────────────────────────────

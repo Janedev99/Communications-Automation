@@ -2,7 +2,7 @@
 
 import useSWR, { mutate as globalMutate } from "swr";
 import { useRouter } from "next/navigation";
-import { api, swrFetcher } from "@/lib/api";
+import { api, clearCsrfToken, swrFetcher } from "@/lib/api";
 import type { MeResponse } from "@/lib/types";
 
 const ME_KEY = "/api/v1/auth/me";
@@ -32,6 +32,8 @@ export function useUser() {
     } catch {
       // Ignore errors — redirect to login regardless so client state is cleared.
     }
+    // Clear the stored CSRF token so the next login can replace it cleanly.
+    clearCsrfToken();
     // Clear the SWR cache
     await globalMutate(ME_KEY, undefined, false);
     router.push("/login");

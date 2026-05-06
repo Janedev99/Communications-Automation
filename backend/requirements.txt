@@ -16,8 +16,12 @@ email-validator>=2.0.0
 bcrypt==4.2.1
 python-multipart==0.0.17
 
-# AI
+# AI — Anthropic stays as a fallback provider for dev / existing test mocks.
+# OpenAI SDK is the path forward: per the 05/02 product call, Schiller CPA
+# runs Gemma on RunPod via vLLM, which exposes an OpenAI-compatible API.
+# Same SDK works against OpenAI proper, RunPod, vLLM, llama.cpp's server.
 anthropic==0.40.0
+openai>=1.50.0,<2.0.0
 
 # HTTP client (MS Graph, webhooks)
 httpx==0.28.1

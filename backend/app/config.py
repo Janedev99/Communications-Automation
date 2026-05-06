@@ -34,7 +34,26 @@ class Settings(BaseSettings):
     # ── Session ───────────────────────────────────────────────────────────────
     session_ttl_hours: int = 8
 
-    # ── Anthropic / Claude ────────────────────────────────────────────────────
+    # ── LLM provider (Anthropic / RunPod / OpenAI / vLLM) ─────────────────────
+    # The 05/02 product call approved migrating off third-party hosted LLM
+    # APIs onto a self-hosted Gemma model on RunPod (data stays inside the
+    # firm's rented hardware). RunPod's serverless GPU endpoints expose an
+    # OpenAI-compatible API, so "openai_compat" works for RunPod, OpenAI
+    # proper, vLLM, and llama.cpp's server.
+    #
+    # Default is "openai_compat" — that is the canonical path for this
+    # deployment. "anthropic" is now an explicit opt-in for environments
+    # that still want Claude (notably the test suite, which mocks the
+    # anthropic SDK; tests/conftest.py pins LLM_PROVIDER=anthropic before
+    # importing the app so existing fixtures keep working).
+    llm_provider: Literal["anthropic", "openai_compat"] = "openai_compat"
+    llm_api_key: str = ""
+    llm_base_url: str = ""  # e.g. https://api.runpod.ai/v2/<endpoint-id>/openai/v1
+    llm_model: str = ""  # falls back to claude_model when provider=anthropic
+    llm_timeout: float = 30.0
+
+    # Legacy fields — still read by AnthropicLLMClient for back-compat with
+    # existing .env files and tests. New deployments should use llm_*.
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-5"
 
@@ -132,16 +151,31 @@ class Settings(BaseSettings):
         is_dev_secret = self.app_secret_key == "dev-secret-key-replace-in-production"
         is_placeholder_anthropic = self.anthropic_api_key.startswith("sk-ant-placeholder")
 
+        # The LLM-key check is provider-aware: only enforce a real key for
+        # the active provider so a RunPod deployment isn't blocked by a
+        # placeholder Anthropic key it doesn't use.
+        if self.llm_provider == "openai_compat":
+            llm_key_missing = not self.llm_api_key
+        else:
+            llm_key_missing = is_placeholder_anthropic or not self.anthropic_api_key
+
         if self.is_production:
             if is_dev_secret:
                 raise ValueError(
                     "APP_SECRET_KEY is the development default but APP_ENV=production. "
                     "Generate a strong key: python -c \"import secrets; print(secrets.token_hex(32))\""
                 )
-            if is_placeholder_anthropic:
+            if llm_key_missing and self.llm_provider == "openai_compat":
+                raise ValueError(
+                    "LLM_PROVIDER=openai_compat but LLM_API_KEY is empty. "
+                    "Set the RunPod / OpenAI key and ensure LLM_BASE_URL points "
+                    "at the right endpoint."
+                )
+            if llm_key_missing and self.llm_provider == "anthropic":
                 raise ValueError(
                     "ANTHROPIC_API_KEY is a placeholder but APP_ENV=production. "
-                    "Set a real key from https://console.anthropic.com."
+                    "Set a real key from https://console.anthropic.com, or "
+                    "switch LLM_PROVIDER to openai_compat."
                 )
             return self
 

@@ -32,7 +32,7 @@ An email communication automation system built for Schiller CPA, a tax and accou
 |-------|-----------|
 | Backend API | Python 3.12, FastAPI, SQLAlchemy 2.0 |
 | Database | PostgreSQL 16 |
-| AI | Anthropic Claude Sonnet (categorization + draft generation) |
+| AI | Pluggable LLM provider — Anthropic Claude **or** any OpenAI-compatible endpoint (RunPod / OpenAI / vLLM). Schiller CPA's deployment runs Gemma on RunPod for data privacy. |
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
 | Email Integration | Microsoft Graph API (primary), IMAP/SMTP (fallback) |
 | Auth | Server-side sessions, bcrypt, HttpOnly cookies |
@@ -69,7 +69,7 @@ jane-communication-automation/
 - Python 3.12+
 - Node.js 18+
 - PostgreSQL 16+
-- Anthropic API key
+- An LLM endpoint — either an Anthropic API key, **or** an OpenAI-compatible endpoint (RunPod / OpenAI / self-hosted vLLM)
 
 ### 1. Clone and configure
 
@@ -80,10 +80,25 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in:
-- `ANTHROPIC_API_KEY` -- your Anthropic API key
+- LLM credentials — pick a provider:
+  - **Anthropic (default):** set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=sk-ant-...`
+  - **RunPod / OpenAI / vLLM:** set `LLM_PROVIDER=openai_compat`, `LLM_API_KEY=...`, `LLM_BASE_URL=https://api.runpod.ai/v2/<endpoint>/openai/v1`, `LLM_MODEL=google/gemma-2-27b-it`
 - `DATABASE_URL` -- PostgreSQL connection string
 - `ADMIN_PASSWORD` -- password for the admin account
 - Microsoft Graph credentials (if using M365) or IMAP/SMTP credentials
+
+#### Switching to RunPod
+
+The 05/02 product call decided to run a self-hosted Gemma model on RunPod
+so client data never leaves the firm's rented hardware. To switch:
+
+1. Spin up a serverless endpoint on RunPod with a vLLM-backed model
+   (e.g. `google/gemma-2-27b-it`). RunPod's vLLM template exposes an
+   OpenAI-compatible API at `https://api.runpod.ai/v2/<endpoint-id>/openai/v1`.
+2. Set the four `LLM_*` env vars above. Leave `ANTHROPIC_API_KEY` blank or
+   set to the placeholder.
+3. Restart the backend. No code changes — the provider abstraction
+   (`backend/app/services/llm_client.py`) handles the switch.
 
 ### 2. Database setup
 
@@ -269,7 +284,9 @@ All configuration is via environment variables (`.env` file). Key settings:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | required |
-| `ANTHROPIC_API_KEY` | Claude API key | required |
+| `LLM_PROVIDER` | `anthropic` or `openai_compat` (RunPod / OpenAI / vLLM) | `anthropic` |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | Used when `LLM_PROVIDER=openai_compat` | empty |
+| `ANTHROPIC_API_KEY` | Anthropic API key (used when `LLM_PROVIDER=anthropic`) | required for Anthropic |
 | `EMAIL_PROVIDER` | `msgraph` or `imap` | `imap` |
 | `EMAIL_POLL_INTERVAL_SECONDS` | Polling frequency | `60` |
 | `DRAFT_AUTO_GENERATE` | Auto-generate drafts on intake | `true` |

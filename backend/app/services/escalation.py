@@ -37,6 +37,10 @@ _HIGH_KEYWORDS = [
 ]
 _MEDIUM_KEYWORDS = [
     "new client", "onboarding", "scope",
+    # PII detector emits "sensitive client data detected" — surface it as
+    # medium so it's distinguishable from low-severity miscellany but not
+    # confused with critical legal-risk threads.
+    "sensitive client data",
 ]
 
 

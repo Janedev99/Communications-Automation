@@ -5,10 +5,10 @@ GET /admin/integrations  — return status + latency + config for each external
                             dependency the system relies on.
 
 This endpoint is admin-only (it leaks config presence). It does NOT call out
-to live external APIs (no Anthropic ping, no SMTP test) to avoid burning
-tokens / triggering rate limits on every dashboard refresh. Latencies for
-external services come from cached "last successful call" timestamps; only
-Postgres is probed in real time (cheap SELECT 1).
+to live external APIs (no LLM ping, no SMTP test) to avoid burning tokens /
+triggering rate limits on every dashboard refresh. Latencies for external
+services come from cached "last successful call" timestamps; only Postgres
+is probed in real time (cheap SELECT 1).
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/admin/integrations", tags=["admin"])
 StatusLiteral = Literal["healthy", "degraded", "down", "not_configured"]
 
 POLLER_HEALTHY_THRESHOLD_MIN = 10
-ANTHROPIC_HEALTHY_THRESHOLD_MIN = 30
+LLM_HEALTHY_THRESHOLD_MIN = 30
 
 
 def _age_minutes(dt: datetime | None) -> float | None:
@@ -73,33 +73,71 @@ def _probe_postgres(db: Session) -> dict[str, Any]:
         }
 
 
-def _probe_anthropic() -> dict[str, Any]:
-    """Static probe — does not call the API. Reads cached timestamps + config."""
+def _probe_llm() -> dict[str, Any]:
+    """
+    Static probe of the active LLM provider.
+
+    Provider-aware: when ``llm_provider == "openai_compat"`` we report the
+    OpenAI-compatible config (RunPod / vLLM / OpenAI direct) and validate
+    against ``llm_api_key`` / ``llm_base_url``. Otherwise we report
+    Anthropic's config. The card id stays ``"llm"`` so the UI ICON_MAP and
+    integration guide can be provider-agnostic too.
+    """
     settings = get_settings()
-    from app.services.email_intake import last_successful_anthropic_at
+    from app.services.email_intake import last_successful_llm_at
 
-    api_key = settings.anthropic_api_key or ""
-    is_placeholder = api_key.startswith("sk-ant-placeholder")
-    is_configured = bool(api_key) and not is_placeholder
+    age = _age_minutes(last_successful_llm_at)
 
-    age = _age_minutes(last_successful_anthropic_at)
+    # Resolve provider-specific config + status
+    provider = settings.llm_provider
+    last_error: str | None = None
+    config: dict[str, Any]
 
-    # Determine status
-    status: StatusLiteral
-    last_error = None
-    if not is_configured:
-        status = "not_configured"
-        last_error = "No real Anthropic API key configured"
-    elif age is None:
-        # Configured but never observed a success — neutral
-        status = "healthy"
-    elif age < ANTHROPIC_HEALTHY_THRESHOLD_MIN:
-        status = "healthy"
+    if provider == "openai_compat":
+        api_key = (settings.llm_api_key or "").strip()
+        base_url = (settings.llm_base_url or "").strip()
+        model = settings.llm_model or "(not set)"
+        is_configured = bool(api_key) and bool(base_url)
+        display_name = (
+            "RunPod (OpenAI-compatible)"
+            if "runpod.ai" in base_url.lower()
+            else "OpenAI-compatible LLM"
+        )
+        config = {
+            "provider": "openai_compat",
+            "model": model,
+            "base_url": base_url or "(not set)",
+            "api_key": "set" if api_key else "missing",
+        }
+        if not is_configured:
+            missing_bits = []
+            if not api_key:
+                missing_bits.append("LLM_API_KEY")
+            if not base_url:
+                missing_bits.append("LLM_BASE_URL")
+            last_error = (
+                f"LLM_PROVIDER=openai_compat but {', '.join(missing_bits)} is empty"
+            )
     else:
-        status = "degraded"
-        last_error = f"No successful call in the last {round(age)}m"
+        api_key = settings.anthropic_api_key or ""
+        is_placeholder = api_key.startswith("sk-ant-placeholder")
+        is_configured = bool(api_key) and not is_placeholder
+        display_name = "Anthropic Claude"
+        config = {
+            "provider": "anthropic",
+            "model": settings.claude_model,
+            "api_key": (
+                "set" if is_configured
+                else "placeholder" if is_placeholder
+                else "missing"
+            ),
+        }
+        if not is_configured:
+            last_error = "No real Anthropic API key configured"
 
-    # Surface today's token usage / budget
+    # Surface today's token usage / budget — same for both providers since
+    # ai_budget.record_usage is fed from the LLMResult, not from anthropic
+    # specifically.
     from app.services.ai_budget import _ensure_cache, _cache_input, _cache_output  # type: ignore
     try:
         _ensure_cache()
@@ -107,26 +145,37 @@ def _probe_anthropic() -> dict[str, Any]:
     except Exception:
         tokens_today = 0
     budget = settings.daily_token_budget
+    config["tokens_today"] = tokens_today
+    config["daily_budget"] = budget
+    config["budget_pct_used"] = (
+        round(100 * tokens_today / budget, 1) if budget > 0 else None
+    )
+
+    # Determine status
+    status: StatusLiteral
+    if not is_configured:
+        status = "not_configured"
+    elif age is None:
+        # Configured but never observed a success — neutral; the system may
+        # have just started with no inbound emails to process yet.
+        status = "healthy"
+    elif age < LLM_HEALTHY_THRESHOLD_MIN:
+        status = "healthy"
+    else:
+        status = "degraded"
+        last_error = f"No successful call in the last {round(age)}m"
 
     return {
-        "id": "anthropic",
-        "name": "Anthropic Claude",
+        "id": "llm",
+        "name": display_name,
         "status": status,
         "latency_ms": None,
         "last_success_at": (
-            last_successful_anthropic_at.isoformat()
-            if last_successful_anthropic_at else None
+            last_successful_llm_at.isoformat()
+            if last_successful_llm_at else None
         ),
         "last_error": last_error,
-        "config": {
-            "model": settings.claude_model,
-            "api_key": "set" if is_configured else (
-                "placeholder" if is_placeholder else "missing"
-            ),
-            "tokens_today": tokens_today,
-            "daily_budget": budget,
-            "budget_pct_used": round(100 * tokens_today / budget, 1) if budget > 0 else None,
-        },
+        "config": config,
     }
 
 
@@ -224,7 +273,7 @@ def list_integrations(
     settings = get_settings()
     items = [
         _probe_postgres(db),
-        _probe_anthropic(),
+        _probe_llm(),
         _probe_email_provider(),
         _probe_notifications(),
     ]

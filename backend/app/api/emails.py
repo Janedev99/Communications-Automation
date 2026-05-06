@@ -18,11 +18,11 @@ import threading
 import uuid
 from collections import defaultdict
 from datetime import datetime, date, timezone
-from typing import AsyncGenerator, DefaultDict
+from typing import AsyncGenerator, DefaultDict, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
@@ -64,6 +64,9 @@ from app.schemas.email import (
     EmailThreadListResponse,
     EmailThreadResponse,
     ManualDraftRequest,
+    SaveThreadRequest,
+    SavedFolder,
+    SavedMessageItem,
     StatusChangeRequest,
     UpdateDraftRequest,
 )
@@ -447,6 +450,16 @@ def list_threads(
     tier: ThreadTier | None = Query(default=None, description="Filter by triage tier"),
     client_email: str | None = Query(default=None),
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
+    saved: bool | None = Query(default=None, description="Filter to saved threads only"),
+    folder: str | None = Query(default=None, description="Filter to a specific saved folder"),
+    sort: Literal[
+        "updated_desc", "updated_asc",
+        "subject_asc", "subject_desc",
+        "client_asc", "client_desc",
+    ] = Query(
+        default="updated_desc",
+        description="Sort order. Defaults to most-recently-updated first.",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -459,6 +472,19 @@ def list_threads(
         query = query.where(EmailThread.status == thread_status)
     if category is not None:
         query = query.where(EmailThread.category == category)
+    if saved is True:
+        query = query.where(EmailThread.is_saved == True)  # noqa: E712
+    elif saved is False:
+        query = query.where(EmailThread.is_saved == False)  # noqa: E712
+    if folder is not None:
+        # Empty string folder means "saved but unsorted" — match NULL saved_folder.
+        if folder == "":
+            query = query.where(
+                EmailThread.is_saved == True,  # noqa: E712
+                EmailThread.saved_folder.is_(None),
+            )
+        else:
+            query = query.where(EmailThread.saved_folder == folder)
     if tier is not None:
         # The Escalated tab is what users mental-model as "everything that
         # needs Jane's attention." Tier and status are stored independently and
@@ -511,12 +537,24 @@ def list_threads(
         .subquery()
     )
 
+    # Sort options. lower() on text sorts so client_email/subject sorts are
+    # case-insensitive, which matches user mental-model ("Apex" and "apex"
+    # belong next to each other, not in different halves of the list").
+    sort_clause = {
+        "updated_desc": EmailThread.updated_at.desc(),
+        "updated_asc": EmailThread.updated_at.asc(),
+        "subject_asc": func.lower(EmailThread.subject).asc(),
+        "subject_desc": func.lower(EmailThread.subject).desc(),
+        "client_asc": func.lower(EmailThread.client_email).asc(),
+        "client_desc": func.lower(EmailThread.client_email).desc(),
+    }[sort]
+
     paged_query = (
         select(EmailThread, func.coalesce(msg_count_subq.c.message_count, 0).label("message_count"))
         .outerjoin(msg_count_subq, EmailThread.id == msg_count_subq.c.thread_id)
         .options(selectinload(EmailThread.assigned_to))
         .where(query.whereclause if query.whereclause is not None else True)
-        .order_by(EmailThread.updated_at.desc())
+        .order_by(sort_clause)
         .offset(offset)
         .limit(page_size)
     )
@@ -705,6 +743,450 @@ def assign_thread(
     return EmailThreadResponse.from_thread(thread)
 
 
+# ── Save / unsave thread + folders ────────────────────────────────────────────
+
+
+@router.post("/{thread_id}/save", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def save_thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    body: SaveThreadRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Save a thread for later — Jane's Outlook-folder workflow, in-app.
+
+    Pass ``folder`` to file it under a named folder (e.g. a client name);
+    omit it to save without a folder. Re-saving an already-saved thread
+    overwrites the folder/note (same idempotent behaviour as Outlook flag).
+    """
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    folder = body.folder.strip() if body.folder else None
+    note = body.note.strip() if body.note else None
+
+    was_saved = thread.is_saved
+    thread.is_saved = True
+    thread.saved_folder = folder or None
+    thread.saved_note = note or None
+    thread.saved_at = datetime.now(timezone.utc)
+    thread.saved_by_id = current_user.id
+    thread.updated_at = datetime.now(timezone.utc)
+
+    db.flush()
+
+    log_action(
+        db,
+        action="email.saved" if not was_saved else "email.save_updated",
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "folder": folder,
+            "has_note": note is not None,
+        },
+    )
+
+    db.refresh(thread)
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.post("/{thread_id}/unsave", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def unsave_thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """Remove a thread from saved. Idempotent — succeeds even if not saved."""
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    if thread.is_saved:
+        prior_folder = thread.saved_folder
+        thread.is_saved = False
+        thread.saved_folder = None
+        thread.saved_note = None
+        thread.saved_at = None
+        thread.saved_by_id = None
+        thread.updated_at = datetime.now(timezone.utc)
+        db.flush()
+
+        log_action(
+            db,
+            action="email.unsaved",
+            entity_type="email_thread",
+            entity_id=str(thread.id),
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            details={"prior_folder": prior_folder},
+        )
+
+    db.refresh(thread)
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.get("/saved/folders", response_model=list[SavedFolder])
+def list_saved_folders(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SavedFolder]:
+    """
+    List distinct saved folders + per-folder counts.
+
+    Counts cover BOTH saved threads and saved individual messages, so the
+    /saved view's folder rail accurately reflects how many items live in
+    each folder regardless of granularity. Each row also breaks down
+    thread_count vs message_count for UIs that need to distinguish.
+
+    The unsorted bucket (no folder) appears as an entry with ``name=None``.
+    """
+    thread_rows = db.execute(
+        select(
+            EmailThread.saved_folder.label("folder"),
+            func.count(EmailThread.id).label("count"),
+        )
+        .where(EmailThread.is_saved == True)  # noqa: E712
+        .group_by(EmailThread.saved_folder)
+    ).all()
+
+    message_rows = db.execute(
+        select(
+            EmailMessage.saved_folder.label("folder"),
+            func.count(EmailMessage.id).label("count"),
+        )
+        .where(EmailMessage.is_saved == True)  # noqa: E712
+        .group_by(EmailMessage.saved_folder)
+    ).all()
+
+    # Merge by folder name, preserving the threads/messages split.
+    aggregated: dict[str | None, dict[str, int]] = {}
+    for row in thread_rows:
+        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
+        bucket["threads"] += row.count
+    for row in message_rows:
+        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
+        bucket["messages"] += row.count
+
+    # Stable sort: unfiled (None) first, then folders alphabetically.
+    def _sort_key(name: str | None) -> tuple[int, str]:
+        return (0, "") if name is None else (1, name.lower())
+
+    folders = [
+        SavedFolder(
+            name=name,
+            count=counts["threads"] + counts["messages"],
+            thread_count=counts["threads"],
+            message_count=counts["messages"],
+        )
+        for name, counts in sorted(aggregated.items(), key=lambda kv: _sort_key(kv[0]))
+    ]
+    return folders
+
+
+@router.delete(
+    "/saved/folders/{folder_name}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf)],
+)
+def delete_saved_folder(
+    request: Request,
+    folder_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    Delete a named saved folder.
+
+    Folders aren't first-class entities — they're just distinct values of
+    the ``saved_folder`` column on email_threads and email_messages. So
+    "deleting a folder" follows the Outlook / Gmail-label model: the
+    folder *label* goes away, but every item that was filed under it
+    stays saved (it just becomes unfiled).
+
+    Atomically:
+      - Sets saved_folder = NULL on every saved thread that referenced
+        this folder.
+      - Sets saved_folder = NULL on every saved message that referenced
+        this folder.
+      - is_saved stays true on every affected row, so users keep their
+        items in the Saved view — they just move into the "No folder"
+        bucket on the rail.
+      - The folder name disappears from /saved/folders the next time
+        it's read, since folders are derived from distinct column values.
+
+    Always returns 204 (idempotent — deleting a never-existed folder
+    name is a no-op). Audit log captures the count of items that were
+    moved out so admins can reconstruct the action later.
+    """
+    if not folder_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Folder name cannot be empty.",
+        )
+
+    now = datetime.now(timezone.utc)
+
+    threads_unfiled = db.execute(
+        update(EmailThread)
+        .where(
+            EmailThread.is_saved == True,  # noqa: E712
+            EmailThread.saved_folder == folder_name,
+        )
+        .values(saved_folder=None, updated_at=now)
+    ).rowcount or 0
+    messages_unfiled = db.execute(
+        update(EmailMessage)
+        .where(
+            EmailMessage.is_saved == True,  # noqa: E712
+            EmailMessage.saved_folder == folder_name,
+        )
+        .values(saved_folder=None)
+    ).rowcount or 0
+
+    db.flush()
+
+    log_action(
+        db,
+        action="email.folder_deleted",
+        entity_type="saved_folder",
+        entity_id=folder_name[:64],  # entity_id is a string column
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "folder": folder_name,
+            "threads_unfiled": threads_unfiled,
+            "messages_unfiled": messages_unfiled,
+        },
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Save / unsave individual message ──────────────────────────────────────────
+
+
+def _get_message_or_404(
+    db: Session, *, thread_id: uuid.UUID, message_id: uuid.UUID
+) -> EmailMessage:
+    """Fetch a message scoped to a thread or raise 404."""
+    msg = db.execute(
+        select(EmailMessage)
+        .options(selectinload(EmailMessage.saved_by))
+        .where(
+            EmailMessage.id == message_id,
+            EmailMessage.thread_id == thread_id,
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found in this thread.",
+        )
+    return msg
+
+
+@router.post(
+    "/{thread_id}/messages/{message_id}/save",
+    response_model=EmailThreadResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def save_message(
+    request: Request,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: SaveThreadRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Save a single message inside a thread.
+
+    Per Jane: she usually wants to keep a single email rather than the
+    whole thread. Per-message and per-thread saves are independent — a
+    saved message does not save its parent thread, and unsaving a thread
+    leaves any saved messages intact.
+
+    Returns the parent thread so the client gets fresh state for the
+    detail view in one round trip.
+    """
+    msg = _get_message_or_404(db, thread_id=thread_id, message_id=message_id)
+
+    folder = body.folder.strip() if body.folder else None
+    note = body.note.strip() if body.note else None
+
+    was_saved = msg.is_saved
+    msg.is_saved = True
+    msg.saved_folder = folder or None
+    msg.saved_note = note or None
+    msg.saved_at = datetime.now(timezone.utc)
+    msg.saved_by_id = current_user.id
+
+    db.flush()
+
+    log_action(
+        db,
+        action="email.message_saved" if not was_saved else "email.message_save_updated",
+        entity_type="email_message",
+        entity_id=str(msg.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "thread_id": str(thread_id),
+            "folder": folder,
+            "has_note": note is not None,
+        },
+    )
+
+    # Return refreshed thread so the UI can re-render the bubble + dialog state.
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one()
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.post(
+    "/{thread_id}/messages/{message_id}/unsave",
+    response_model=EmailThreadResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def unsave_message(
+    request: Request,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """Idempotent un-save for a single message."""
+    msg = _get_message_or_404(db, thread_id=thread_id, message_id=message_id)
+
+    if msg.is_saved:
+        prior_folder = msg.saved_folder
+        msg.is_saved = False
+        msg.saved_folder = None
+        msg.saved_note = None
+        msg.saved_at = None
+        msg.saved_by_id = None
+        db.flush()
+
+        log_action(
+            db,
+            action="email.message_unsaved",
+            entity_type="email_message",
+            entity_id=str(msg.id),
+            user_id=current_user.id,
+            ip_address=get_client_ip(request),
+            details={
+                "thread_id": str(thread_id),
+                "prior_folder": prior_folder,
+            },
+        )
+
+    thread = db.execute(
+        select(EmailThread)
+        .options(
+            selectinload(EmailThread.messages),
+            selectinload(EmailThread.assigned_to),
+            selectinload(EmailThread.saved_by),
+        )
+        .where(EmailThread.id == thread_id)
+    ).scalar_one()
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.get("/saved/messages", response_model=list[SavedMessageItem])
+def list_saved_messages(
+    folder: str | None = Query(default=None, description="Filter to a specific folder; empty string for unfiled"),
+    sort: Literal[
+        "saved_desc", "saved_asc",
+        "subject_asc", "subject_desc",
+        "client_asc", "client_desc",
+    ] = Query(
+        default="saved_desc",
+        description="Sort order. Defaults to most-recently-saved first.",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SavedMessageItem]:
+    """
+    Cross-thread list of saved individual messages with denormalised
+    parent-thread context. Sort axis defaults to saved-at desc; subject
+    and client sorts are case-insensitive (lower()) so human eyes don't
+    see "Apex" and "apex" split across the list.
+    """
+    # Note: subject + client sort against the parent THREAD, not the
+    # message itself — the message has no subject and the from-address
+    # may differ across replies in the same thread (e.g. CC chains).
+    sort_clause = {
+        "saved_desc": EmailMessage.saved_at.desc().nullslast(),
+        "saved_asc": EmailMessage.saved_at.asc().nullsfirst(),
+        "subject_asc": func.lower(EmailThread.subject).asc(),
+        "subject_desc": func.lower(EmailThread.subject).desc(),
+        "client_asc": func.lower(EmailThread.client_email).asc(),
+        "client_desc": func.lower(EmailThread.client_email).desc(),
+    }[sort]
+    query = (
+        select(EmailMessage, EmailThread)
+        .join(EmailThread, EmailThread.id == EmailMessage.thread_id)
+        .where(EmailMessage.is_saved == True)  # noqa: E712
+        .order_by(sort_clause)
+    )
+    if folder is not None:
+        if folder == "":
+            query = query.where(EmailMessage.saved_folder.is_(None))
+        else:
+            query = query.where(EmailMessage.saved_folder == folder)
+
+    rows = db.execute(query).all()
+    return [
+        SavedMessageItem(
+            id=msg.id,
+            thread_id=msg.thread_id,
+            sender=msg.sender,
+            recipient=msg.recipient,
+            body_text=msg.body_text,
+            received_at=msg.received_at,
+            direction=msg.direction,
+            saved_folder=msg.saved_folder,
+            saved_note=msg.saved_note,
+            saved_at=msg.saved_at,
+            thread_subject=thread.subject,
+            thread_client_email=thread.client_email,
+            thread_client_name=thread.client_name,
+        )
+        for msg, thread in rows
+    ]
+
+
 # ── Manual status change ──────────────────────────────────────────────────────
 
 @router.put("/{thread_id}/status", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
@@ -844,8 +1326,18 @@ def get_thread_escalation(
     db: Session = Depends(get_db),
 ) -> EscalationResponse | None:
     """
-    Return the latest active (non-resolved) escalation for a thread, or null.
-    Used to show an escalation banner in the thread detail view.
+    Return an escalation worth surfacing in the thread detail banner.
+
+    Two-tier rule:
+      - Live (non-resolved) escalations always surface — that's the active
+        work signal that drives the red banner.
+      - **Resolved** escalations also surface IF and only if the reason
+        contains the canonical PII phrase ("sensitive client data") — PII
+        is a property of the email *content*, not of staff workflow, so
+        the designation persists in the banner forever even after the
+        escalation is closed. Resolving an IRS-audit escalation hides
+        its banner; resolving a "client emailed an SSN" escalation does
+        NOT, because the SSN is still in that thread.
     """
     thread = db.execute(
         select(EmailThread).where(EmailThread.id == thread_id)
@@ -853,7 +1345,9 @@ def get_thread_escalation(
     if thread is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
 
-    escalation = db.execute(
+    # Prefer live escalations. Fall back to resolved-but-PII so the banner
+    # keeps the PII tag even after the work item is closed.
+    live = db.execute(
         select(Escalation)
         .where(
             Escalation.thread_id == thread_id,
@@ -861,6 +1355,21 @@ def get_thread_escalation(
         )
         .order_by(Escalation.created_at.desc())
     ).scalars().first()
+
+    escalation = live
+    if escalation is None:
+        # No live escalation — see if there's a resolved PII one to surface.
+        # The canonical phrase comes from app.services.pii_detector.summarize_pii;
+        # case-insensitive ILIKE keeps the comparison in sync with the frontend's
+        # isSensitiveData() helper.
+        escalation = db.execute(
+            select(Escalation)
+            .where(
+                Escalation.thread_id == thread_id,
+                Escalation.reason.ilike("%sensitive client data%"),
+            )
+            .order_by(Escalation.created_at.desc())
+        ).scalars().first()
 
     if escalation is None:
         return None

@@ -17,12 +17,13 @@ import re
 import unicodedata
 from typing import Any
 
-import anthropic
 from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import get_settings
 from app.models.email import CategorizationSource, EmailCategory
 from app.schemas.email import CategorizationResult
+from app.services.llm_client import LLMError, get_llm_client, is_llm_configured
+from app.services.pii_detector import detect_pii, summarize_pii
 from app.services.rules_engine import categorize_with_rules
 from app.utils.sanitize import strip_html
 
@@ -225,7 +226,23 @@ def _rules_fallback(*, sender: str, subject: str, body: str) -> CategorizationRe
     """Run the keyword-based rules engine and tag the result with rules_fallback source."""
     result = categorize_with_rules(sender=sender, subject=subject, body=body)
     # Override source — rules engine doesn't know it's running as a fallback
-    return result.model_copy(update={"source": CategorizationSource.rules_fallback})
+    result = result.model_copy(update={"source": CategorizationSource.rules_fallback})
+
+    # PII detection runs in the rules-fallback path too — Claude being down
+    # is precisely when we *most* want a deterministic safety net.
+    pii_hits = detect_pii(subject=subject, body=body or "")
+    if pii_hits:
+        pii_reason = summarize_pii(pii_hits)
+        merged_reasons = [pii_reason] + [
+            r for r in result.escalation_reasons if pii_reason not in r
+        ]
+        result = result.model_copy(
+            update={
+                "escalation_needed": True,
+                "escalation_reasons": merged_reasons,
+            }
+        )
+    return result
 
 
 def _deterministic_escalation_check(subject: str, body: str) -> bool:
@@ -240,19 +257,17 @@ def _deterministic_escalation_check(subject: str, body: str) -> bool:
 
 class CategorizerService:
     """
-    Service that categorizes emails using Claude.
+    Service that categorizes emails using the configured LLM provider
+    (anthropic | openai_compat — see app.services.llm_client).
 
-    Instantiate once and reuse — the Anthropic client is thread-safe.
+    Instantiate once and reuse — the underlying SDK clients are thread-safe.
     """
 
     def __init__(self) -> None:
-        settings = get_settings()
-        # T1.7: 30-second timeout for all API calls
-        self._client = anthropic.Anthropic(
-            api_key=settings.anthropic_api_key,
-            timeout=30.0,
-        )
-        self._model = settings.claude_model
+        # The LLMClient factory picks the provider based on settings and
+        # caches the instance, so this is essentially a thin handle.
+        self._client = get_llm_client()
+        self._model = self._client.model
 
     def categorize(
         self,
@@ -262,12 +277,12 @@ class CategorizerService:
         body: str,
     ) -> CategorizationResult:
         """
-        Call Claude to categorize an email.
+        Categorize an email through the configured LLM.
 
         Steps:
           1. Check AI token budget.
           2. Deterministic keyword pre-check (T1.10) — forced escalation if matched.
-          3. Call Claude (T1.7 timeout applied at client level).
+          3. Call the LLM (timeout applied at client level).
           4. Validate response with Pydantic (T1.14) — fallback to escalation on error.
           5. Re-apply forced escalation if keyword check fired (AI may disagree).
 
@@ -291,11 +306,14 @@ class CategorizerService:
                 )
                 return _rules_fallback(sender=sender, subject=subject, body=body or "")
 
-        # Skip Claude entirely if no API key configured (e.g., local dev).
-        api_key = get_settings().anthropic_api_key
-        if not api_key or api_key.startswith("sk-ant-placeholder"):
+        # Skip the LLM entirely if no provider has real credentials.
+        # Logic now lives in is_llm_configured() so categorizer and
+        # draft_generator agree on what "configured" means (provider-aware:
+        # checks llm_api_key+llm_base_url for openai_compat, or a non-
+        # placeholder anthropic_api_key for anthropic).
+        if not is_llm_configured():
             logger.info(
-                "Categorizer: no real Anthropic key — using rules-fallback engine"
+                "Categorizer: no real LLM API key configured — using rules-fallback engine"
             )
             return _rules_fallback(sender=sender, subject=subject, body=body or "")
 
@@ -308,22 +326,24 @@ class CategorizerService:
         prompt = _build_prompt(sender=sender, subject=subject, body=body or "")
 
         try:
-            message = self._client.messages.create(
-                model=self._model,
+            llm_result = self._client.complete(
+                system=SYSTEM_PROMPT,
+                user=prompt,
                 max_tokens=512,
                 temperature=0,  # Deterministic output for classification
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
             )
-            content = message.content[0].text if message.content else ""
+            content = llm_result.text
             result = _parse_response(content)
 
             # Record token usage for budget tracking
-            if record_usage is not None and message.usage:
+            if record_usage is not None and (
+                llm_result.prompt_tokens is not None
+                or llm_result.completion_tokens is not None
+            ):
                 try:
                     record_usage(
-                        input_tokens=message.usage.input_tokens,
-                        output_tokens=message.usage.output_tokens,
+                        input_tokens=llm_result.prompt_tokens or 0,
+                        output_tokens=llm_result.completion_tokens or 0,
                     )
                 except Exception as exc:
                     logger.warning("Categorizer: failed to record token usage: %s", exc)
@@ -339,19 +359,39 @@ class CategorizerService:
                     suggested_reply_tone=result.suggested_reply_tone,
                 )
 
+            # PII override: clients occasionally email SSN/EIN/W-2 directly.
+            # We refuse to let Claude auto-handle these — escalate to staff
+            # with the canonical "sensitive client data" reason so escalation
+            # severity mapping picks it up and the UI can flag it distinctly.
+            pii_hits = detect_pii(subject=subject, body=body or "")
+            if pii_hits:
+                pii_reason = summarize_pii(pii_hits)
+                merged_reasons = [pii_reason] + [
+                    r for r in result.escalation_reasons if pii_reason not in r
+                ]
+                result = CategorizationResult(
+                    category=result.category,
+                    confidence=result.confidence,
+                    escalation_needed=True,
+                    escalation_reasons=merged_reasons,
+                    summary=result.summary,
+                    suggested_reply_tone=result.suggested_reply_tone,
+                )
+
             logger.info(
                 "Categorizer: email from %s → category=%s confidence=%.2f escalate=%s "
-                "(forced=%s)",
+                "(forced=%s pii=%s)",
                 sender,
                 result.category,
                 result.confidence,
                 result.escalation_needed,
                 force_escalate,
+                [h.kind for h in pii_hits],
             )
             return result
-        except anthropic.APIError as exc:
+        except LLMError as exc:
             logger.error(
-                "Categorizer: Anthropic API error — falling back to rules engine: %s",
+                "Categorizer: LLM API error — falling back to rules engine: %s",
                 exc,
             )
             return _rules_fallback(sender=sender, subject=subject, body=body or "")

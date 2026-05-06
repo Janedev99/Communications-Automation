@@ -160,7 +160,11 @@ def test_login_to_send_happy_path(mock_email_provider):
     mock_draft_response.usage = MagicMock(input_tokens=200, output_tokens=80)
     mock_draft_response.model = "claude-sonnet-4-5"
 
-    with patch("app.services.draft_generator.anthropic.Anthropic") as mock_anthro_cls, \
+    # Patch target moved when the LLM provider abstraction landed: the SDK
+    # is imported lazily by AnthropicLLMClient inside llm_client.py, not by
+    # draft_generator any more. Mocking anthropic.Anthropic globally still
+    # gives us full control of `messages.create`.
+    with patch("anthropic.Anthropic") as mock_anthro_cls, \
          patch("app.services.draft_generator.get_knowledge_service") as mock_ks, \
          patch("app.services.draft_generator.get_notification_service") as mock_ns, \
          patch("app.utils.rate_limit.check_ai_rate_limit"), \
@@ -172,14 +176,17 @@ def test_login_to_send_happy_path(mock_email_provider):
         mock_ks.return_value.get_entries_for_thread.return_value = []
         mock_ns.return_value = MagicMock()
 
-        # Clear the draft generator singleton to pick up the mock
+        # Clear both singletons so they rebuild against the patched SDK.
         import app.services.draft_generator as _dg_module
+        from app.services import llm_client as _llm_module
         original_gen = _dg_module._draft_generator
         _dg_module._draft_generator = None
+        _llm_module.reset_llm_client()
 
         gen_resp = tc.post(f"/api/v1/emails/{actual_thread_id}/generate-draft")
 
         _dg_module._draft_generator = original_gen
+        _llm_module.reset_llm_client()
 
     assert gen_resp.status_code == 201, gen_resp.text
     draft = gen_resp.json()

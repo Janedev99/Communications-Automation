@@ -53,6 +53,16 @@ class EmailMessageResponse(BaseModel):
     direction: MessageDirection
     is_processed: bool
     attachments: list[AttachmentInfo] | None = None
+    # Per-message save state — mirrors EmailThread save fields.
+    # saved_by_name is omitted here (cf. EmailThreadResponse) because
+    # messages are usually serialised in bulk via from_attributes and
+    # eagerly resolving the FK adds noise. The user id is enough for
+    # auditing; the UI doesn't render a name on the bubble itself.
+    is_saved: bool = False
+    saved_folder: str | None = None
+    saved_note: str | None = None
+    saved_at: datetime | None = None
+    saved_by_id: uuid.UUID | None = None
 
 
 # ── EmailThread schemas ────────────────────────────────────────────────────────
@@ -80,6 +90,13 @@ class EmailThreadResponse(BaseModel):
     tier_set_by: str | None = None
     categorization_source: CategorizationSource = CategorizationSource.claude
     auto_sent_at: datetime | None = None
+    # Save-to-folder state
+    is_saved: bool = False
+    saved_folder: str | None = None
+    saved_note: str | None = None
+    saved_at: datetime | None = None
+    saved_by_id: uuid.UUID | None = None
+    saved_by_name: str | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[EmailMessageResponse] = Field(default_factory=list)
@@ -106,6 +123,16 @@ class EmailThreadResponse(BaseModel):
             "tier_set_by": thread.tier_set_by,
             "categorization_source": thread.categorization_source,
             "auto_sent_at": thread.auto_sent_at,
+            "is_saved": getattr(thread, "is_saved", False),
+            "saved_folder": getattr(thread, "saved_folder", None),
+            "saved_note": getattr(thread, "saved_note", None),
+            "saved_at": getattr(thread, "saved_at", None),
+            "saved_by_id": getattr(thread, "saved_by_id", None),
+            "saved_by_name": (
+                thread.saved_by.name
+                if getattr(thread, "saved_by", None) is not None
+                else None
+            ),
             "created_at": thread.created_at,
             "updated_at": thread.updated_at,
             "messages": thread.messages,
@@ -134,6 +161,8 @@ class EmailThreadListItem(BaseModel):
     tier: ThreadTier = ThreadTier.t2_review
     categorization_source: CategorizationSource = CategorizationSource.claude
     auto_sent_at: datetime | None = None
+    is_saved: bool = False
+    saved_folder: str | None = None
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
@@ -230,6 +259,59 @@ class AssignRequest(BaseModel):
 class StatusChangeRequest(BaseModel):
     """Body for PUT /emails/{thread_id}/status."""
     status: EmailStatus
+
+
+class SaveThreadRequest(BaseModel):
+    """Body for POST /emails/{thread_id}/save and POST /messages/{id}/save."""
+    folder: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Folder name to save under (e.g. a client name). Omit to save unfiled.",
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Optional note explaining why this was saved.",
+    )
+
+
+class SavedFolder(BaseModel):
+    """Entry returned by GET /emails/saved/folders."""
+    name: str | None = Field(
+        default=None,
+        description="Folder name. Null indicates the unsorted/unfiled saved bucket.",
+    )
+    count: int
+    # Per-folder breakdown so the frontend can show e.g. "Smith folder
+    # holds 2 threads + 3 individual emails" without two separate calls.
+    thread_count: int = 0
+    message_count: int = 0
+
+
+class SavedMessageItem(BaseModel):
+    """
+    Flat representation of a saved individual message + its thread context.
+
+    Returned by GET /emails/saved/messages so the /saved view can render
+    each saved bubble inline with the parent subject + client info,
+    without forcing the client to fan out to /threads/{id} per message.
+    """
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    thread_id: uuid.UUID
+    sender: str
+    recipient: str | None
+    body_text: str | None
+    received_at: datetime
+    direction: MessageDirection
+    saved_folder: str | None = None
+    saved_note: str | None = None
+    saved_at: datetime | None = None
+    # Thread context (denormalised so the list renders without joins client-side)
+    thread_subject: str
+    thread_client_email: str
+    thread_client_name: str | None = None
 
 
 # ── Bulk action request schema ────────────────────────────────────────────────

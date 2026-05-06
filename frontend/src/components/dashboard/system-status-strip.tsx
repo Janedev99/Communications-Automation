@@ -102,12 +102,14 @@ export function SystemStatusStrip() {
         ariaLabel={`Email poller: ${pollerLabel}`}
       />
 
-      {/* AI / Claude chip */}
+      {/* LLM (provider-agnostic — Anthropic / RunPod / OpenAI). Wording is
+          intentionally generic: post the 05/02 RunPod migration, the brand
+          on the chip would otherwise mislead. */}
       <StatusChip
         icon={<Sparkles className="w-3.5 h-3.5" />}
-        label={status.anthropic_reachable ? "Claude reachable" : "Claude unreachable"}
-        variant={status.anthropic_reachable ? "green" : "red"}
-        ariaLabel={`AI service: ${status.anthropic_reachable ? "reachable" : "unreachable"}`}
+        label={status.llm_reachable ? "AI reachable" : "AI unreachable"}
+        variant={status.llm_reachable ? "green" : "red"}
+        ariaLabel={`AI service: ${status.llm_reachable ? "reachable" : "unreachable"}`}
       />
 
       {/* Shadow mode chip — only shown when active */}

@@ -22,7 +22,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from app.config import get_settings
 from app.models.email import CategorizationSource, EmailCategory
 from app.schemas.email import CategorizationResult
-from app.services.llm_client import LLMError, get_llm_client
+from app.services.llm_client import LLMError, get_llm_client, is_llm_configured
 from app.services.pii_detector import detect_pii, summarize_pii
 from app.services.rules_engine import categorize_with_rules
 from app.utils.sanitize import strip_html
@@ -306,12 +306,12 @@ class CategorizerService:
                 )
                 return _rules_fallback(sender=sender, subject=subject, body=body or "")
 
-        # Skip the LLM entirely if no API key is configured (e.g., local dev).
-        # We check both the new llm_api_key and the legacy anthropic_api_key
-        # so existing dev .envs keep working through the migration.
-        settings = get_settings()
-        api_key = settings.llm_api_key or settings.anthropic_api_key
-        if not api_key or api_key.startswith("sk-ant-placeholder"):
+        # Skip the LLM entirely if no provider has real credentials.
+        # Logic now lives in is_llm_configured() so categorizer and
+        # draft_generator agree on what "configured" means (provider-aware:
+        # checks llm_api_key+llm_base_url for openai_compat, or a non-
+        # placeholder anthropic_api_key for anthropic).
+        if not is_llm_configured():
             logger.info(
                 "Categorizer: no real LLM API key configured — using rules-fallback engine"
             )

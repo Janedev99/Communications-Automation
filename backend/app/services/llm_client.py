@@ -222,7 +222,15 @@ def get_llm_client() -> LLMClient:
     timeout = settings.llm_timeout
 
     if provider == "openai_compat":
-        api_key = settings.llm_api_key or settings.anthropic_api_key  # ANTHROPIC_API_KEY shouldn't be a real OpenAI key, but allow it as a last-ditch fallback
+        # Provider isolation: do NOT fall back to anthropic_api_key here.
+        # Sending an Anthropic placeholder ("sk-ant-...") to OpenAI's API
+        # surfaces as a noisy 401 ("Incorrect API key provided") instead of
+        # the clearer "not configured" path, and leaks fake credentials to
+        # a third-party endpoint. Empty key + empty base_url is a valid
+        # state — callers should check `is_llm_configured()` and degrade
+        # gracefully (rules-fallback for categorizer, clear ValueError
+        # for draft_generator).
+        api_key = settings.llm_api_key
         base_url = settings.llm_base_url
         model = settings.llm_model or "google/gemma-2-27b-it"
         if not api_key:
@@ -265,3 +273,23 @@ def reset_llm_client() -> None:
     """Test hook — clears the singleton so a fresh provider can be picked up."""
     global _client
     _client = None
+
+
+def is_llm_configured() -> bool:
+    """
+    Return True iff the active provider has *real* credentials configured.
+
+    A "configured" provider can plausibly succeed at calling its upstream
+    API. An unconfigured provider — empty keys, missing base_url for
+    openai_compat, or a placeholder Anthropic key — would return cryptic
+    auth errors. Callers use this to choose between attempting a real call
+    and degrading gracefully (rules engine for the categorizer; raising a
+    clear ValueError for the draft generator).
+    """
+    settings = get_settings()
+    if settings.llm_provider == "openai_compat":
+        return bool(settings.llm_api_key) and bool(settings.llm_base_url)
+
+    # anthropic
+    api_key = settings.llm_api_key or settings.anthropic_api_key
+    return bool(api_key) and not api_key.startswith("sk-ant-placeholder")

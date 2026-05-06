@@ -321,9 +321,10 @@ export default function SavedPage() {
         </section>
       </div>
 
-      {/* Folder-delete confirm. Pre-empts the 409 path with a friendly
-          warning when the folder has items, so the user isn't surprised
-          by the error toast. */}
+      {/* Folder-delete confirm. The backend follows the Outlook /
+          Gmail-label model: deleting a folder unfiles every item that
+          was in it (sets saved_folder = NULL) but keeps them saved.
+          Items survive — they just move to the "No folder" bucket. */}
       <ConfirmDialog
         open={!!pendingDelete}
         onOpenChange={(o) => !o && setPendingDelete(null)}
@@ -334,10 +335,21 @@ export default function SavedPage() {
             if (!folder || folder.count === 0) {
               return "This folder is empty. It will be removed from your folder list.";
             }
+            const parts: string[] = [];
+            if (folder.thread_count > 0) {
+              parts.push(
+                `${folder.thread_count} thread${folder.thread_count === 1 ? "" : "s"}`,
+              );
+            }
+            if (folder.message_count > 0) {
+              parts.push(
+                `${folder.message_count} email${folder.message_count === 1 ? "" : "s"}`,
+              );
+            }
             return (
-              `This folder still contains ${folder.thread_count} thread(s) ` +
-              `and ${folder.message_count} email(s). Move or unsave them ` +
-              "first — the deletion will be refused until the folder is empty."
+              `${parts.join(" and ")} in this folder will stay saved — ` +
+              "they'll just move to \"No folder.\" The folder label is " +
+              "removed from your folder list."
             );
           })()
         }

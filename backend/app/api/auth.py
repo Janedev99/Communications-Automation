@@ -177,6 +177,7 @@ def login(
         user=UserResponse.model_validate(user),
         session_id=session.id,
         expires_at=session.expires_at,
+        csrf_token=csrf_token,
     )
 
 

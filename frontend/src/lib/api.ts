@@ -4,10 +4,15 @@
  * - JSON serialization/deserialization
  * - Typed ApiError on non-OK responses
  * - 401 redirect to /login
- * - CSRF double-submit: reads csrf_token cookie and echoes as X-CSRF-Token on
- *   all state-changing requests (POST/PUT/PATCH/DELETE)
+ * - CSRF: reads csrf_token from localStorage (set at login) and echoes as
+ *   X-CSRF-Token on all state-changing requests (POST/PUT/PATCH/DELETE).
+ *   localStorage is required for cross-origin deploys (e.g., Railway) where
+ *   the API cookie is on a different domain than the SPA, so document.cookie
+ *   cannot read it. Falls back to the cookie for same-origin deploys.
  */
 import { ApiError } from "./types";
+
+const CSRF_STORAGE_KEY = "csrf_token";
 
 const getBaseUrl = () =>
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
@@ -19,6 +24,34 @@ function getCookie(name: string): string | null {
     .split("; ")
     .find((row) => row.startsWith(`${name}=`));
   return match ? decodeURIComponent(match.split("=")[1]) : null;
+}
+
+/**
+ * Get the CSRF token to echo on state-changing requests.
+ * Cross-origin deploys must use localStorage (set by the login page) since
+ * document.cookie can't read the API's csrf_token cookie. Same-origin deploys
+ * fall back to the cookie automatically.
+ */
+function getCsrfToken(): string | null {
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem(CSRF_STORAGE_KEY);
+    if (stored) return stored;
+  }
+  return getCookie("csrf_token");
+}
+
+/** Persist the CSRF token after login. Called by the login page. */
+export function setCsrfToken(token: string): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(CSRF_STORAGE_KEY, token);
+  }
+}
+
+/** Clear the stored CSRF token (called on logout / session expiry). */
+export function clearCsrfToken(): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(CSRF_STORAGE_KEY);
+  }
 }
 
 const CSRF_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -40,9 +73,9 @@ async function request<T>(
     delete headers["Content-Type"];
   }
 
-  // CSRF double-submit — echo the non-HttpOnly csrf_token cookie as a header
+  // CSRF — echo the token (from localStorage if set at login, else cookie) as a header
   if (CSRF_METHODS.has(method)) {
-    const csrfToken = getCookie("csrf_token");
+    const csrfToken = getCsrfToken();
     if (csrfToken) {
       headers["X-CSRF-Token"] = csrfToken;
     }
@@ -55,6 +88,8 @@ async function request<T>(
   });
 
   if (res.status === 401) {
+    // Session is gone — clear the stored CSRF too so the next login can replace it.
+    clearCsrfToken();
     // Redirect to login — but not if we're already there (avoids loop)
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
       window.location.href = "/login";
@@ -74,6 +109,7 @@ async function request<T>(
       // ignore parse errors — treat non-CSRF 403 as normal error below
     }
     if (isCsrfError && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      clearCsrfToken();
       window.location.href = "/login";
       throw new ApiError(403, "Session expired. Please log in again.");
     }

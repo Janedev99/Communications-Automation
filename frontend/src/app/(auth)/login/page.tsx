@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
+import { api, setCsrfToken } from "@/lib/api";
 import type { LoginResponse } from "@/lib/types";
 
 export default function LoginPage() {
@@ -21,10 +21,14 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await api.post<LoginResponse>("/api/v1/auth/login", {
+      const res = await api.post<LoginResponse>("/api/v1/auth/login", {
         email,
         password,
       });
+      // Cross-origin SPAs cannot read the csrf_token cookie via document.cookie
+      // (different domain). Persist the token from the response body so it can
+      // be echoed back as X-CSRF-Token on subsequent state-changing requests.
+      setCsrfToken(res.csrf_token);
       router.push("/");
     } catch (err: unknown) {
       const message =

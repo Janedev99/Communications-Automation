@@ -1206,8 +1206,18 @@ def get_thread_escalation(
     db: Session = Depends(get_db),
 ) -> EscalationResponse | None:
     """
-    Return the latest active (non-resolved) escalation for a thread, or null.
-    Used to show an escalation banner in the thread detail view.
+    Return an escalation worth surfacing in the thread detail banner.
+
+    Two-tier rule:
+      - Live (non-resolved) escalations always surface — that's the active
+        work signal that drives the red banner.
+      - **Resolved** escalations also surface IF and only if the reason
+        contains the canonical PII phrase ("sensitive client data") — PII
+        is a property of the email *content*, not of staff workflow, so
+        the designation persists in the banner forever even after the
+        escalation is closed. Resolving an IRS-audit escalation hides
+        its banner; resolving a "client emailed an SSN" escalation does
+        NOT, because the SSN is still in that thread.
     """
     thread = db.execute(
         select(EmailThread).where(EmailThread.id == thread_id)
@@ -1215,7 +1225,9 @@ def get_thread_escalation(
     if thread is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
 
-    escalation = db.execute(
+    # Prefer live escalations. Fall back to resolved-but-PII so the banner
+    # keeps the PII tag even after the work item is closed.
+    live = db.execute(
         select(Escalation)
         .where(
             Escalation.thread_id == thread_id,
@@ -1223,6 +1235,21 @@ def get_thread_escalation(
         )
         .order_by(Escalation.created_at.desc())
     ).scalars().first()
+
+    escalation = live
+    if escalation is None:
+        # No live escalation — see if there's a resolved PII one to surface.
+        # The canonical phrase comes from app.services.pii_detector.summarize_pii;
+        # case-insensitive ILIKE keeps the comparison in sync with the frontend's
+        # isSensitiveData() helper.
+        escalation = db.execute(
+            select(Escalation)
+            .where(
+                Escalation.thread_id == thread_id,
+                Escalation.reason.ilike("%sensitive client data%"),
+            )
+            .order_by(Escalation.created_at.desc())
+        ).scalars().first()
 
     if escalation is None:
         return None

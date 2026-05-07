@@ -28,6 +28,9 @@ class User(Base):
         Enum(UserRole, name="user_role"), nullable=False, default=UserRole.staff
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    hide_releases_forever: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

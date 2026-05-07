@@ -167,6 +167,10 @@ def _unique_email(prefix: str = "user") -> str:
 def test_returns_null_when_no_releases(app_instance):
     """Fresh user, no releases anywhere → 200 with null body."""
     user = _make_user(email=_unique_email("norel"))
+    # Dismiss any published releases accumulated from earlier tests so this
+    # test is not sensitive to execution order.
+    _permanently_dismiss_all_except(user=user, keep_release_id=None)
+
     tc = _make_authenticated_client(app_instance, user)
 
     res = tc.get("/api/v1/releases/latest-unread")
@@ -181,6 +185,10 @@ def test_returns_null_when_only_drafts_exist(app_instance):
     staff = _make_user(email=_unique_email("staff"))
 
     _make_draft_release(created_by=admin)
+
+    # Dismiss any published releases accumulated from earlier tests so this
+    # test is not sensitive to execution order.
+    _permanently_dismiss_all_except(user=staff, keep_release_id=None)
 
     tc = _make_authenticated_client(app_instance, staff)
     res = tc.get("/api/v1/releases/latest-unread")

@@ -91,3 +91,4 @@ class MeResponse(BaseModel):
     name: str
     role: UserRole
     is_active: bool
+    hide_releases_forever: bool

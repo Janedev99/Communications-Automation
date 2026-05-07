@@ -30,6 +30,7 @@ from app.api.deps import get_client_ip, get_current_user, require_admin, require
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User, UserRole
+from app.schemas.release import UpdateUserPreferencesRequest
 from app.schemas.user import ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, MeResponse, UpdateUserRequest, UserResponse
 from app.services import auth as auth_service
 from app.utils.audit import log_action
@@ -209,6 +210,32 @@ def logout(
 @router.get("/me", response_model=MeResponse)
 def me(current_user: User = Depends(get_current_user)) -> MeResponse:
     """Return the currently authenticated user's profile."""
+    return MeResponse.model_validate(current_user)
+
+
+@router.patch(
+    "/me/preferences",
+    response_model=MeResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def update_me_preferences(
+    payload: UpdateUserPreferencesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MeResponse:
+    """
+    Update the current user's preferences (partial update).
+
+    Currently supports:
+      - hide_releases_forever: bool — when True, the What's New modal is
+        suppressed globally for this user regardless of release dismissal state.
+
+    Omitting a field (or setting it to null) leaves the current value unchanged.
+    """
+    if payload.hide_releases_forever is not None:
+        current_user.hide_releases_forever = payload.hide_releases_forever
+        db.commit()
+        db.refresh(current_user)
     return MeResponse.model_validate(current_user)
 
 

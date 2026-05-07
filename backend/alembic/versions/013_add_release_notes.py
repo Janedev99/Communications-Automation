@@ -66,7 +66,6 @@ def upgrade() -> None:
                 ),
                 nullable=False,
                 server_default="draft",
-                index=True,
             ),
             sa.Column(
                 "generated_from",

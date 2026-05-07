@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     firm_owner_name: str = "Jane Schiller"
     firm_owner_email: str = "jane@schilcpa.com"
 
+    # ── GitHub integration ────────────────────────────────────────────────────
+    # GitHub integration for release-notes draft generation
+    github_token: str = ""
+    github_repo_owner: str = "rheynardjan"
+    github_repo_name: str = "schillerCPA"
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004,http://localhost:5173"
 

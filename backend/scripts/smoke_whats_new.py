@@ -376,13 +376,13 @@ def main() -> int:
 
     print()
     if failures:
-        print(f"{RED}━━ SMOKE FAILED ━━{RESET}")
+        print(f"{RED}== SMOKE FAILED =={RESET}")
         print(f"{RED}{len(failures)} step(s) failed:{RESET}")
         for f in failures:
             print(f"  - {f}")
         return 1
 
-    print(f"{GREEN}━━ SMOKE PASSED ━━{RESET}")
+    print(f"{GREEN}== SMOKE PASSED =={RESET}")
     print(
         f"{DIM}Note: 2 published releases were created during this run and remain in the DB"
         f" (immutable). The transient staff user '{STAFF_EMAIL}' also remains;"

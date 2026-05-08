@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, require_csrf
 from app.models.release import Release, ReleaseStatus, UserReleaseDismissal
 from app.models.user import User
-from app.schemas.release import DismissRequest, LatestUnreadResponse
+from app.schemas.release import (
+    DismissRequest,
+    LatestUnreadResponse,
+    ReleaseArchiveItem,
+    ReleaseArchiveResponse,
+)
 
 router = APIRouter(prefix="/releases", tags=["releases"])
 
@@ -65,6 +70,75 @@ def get_latest_unread(
         summary=release.summary,
         highlights=release.highlights or [],
         published_at=release.published_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /releases/archive — cursor-paginated list of all published releases
+# ---------------------------------------------------------------------------
+
+@router.get("/archive", response_model=ReleaseArchiveResponse)
+def get_archive(
+    cursor: uuid.UUID | None = Query(
+        default=None,
+        description="ID of the last release in the previous page. Omit on first call.",
+    ),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ReleaseArchiveResponse:
+    """Return published releases reverse-chrono, cursor-paginated.
+
+    Available to all authenticated users — including those with
+    hide_releases_forever=True. The toggle suppresses *modal popups*,
+    not access to the archive (users may still want to browse what
+    they've muted).
+
+    Drafts are excluded. Cursor is the id of the previous page's last
+    item; the endpoint returns items strictly older than that cursor's
+    published_at. If cursor is None, returns the most-recent N items.
+    """
+    stmt = (
+        select(Release)
+        .where(Release.status == ReleaseStatus.published)
+        .order_by(Release.published_at.desc(), Release.id.desc())
+        .limit(limit + 1)  # +1 sentinel to know if there's a next page
+    )
+
+    if cursor is not None:
+        cursor_release = (
+            db.query(Release)
+            .filter_by(id=cursor, status=ReleaseStatus.published)
+            .one_or_none()
+        )
+        if cursor_release is None:
+            # Unknown / non-published cursor — treat as end-of-list rather
+            # than 404. Defensive: a published release the cursor pointed
+            # to could have been deleted between requests.
+            return ReleaseArchiveResponse(items=[], next_cursor=None)
+        stmt = stmt.where(
+            Release.published_at < cursor_release.published_at,
+        )
+
+    rows = list(db.execute(stmt).scalars())
+
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = page[-1].id if has_more and page else None
+
+    return ReleaseArchiveResponse(
+        items=[
+            ReleaseArchiveItem(
+                id=r.id,
+                title=r.title,
+                body=r.body,
+                summary=r.summary,
+                highlights=r.highlights or [],
+                published_at=r.published_at,
+            )
+            for r in page
+        ],
+        next_cursor=next_cursor,
     )
 
 

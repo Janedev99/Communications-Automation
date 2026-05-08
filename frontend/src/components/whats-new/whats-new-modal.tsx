@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import {
   Dialog,
   DialogContent,
@@ -75,7 +76,14 @@ export function WhatsNewModal({ release, open, onClose }: Props) {
           Don&apos;t show this again, ever
         </label>
 
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex items-center justify-between">
+          <Link
+            href="/whats-new"
+            onClick={() => onClose(hideForever)}
+            className="text-xs text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+          >
+            View all releases
+          </Link>
           <Button onClick={handleClose} disabled={busy}>
             Got it
           </Button>

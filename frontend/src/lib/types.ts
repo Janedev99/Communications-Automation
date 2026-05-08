@@ -444,3 +444,17 @@ export interface DraftFromCommitsRequest {
    *  published release's commit_sha_at_release as the boundary. */
   since_sha?: string;
 }
+
+export interface ReleaseArchiveItem {
+  id: string;
+  title: string;
+  body: string | null;
+  summary: string | null;
+  highlights: Highlight[];
+  published_at: string;
+}
+
+export interface ReleaseArchiveResponse {
+  items: ReleaseArchiveItem[];
+  next_cursor: string | null;
+}

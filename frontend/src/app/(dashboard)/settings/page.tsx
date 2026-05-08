@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Activity, ChevronRight, Plus, Sliders } from "lucide-react";
+import { Activity, ArrowRight, ChevronRight, Plus, Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/layout/page-header";
@@ -130,7 +130,7 @@ export default function SettingsPage() {
       {/* Announcements — available to all users */}
       <section>
         <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Announcements</h2>
-        <div className="rounded-lg border border-border bg-card p-4">
+        <div className="rounded-lg border border-border bg-card p-4 space-y-4">
           <label className="flex items-start justify-between gap-4 cursor-pointer">
             <div>
               <p className="text-sm font-medium text-foreground">
@@ -147,6 +147,22 @@ export default function SettingsPage() {
               className="mt-0.5 shrink-0"
             />
           </label>
+
+          <div className="border-t border-border/60 pt-4 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Browse the archive</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                See every release announcement, including ones you&apos;ve dismissed.
+              </p>
+            </div>
+            <Link
+              href="/whats-new"
+              className="inline-flex items-center gap-1 text-sm text-foreground hover:text-foreground/80 underline-offset-4 hover:underline shrink-0"
+            >
+              View all releases
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
         </div>
       </section>
 

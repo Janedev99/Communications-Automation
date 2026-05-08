@@ -36,6 +36,27 @@ class LatestUnreadResponse(BaseModel):
     published_at: datetime
 
 
+class ReleaseArchiveItem(BaseModel):
+    """One entry in the /releases/archive paginated list. Same shape as
+    LatestUnreadResponse — the frontend renders both via <ReleaseNoteCard />."""
+    id: uuid.UUID
+    title: str
+    body: str | None
+    summary: str | None
+    highlights: list[Highlight]
+    published_at: datetime
+
+
+class ReleaseArchiveResponse(BaseModel):
+    """Cursor-paginated archive of published releases (reverse-chrono).
+
+    next_cursor is the id of the next release to fetch after this page,
+    or None when the caller has reached the end.
+    """
+    items: list[ReleaseArchiveItem]
+    next_cursor: uuid.UUID | None
+
+
 class DismissRequest(BaseModel):
     dont_show_again: bool
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Activity, ChevronRight, Plus, Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
 import { CreateUserDialog } from "@/components/settings/create-user-dialog";
@@ -11,13 +12,20 @@ import { ChangePasswordForm } from "@/components/settings/change-password-form";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
+import { useWhatsNew } from "@/hooks/use-whats-new";
 import useSWR from "swr";
 import { swrFetcher } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 export default function SettingsPage() {
-  const { user, isAdmin } = useUser();
+  const { user, isAdmin, mutate: mutateUser } = useUser();
+  const { setHideForever } = useWhatsNew();
   const [createOpen, setCreateOpen] = useState(false);
+
+  const onToggleHideForever = async (checked: boolean) => {
+    await setHideForever(checked);
+    await mutateUser();
+  };
 
   // Redirect non-admins to their own profile settings only (no user management)
   // (We keep the page accessible to staff for the password change section)
@@ -118,6 +126,29 @@ export default function SettingsPage() {
           )}
         </section>
       )}
+
+      {/* Announcements — available to all users */}
+      <section>
+        <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Announcements</h2>
+        <div className="rounded-lg border border-border bg-card p-4">
+          <label className="flex items-start justify-between gap-4 cursor-pointer">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Hide &quot;What&apos;s New&quot; announcements
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 max-w-md leading-relaxed">
+                You won&apos;t see release announcement modals or the badge. Important behavior
+                changes that affect how Jane works will still be communicated to you separately.
+              </p>
+            </div>
+            <Switch
+              checked={user?.hide_releases_forever ?? false}
+              onCheckedChange={(checked) => void onToggleHideForever(checked)}
+              className="mt-0.5 shrink-0"
+            />
+          </label>
+        </div>
+      </section>
 
       {isAdmin && (
         <CreateUserDialog

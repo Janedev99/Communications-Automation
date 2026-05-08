@@ -12,6 +12,7 @@ import {
   GraduationCap,
   History,
   Settings,
+  Megaphone,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -214,12 +215,26 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               {!collapsed && <span>Audit Log</span>}
             </Link>
             <Link
+              href="/settings/release-notes"
+              title={collapsed ? "Release Notes" : undefined}
+              className={cn(
+                "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
+                collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
+                isActive("/settings/release-notes")
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              )}
+            >
+              <Megaphone className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
+              {!collapsed && <span>Release Notes</span>}
+            </Link>
+            <Link
               href="/settings"
               title={collapsed ? "Settings" : undefined}
               className={cn(
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
-                isActive("/settings")
+                pathname === "/settings"
                   ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}

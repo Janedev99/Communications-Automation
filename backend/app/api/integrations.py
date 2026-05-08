@@ -98,11 +98,13 @@ def _probe_llm() -> dict[str, Any]:
         base_url = (settings.llm_base_url or "").strip()
         model = settings.llm_model or "(not set)"
         is_configured = bool(api_key) and bool(base_url)
-        display_name = (
-            "RunPod (OpenAI-compatible)"
-            if "runpod.ai" in base_url.lower()
-            else "OpenAI-compatible LLM"
-        )
+        url_lower = base_url.lower()
+        if "runpod.ai" in url_lower:
+            display_name = "RunPod (OpenAI-compatible)"
+        elif "groq.com" in url_lower:
+            display_name = "Groq (OpenAI-compatible)"
+        else:
+            display_name = "OpenAI-compatible LLM"
         config = {
             "provider": "openai_compat",
             "model": model,

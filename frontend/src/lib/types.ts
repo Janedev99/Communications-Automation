@@ -44,6 +44,7 @@ export interface MeResponse {
   name: string;
   role: UserRole;
   is_active: boolean;
+  hide_releases_forever: boolean;
 }
 
 export interface LoginResponse {
@@ -379,3 +380,48 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+// ── Release Notes (What's New) ──────────────────────────────────────────────
+
+export type ReleaseStatus = "draft" | "published";
+
+export type GeneratedFromSource = "github_api" | "manual_paste" | "manual_only";
+
+export interface LatestUnreadResponse {
+  id: string;
+  title: string;
+  body: string;
+  published_at: string;
+}
+
+export interface CreatedByBrief {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface ReleaseAdminResponse {
+  id: string;
+  title: string;
+  body: string;
+  status: ReleaseStatus;
+  generated_from: GeneratedFromSource | null;
+  commit_sha_at_release: string | null;
+  created_by: CreatedByBrief;
+  created_at: string;
+  updated_at: string;
+  published_at: string | null;
+}
+
+export interface DraftSuggestionResponse {
+  title_suggestion: string;
+  body_suggestion: string;
+  commit_count: number;
+  commit_sha_at_release: string | null;
+  generated_from: GeneratedFromSource;
+  low_confidence: boolean;
+}
+
+export type DraftFromCommitsRequest =
+  | { source: "github_api"; since_sha?: string }
+  | { source: "manual_paste"; commits: string[] };

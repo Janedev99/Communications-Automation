@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
 import { useUser } from "@/hooks/use-user";
+import { useWhatsNew } from "@/hooks/use-whats-new";
+import { WhatsNewPill } from "@/components/whats-new/whats-new-pill";
+import { WhatsNewModal } from "@/components/whats-new/whats-new-modal";
 
 export default function DashboardLayout({
   children,
@@ -15,7 +18,10 @@ export default function DashboardLayout({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const hasAutoOpenedRef = useRef(false);
   const { isLoading: authLoading } = useUser();
+  const { release, dismiss, setHideForever } = useWhatsNew();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -29,6 +35,26 @@ export default function DashboardLayout({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Auto-open the What's New modal once per app-mount when a release is available.
+  useEffect(() => {
+    if (release && !hasAutoOpenedRef.current) {
+      setWhatsNewOpen(true);
+      hasAutoOpenedRef.current = true;
+    }
+  }, [release]);
+
+  const handleWhatsNewClose = async (dontShowAgainEver: boolean) => {
+    setWhatsNewOpen(false);
+    if (release) {
+      // Always permanently dismiss this release on any close.
+      await dismiss(release.id, true);
+      // Additionally flip the global preference if the user wants to silence all future modals.
+      if (dontShowAgainEver) {
+        await setHideForever(true);
+      }
+    }
+  };
 
   // Global keyboard shortcut handler
   const handleKeyDown = useCallback(
@@ -128,7 +154,14 @@ export default function DashboardLayout({
     <div className="flex h-screen overflow-hidden">
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <Header />
+        <Header
+          rightSlot={
+            <WhatsNewPill
+              release={release}
+              onOpen={() => setWhatsNewOpen(true)}
+            />
+          }
+        />
         <main className="flex-1 overflow-y-auto p-6">
           {children}
         </main>
@@ -137,6 +170,12 @@ export default function DashboardLayout({
       <KeyboardShortcutsDialog
         open={showShortcuts}
         onOpenChange={setShowShortcuts}
+      />
+
+      <WhatsNewModal
+        release={release}
+        open={whatsNewOpen}
+        onClose={handleWhatsNewClose}
       />
     </div>
   );

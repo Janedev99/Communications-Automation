@@ -32,7 +32,11 @@ function initialsFromName(name: string): string {
   return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
-export function Header() {
+interface HeaderProps {
+  rightSlot?: React.ReactNode;
+}
+
+export function Header({ rightSlot }: HeaderProps) {
   const pathname = usePathname();
   const { user, logout } = useUser();
   const pageName = getPageName(pathname);
@@ -44,8 +48,9 @@ export function Header() {
         <span className="text-sm font-medium text-foreground truncate">{pageName}</span>
       </div>
 
-      {/* Right: user */}
+      {/* Right: rightSlot (e.g. WhatsNewPill) + user */}
       <div className="flex items-center gap-2">
+        {rightSlot}
         {user && (
           <>
             <div className="flex items-center gap-2.5">

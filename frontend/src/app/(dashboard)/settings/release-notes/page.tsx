@@ -73,13 +73,15 @@ export default function ReleaseNotesListPage() {
           { source: "github_api" },
         );
       } catch (err: unknown) {
-        const detail = (err as { detail?: string })?.detail ?? "";
-        if (detail === "github_not_configured") {
+        // api.ts throws ApiError(status, message) where `message` is the
+        // backend's response.detail field (or "HTTP <status>" if unparseable).
+        const message = (err as Error)?.message ?? "";
+        if (message === "github_not_configured") {
           toast.error("GitHub auto-fetch isn't configured. Use 'New draft' and paste commits manually.");
-        } else if (detail === "ai_unavailable") {
+        } else if (message === "ai_unavailable") {
           toast.error("AI is not configured. Set up Groq or another LLM provider.");
         } else {
-          toast.error("Failed to generate from commits. Try again or use 'New draft'.");
+          toast.error(`Failed to generate from commits: ${message || "unknown error"}.`);
         }
         return;
       }
@@ -110,15 +112,18 @@ export default function ReleaseNotesListPage() {
   const handleNewDraft = async () => {
     setCreatingDraft(true);
     try {
+      // Body must be non-empty per the backend's Pydantic min_length=1.
+      // Seed a markdown placeholder; the editor will let the admin replace it.
       const created = await api.post<ReleaseAdminResponse>(KEY, {
-        title: "Untitled",
-        body: "",
+        title: "Untitled release",
+        body: "# What's new\n\n_Replace this with a short summary of the changes._",
         generated_from: "manual_only",
       });
       await mutate();
       router.push(`/settings/release-notes/${created.id}`);
-    } catch {
-      toast.error("Failed to create draft. Please try again.");
+    } catch (err: unknown) {
+      const message = (err as Error)?.message ?? "unknown error";
+      toast.error(`Failed to create draft: ${message}.`);
     } finally {
       setCreatingDraft(false);
     }

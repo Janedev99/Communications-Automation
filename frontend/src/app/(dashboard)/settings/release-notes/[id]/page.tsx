@@ -143,13 +143,15 @@ export default function ReleaseNoteEditPage() {
       await mutate();
       toast.success("Draft regenerated from commits.");
     } catch (err: unknown) {
-      const detail = (err as { detail?: string })?.detail ?? "";
-      if (detail === "github_not_configured") {
+      // api.ts throws ApiError(status, message) where `message` is the
+      // backend's response.detail field.
+      const message = (err as Error)?.message ?? "";
+      if (message === "github_not_configured") {
         toast.error("GitHub auto-fetch isn't configured.");
-      } else if (detail === "ai_unavailable") {
+      } else if (message === "ai_unavailable") {
         toast.error("AI is not configured. Set up Groq or another LLM provider.");
       } else {
-        toast.error("Failed to regenerate. Try again later.");
+        toast.error(`Failed to regenerate: ${message || "unknown error"}.`);
       }
     } finally {
       setRegenerating(false);

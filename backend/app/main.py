@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import audit_log, auth, dashboard, drafts, emails, escalations, integrations, knowledge, releases, system_settings, tier_rules
+from app.api import admin_releases, audit_log, auth, dashboard, drafts, emails, escalations, integrations, knowledge, releases, system_settings, tier_rules
 from app.config import get_settings
 
 settings = get_settings()
@@ -242,6 +242,7 @@ def create_app() -> FastAPI:
     app.include_router(system_settings.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(releases.router, prefix="/api/v1")
+    app.include_router(admin_releases.router, prefix="/api/v1")
 
     # ── Health check ───────────────────────────────────────────────────────────
     @app.get("/health", include_in_schema=False)

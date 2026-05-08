@@ -1,6 +1,6 @@
-"""Smoke test for the "What's New" modal feature backend (Phases 1-3).
+"""Smoke test for the "What's New" modal feature backend (Phases 1-4).
 
-Walks through the full manual workflow against a running backend:
+Walks through the full workflow against a running backend:
   1. Login as admin
   2. Verify admin profile shape (hide_releases_forever field)
   3. Create a transient staff user so the staff-side checks have someone to be
@@ -11,14 +11,23 @@ Walks through the full manual workflow against a running backend:
   8. Confirm published immutability (409 on PATCH and DELETE)
   9. Login as staff (separate session)
  10. Verify staff /auth/me has hide_releases_forever=False
- 11. GET /releases/latest-unread → expects the published release
- 12. Dismiss with dont_show_again=False (session-only) → still returns next call
- 13. Dismiss with dont_show_again=True → next call returns null
+ 10b. Staff baseline clear: permanently dismiss any pre-existing published
+      releases left over from prior smoke runs (so subsequent assertions can
+      assume a clean baseline for THIS run's just-published release)
+ 11. GET /releases/latest-unread expects the published release
+ 12. Dismiss with dont_show_again=False (session-only) - still returns next call
+ 13. Dismiss with dont_show_again=True - next call returns null
  14. PATCH /auth/me/preferences hide_releases_forever=True
  15. Verify GET /auth/me reflects new value
  16. Admin creates a SECOND release to test hide-forever still hides it
- 17. Toggle hide_releases_forever back to False → second release returns
- 18. Cleanup: delete the staff user and any leftover drafts (published rows are immutable, left as-is)
+ 17. Toggle hide_releases_forever back to False - second release returns
+ 18-19. Auth boundary checks (anon 401, staff-on-admin 403)
+ 20-23. Phase 4: AI generation endpoint (draft-from-commits)
+        - manual_paste happy path (real LLM call if configured)
+        - github_api without GITHUB_TOKEN -> 422
+        - manual_paste with zero feat:/fix: commits -> commit_count 0
+        - staff hitting draft-from-commits -> 403
+ 24. Cleanup
 
 Usage:
     cd backend
@@ -31,7 +40,7 @@ Environment variables (all optional, with sensible defaults):
     BACKEND_URL       default: http://localhost:8000
     ADMIN_EMAIL       default: jane@schilcpa.com   (matches seed_admin.py)
     ADMIN_PASSWORD    required (read from .env via your shell, or supply inline)
-    SMOKE_STAFF_EMAIL default: smoke-staff@example.com (created + deleted by this script)
+    SMOKE_STAFF_EMAIL default: smoke-staff-<random>@example.com
     SMOKE_STAFF_PASS  default: SmokeStaff123!
 
 Exit code: 0 if every step lands the expected outcome, 1 otherwise.
@@ -62,12 +71,19 @@ RESET = "\033[0m"
 
 step_n = 0
 failures: list[str] = []
+notes: list[str] = []
 
 
 def log_step(label: str) -> None:
     global step_n
     step_n += 1
     print(f"\n{YELLOW}[{step_n:02d}] {label}{RESET}")
+
+
+def log_note(msg: str) -> None:
+    """Non-fatal observation surfaced in the final summary."""
+    print(f"     {YELLOW}NOTE{RESET} {msg}")
+    notes.append(f"step {step_n}: {msg}")
 
 
 def expect(actual: Any, expected: Any, what: str) -> bool:
@@ -99,15 +115,16 @@ def expect_truthy(actual: Any, what: str) -> bool:
 
 def make_client() -> httpx.Client:
     """Return a fresh httpx client targeting the backend."""
-    return httpx.Client(base_url=BACKEND_URL, timeout=10.0)
+    return httpx.Client(base_url=BACKEND_URL, timeout=30.0)
 
 
 def login(client: httpx.Client, email: str, password: str) -> dict[str, str]:
-    """POST /auth/login, return the headers needed for subsequent CSRF-guarded calls.
+    """POST /auth/login, return the headers needed for CSRF-guarded calls.
 
-    Session token lives in a cookie set by the server; httpx.Client carries cookies
-    across requests on the same client, so we only need to manually thread the
-    csrf_token cookie's value into the X-CSRF-Token header for mutating verbs."""
+    Session token lives in a cookie set by the server; httpx.Client carries
+    cookies across requests on the same client, so we only need to thread the
+    csrf_token cookie's value into the X-CSRF-Token header for mutating verbs.
+    """
     res = client.post(
         "/api/v1/auth/login",
         json={"email": email, "password": password},
@@ -125,7 +142,50 @@ def login(client: httpx.Client, email: str, password: str) -> dict[str, str]:
     return {"X-CSRF-Token": csrf}
 
 
+def staff_baseline_clear(staff_client: httpx.Client, headers: dict[str, str]) -> int:
+    """Permanently dismiss every published release the staff user can see.
+
+    Idempotent: walks latest-unread until the endpoint returns null. Returns
+    the number of releases dismissed (for diagnostics).
+
+    Why: the in-memory backend DB accumulates published releases across smoke
+    runs (published is immutable by design). A fresh staff user inherits all
+    those releases. Pre-dismissing them gives THIS smoke run a clean baseline
+    so step 13's "expect null" assertion measures only THIS run's dismiss
+    flow, not stale state.
+    """
+    dismissed = 0
+    safety = 50  # don't loop forever if something is off
+    while safety > 0:
+        res = staff_client.get("/api/v1/releases/latest-unread")
+        if res.status_code != 200:
+            break
+        body = res.json()
+        if body is None:
+            break
+        rel_id = body["id"]
+        d = staff_client.put(
+            f"/api/v1/releases/{rel_id}/dismissal",
+            json={"dont_show_again": True},
+            headers=headers,
+        )
+        if d.status_code != 204:
+            break
+        dismissed += 1
+        safety -= 1
+    return dismissed
+
+
 def main() -> int:
+    # Make stdout UTF-8 tolerant on Windows (cp1252 default chokes on
+    # non-Latin-1 characters). All print labels in this script are ASCII,
+    # but defensive: log lines that include user input or LLM output
+    # could carry arbitrary chars.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     if not ADMIN_PASSWORD:
         print(
             f"{RED}ADMIN_PASSWORD not set. Source backend/.env first or "
@@ -141,20 +201,20 @@ def main() -> int:
     admin_client = make_client()
     staff_client = make_client()
 
-    # ── 1. Login admin ───────────────────────────────────────────────────────
+    # -- 1. Login admin --------------------------------------------------------
     log_step("Login as admin")
     admin_headers = login(admin_client, ADMIN_EMAIL, ADMIN_PASSWORD)
     print(f"     {GREEN}OK{RESET} Admin session established")
 
-    # ── 2. Admin /auth/me shape ───────────────────────────────────────────────
-    log_step("GET /auth/me as admin — confirm hide_releases_forever field")
+    # -- 2. Admin /auth/me shape -----------------------------------------------
+    log_step("GET /auth/me as admin - confirm hide_releases_forever field")
     res = admin_client.get("/api/v1/auth/me")
     expect(res.status_code, 200, "status")
     me = res.json()
     expect(me.get("role"), "admin", "role")
     expect_truthy("hide_releases_forever" in me, "hide_releases_forever in body")
 
-    # ── 3. Create a transient staff user (admin endpoint) ─────────────────────
+    # -- 3. Create a transient staff user (admin endpoint) ---------------------
     log_step("Create transient staff user")
     res = admin_client.post(
         "/api/v1/auth/users",
@@ -170,7 +230,6 @@ def main() -> int:
         staff_id = res.json().get("id")
         print(f"     {GREEN}OK{RESET} Staff user created (id={staff_id})")
     elif res.status_code == 409:
-        # User may already exist from a prior smoke run; that's fine.
         print(f"     {YELLOW}NOTE{RESET} Staff user already exists; reusing")
         staff_id = None
     else:
@@ -178,15 +237,38 @@ def main() -> int:
         failures.append("step 3 (create staff)")
         return 1
 
-    # ── 4. List releases — initial state ──────────────────────────────────────
-    log_step("GET /admin/releases — initial state")
+    # -- 4. List releases - initial state --------------------------------------
+    log_step("GET /admin/releases - initial state")
     res = admin_client.get("/api/v1/admin/releases", headers=admin_headers)
     expect(res.status_code, 200, "status")
     initial_releases = res.json()
     print(f"     {DIM}({len(initial_releases)} existing rows in DB){RESET}")
 
-    # ── 5. Create a draft (manual_only) ───────────────────────────────────────
-    log_step("POST /admin/releases — create draft 1 (manual_only)")
+    # -- Staff login + baseline clear (BEFORE this run publishes anything) ----
+    # The conftest-style accumulation problem applies here too: prior smoke
+    # runs left published rows in the DB. We need staff to dismiss those
+    # NOW, before we publish this run's draft 1, so step 14's "expect this
+    # run's release" assertion sees only this run's published row.
+    log_step("Login as staff (transient user)")
+    staff_headers = login(staff_client, STAFF_EMAIL, STAFF_PASSWORD)
+    print(f"     {GREEN}OK{RESET} Staff session established")
+
+    log_step("GET /auth/me as staff")
+    res = staff_client.get("/api/v1/auth/me")
+    expect(res.status_code, 200, "status")
+    staff_me = res.json()
+    expect(staff_me["role"], "staff", "role")
+    expect(staff_me["hide_releases_forever"], False, "hide_releases_forever False")
+
+    log_step("Staff baseline clear - dismiss leftover releases from prior runs")
+    cleared = staff_baseline_clear(staff_client, staff_headers)
+    if cleared > 0:
+        print(f"     {DIM}Pre-dismissed {cleared} accumulated release(s){RESET}")
+    else:
+        print(f"     {DIM}No accumulated releases to clear{RESET}")
+
+    # -- 5. Create a draft (manual_only) ---------------------------------------
+    log_step("POST /admin/releases - create draft 1 (manual_only)")
     res = admin_client.post(
         "/api/v1/admin/releases",
         json={
@@ -203,8 +285,8 @@ def main() -> int:
     expect_truthy(draft1.get("created_by"), "created_by populated")
     draft1_id = draft1["id"]
 
-    # ── 6. Edit the draft (PATCH) ────────────────────────────────────────────
-    log_step("PATCH /admin/releases/{id} — edit draft title")
+    # -- 6. Edit the draft (PATCH) ---------------------------------------------
+    log_step("PATCH /admin/releases/{id} - edit draft title")
     res = admin_client.patch(
         f"/api/v1/admin/releases/{draft1_id}",
         json={"title": "Smoke draft 1 (edited)"},
@@ -213,8 +295,8 @@ def main() -> int:
     expect(res.status_code, 200, "status")
     expect(res.json()["title"], "Smoke draft 1 (edited)", "title updated")
 
-    # ── 7. Publish draft 1 ────────────────────────────────────────────────────
-    log_step("POST /admin/releases/{id}/publish — publish draft 1")
+    # -- 7. Publish draft 1 ----------------------------------------------------
+    log_step("POST /admin/releases/{id}/publish - publish draft 1")
     res = admin_client.post(
         f"/api/v1/admin/releases/{draft1_id}/publish",
         headers=admin_headers,
@@ -224,8 +306,8 @@ def main() -> int:
     expect(published1["status"], "published", "status flipped")
     expect_truthy(published1.get("published_at"), "published_at set")
 
-    # ── 8. Confirm published immutability ─────────────────────────────────────
-    log_step("PATCH on published release — expect 409")
+    # -- 8. Confirm published immutability -------------------------------------
+    log_step("PATCH on published release - expect 409")
     res = admin_client.patch(
         f"/api/v1/admin/releases/{draft1_id}",
         json={"title": "should not stick"},
@@ -233,35 +315,23 @@ def main() -> int:
     )
     expect(res.status_code, 409, "patch published returns 409")
 
-    log_step("DELETE on published release — expect 409")
+    log_step("DELETE on published release - expect 409")
     res = admin_client.delete(
         f"/api/v1/admin/releases/{draft1_id}",
         headers=admin_headers,
     )
     expect(res.status_code, 409, "delete published returns 409")
 
-    log_step("POST publish on already-published — expect 409")
+    log_step("POST publish on already-published - expect 409")
     res = admin_client.post(
         f"/api/v1/admin/releases/{draft1_id}/publish",
         headers=admin_headers,
     )
     expect(res.status_code, 409, "republish returns 409")
 
-    # ── 9. Login staff ────────────────────────────────────────────────────────
-    log_step("Login as staff (transient user)")
-    staff_headers = login(staff_client, STAFF_EMAIL, STAFF_PASSWORD)
-    print(f"     {GREEN}OK{RESET} Staff session established")
-
-    # ── 10. Staff /auth/me shape ──────────────────────────────────────────────
-    log_step("GET /auth/me as staff")
-    res = staff_client.get("/api/v1/auth/me")
-    expect(res.status_code, 200, "status")
-    staff_me = res.json()
-    expect(staff_me["role"], "staff", "role")
-    expect(staff_me["hide_releases_forever"], False, "hide_releases_forever False")
-
-    # ── 11. latest-unread should return the published release ────────────────
-    log_step("GET /releases/latest-unread — expect the published release")
+    # -- latest-unread should return THIS run's published release ------------
+    # Staff is already logged in and baseline-cleared (above, before publish).
+    log_step("GET /releases/latest-unread - expect the just-published release")
     res = staff_client.get("/api/v1/releases/latest-unread")
     expect(res.status_code, 200, "status")
     body = res.json()
@@ -269,8 +339,8 @@ def main() -> int:
     if body:
         expect(body["id"], draft1_id, "id matches published release")
 
-    # ── 12. Dismiss with dont_show_again=False (session-only) ────────────────
-    log_step("PUT /releases/{id}/dismissal — dont_show_again=False")
+    # -- 12. Dismiss with dont_show_again=False (session-only) ----------------
+    log_step("PUT /releases/{id}/dismissal - dont_show_again=False")
     res = staff_client.put(
         f"/api/v1/releases/{draft1_id}/dismissal",
         json={"dont_show_again": False},
@@ -278,14 +348,17 @@ def main() -> int:
     )
     expect(res.status_code, 204, "status")
 
-    # ── 13. latest-unread still returns (session-only dismissal) ─────────────
-    log_step("GET /releases/latest-unread — session-only dismissal still returns")
+    # -- 13. latest-unread still returns (session-only dismissal) -------------
+    log_step("GET /releases/latest-unread - session-only dismissal still returns")
     res = staff_client.get("/api/v1/releases/latest-unread")
     expect(res.status_code, 200, "status")
-    expect_truthy(res.json(), "still returns release (session-only)")
+    body = res.json()
+    expect_truthy(body, "still returns release (session-only)")
+    if body:
+        expect(body["id"], draft1_id, "id still matches THIS run's release")
 
-    # ── 14. Dismiss with dont_show_again=True ────────────────────────────────
-    log_step("PUT /releases/{id}/dismissal — dont_show_again=True")
+    # -- 14. Dismiss with dont_show_again=True --------------------------------
+    log_step("PUT /releases/{id}/dismissal - dont_show_again=True")
     res = staff_client.put(
         f"/api/v1/releases/{draft1_id}/dismissal",
         json={"dont_show_again": True},
@@ -293,14 +366,14 @@ def main() -> int:
     )
     expect(res.status_code, 204, "status")
 
-    # ── 15. latest-unread now returns null ───────────────────────────────────
-    log_step("GET /releases/latest-unread — expect null after permanent dismissal")
+    # -- 15. latest-unread now returns null -----------------------------------
+    log_step("GET /releases/latest-unread - expect null after permanent dismissal")
     res = staff_client.get("/api/v1/releases/latest-unread")
     expect(res.status_code, 200, "status")
     expect(res.json(), None, "body is null")
 
-    # ── 16. Toggle hide_releases_forever=True ────────────────────────────────
-    log_step("PATCH /auth/me/preferences — hide_releases_forever=True")
+    # -- 16. Toggle hide_releases_forever=True --------------------------------
+    log_step("PATCH /auth/me/preferences - hide_releases_forever=True")
     res = staff_client.patch(
         "/api/v1/auth/me/preferences",
         json={"hide_releases_forever": True},
@@ -309,13 +382,13 @@ def main() -> int:
     expect(res.status_code, 200, "status")
     expect(res.json()["hide_releases_forever"], True, "field updated in response")
 
-    # ── 17. Verify GET /auth/me reflects toggled state ────────────────────────
-    log_step("GET /auth/me — verify hide_releases_forever=True persisted")
+    # -- 17. Verify GET /auth/me reflects toggled state ------------------------
+    log_step("GET /auth/me - verify hide_releases_forever=True persisted")
     res = staff_client.get("/api/v1/auth/me")
     expect(res.json()["hide_releases_forever"], True, "field persisted")
 
-    # ── 18. Admin creates draft 2 + publishes — staff with hide-forever should still see null
-    log_step("POST /admin/releases — create + publish draft 2")
+    # -- 18. Admin creates draft 2 + publishes; staff with hide-forever should still see null
+    log_step("POST /admin/releases - create + publish draft 2")
     res = admin_client.post(
         "/api/v1/admin/releases",
         json={
@@ -334,12 +407,12 @@ def main() -> int:
     )
     expect(res.status_code, 200, "publish status")
 
-    log_step("GET /releases/latest-unread (staff with hide-forever) — expect null")
+    log_step("GET /releases/latest-unread (staff with hide-forever) - expect null")
     res = staff_client.get("/api/v1/releases/latest-unread")
     expect(res.json(), None, "still null with hide_releases_forever=True")
 
-    # ── 19. Toggle hide-forever back off — release 2 should return ────────────
-    log_step("PATCH /auth/me/preferences — hide_releases_forever=False")
+    # -- 19. Toggle hide-forever back off; release 2 should return ------------
+    log_step("PATCH /auth/me/preferences - hide_releases_forever=False")
     res = staff_client.patch(
         "/api/v1/auth/me/preferences",
         json={"hide_releases_forever": False},
@@ -347,27 +420,106 @@ def main() -> int:
     )
     expect(res.status_code, 200, "status")
 
-    log_step("GET /releases/latest-unread — expect draft 2 to appear now")
+    log_step("GET /releases/latest-unread - expect draft 2 to appear now")
     res = staff_client.get("/api/v1/releases/latest-unread")
     body = res.json()
     expect_truthy(body, "body non-null")
     if body:
-        expect(body["id"], draft2_id, "returns draft 2 (latest published the user hasn't permanently dismissed)")
+        expect(body["id"], draft2_id, "returns draft 2 (latest unpermanent-dismissed)")
 
-    # ── 20. Auth boundary checks ─────────────────────────────────────────────
-    log_step("Anonymous client — GET /releases/latest-unread expects 401")
+    # -- 20. Auth boundary checks ---------------------------------------------
+    log_step("Anonymous client - GET /releases/latest-unread expects 401")
     anon = make_client()
     res = anon.get("/api/v1/releases/latest-unread")
     expect(res.status_code, 401, "status")
 
-    log_step("Staff hitting admin endpoint — expect 403")
+    log_step("Staff hitting admin endpoint - expect 403")
     res = staff_client.get("/api/v1/admin/releases", headers=staff_headers)
     expect(res.status_code, 403, "status")
 
-    # ── 21. Cleanup: dismiss draft 2 permanently for staff so reruns are clean,
-    #         then leave the published rows in place (immutable by design). The
-    #         staff user is left for the user to delete via admin UI if desired.
-    log_step("Cleanup — staff permanently dismisses draft 2")
+    # -- Phase 4: AI generation endpoint (draft-from-commits) -----------------
+    # First call probes whether AI is configured. If not, skip the happy
+    # path but still verify the 422 ai_unavailable contract.
+    log_step("POST /admin/releases/draft-from-commits - manual_paste happy path")
+    res = admin_client.post(
+        "/api/v1/admin/releases/draft-from-commits",
+        json={
+            "source": "manual_paste",
+            "commits": [
+                "feat: smoke-test smarter draft suggestions",
+                "fix: smoke-test missing attachment on resend",
+                "chore: smoke-test internal logging refactor",
+            ],
+        },
+        headers=admin_headers,
+    )
+    ai_available = True
+    if res.status_code == 422 and res.json().get("detail") == "ai_unavailable":
+        ai_available = False
+        log_note(
+            "AI is not configured (LLM placeholder or missing key). "
+            "Skipping happy-path assertions; verifying ai_unavailable "
+            "contract instead."
+        )
+        expect(res.status_code, 422, "status (ai_unavailable expected)")
+        expect(res.json().get("detail"), "ai_unavailable", "detail")
+    else:
+        expect(res.status_code, 200, "status")
+        if res.status_code == 200:
+            body = res.json()
+            expect(body["generated_from"], "manual_paste", "generated_from")
+            expect(body["commit_count"], 2, "commit_count (chore filtered out)")
+            expect(body["commit_sha_at_release"], None, "commit_sha_at_release None")
+            expect_truthy(body["title_suggestion"], "title_suggestion non-empty")
+            expect_truthy(body["body_suggestion"], "body_suggestion non-empty")
+            expect_truthy("low_confidence" in body, "low_confidence field present")
+            print(f"     {DIM}LLM produced title: {body['title_suggestion'][:80]}{RESET}")
+
+    log_step("POST /admin/releases/draft-from-commits - github_api without GITHUB_TOKEN")
+    res = admin_client.post(
+        "/api/v1/admin/releases/draft-from-commits",
+        json={"source": "github_api"},
+        headers=admin_headers,
+    )
+    if not ai_available:
+        # AI gate fires before GitHub gate, so we expect ai_unavailable.
+        expect(res.status_code, 422, "status (ai_unavailable expected first)")
+        expect(res.json().get("detail"), "ai_unavailable", "ai_unavailable wins")
+    elif res.status_code == 422:
+        expect(res.json().get("detail"), "github_not_configured", "github_not_configured")
+    elif res.status_code == 200:
+        log_note("GITHUB_TOKEN appears configured; github_api path returned 200")
+    else:
+        expect_in(res.status_code, {200, 422}, "github_api status code")
+
+    if ai_available:
+        log_step("POST /admin/releases/draft-from-commits - manual_paste with zero feat:/fix:")
+        res = admin_client.post(
+            "/api/v1/admin/releases/draft-from-commits",
+            json={
+                "source": "manual_paste",
+                "commits": ["chore: bump deps", "refactor: tidy"],
+            },
+            headers=admin_headers,
+        )
+        expect(res.status_code, 200, "status")
+        if res.status_code == 200:
+            body = res.json()
+            expect(body["commit_count"], 0, "commit_count zero")
+            expect(body["title_suggestion"], "", "title_suggestion empty")
+            expect(body["body_suggestion"], "", "body_suggestion empty")
+            expect(body["low_confidence"], False, "low_confidence false on zero-count")
+
+    log_step("Staff hitting draft-from-commits - expect 403")
+    res = staff_client.post(
+        "/api/v1/admin/releases/draft-from-commits",
+        json={"source": "manual_paste", "commits": ["feat: x"]},
+        headers=staff_headers,
+    )
+    expect(res.status_code, 403, "status")
+
+    # -- Cleanup: dismiss draft 2 permanently for staff so reruns are clean ---
+    log_step("Cleanup - staff permanently dismisses draft 2")
     staff_client.put(
         f"/api/v1/releases/{draft2_id}/dismissal",
         json={"dont_show_again": True},
@@ -380,9 +532,17 @@ def main() -> int:
         print(f"{RED}{len(failures)} step(s) failed:{RESET}")
         for f in failures:
             print(f"  - {f}")
+        if notes:
+            print(f"{YELLOW}Notes:{RESET}")
+            for n in notes:
+                print(f"  - {n}")
         return 1
 
     print(f"{GREEN}== SMOKE PASSED =={RESET}")
+    if notes:
+        print(f"{YELLOW}Notes (non-fatal):{RESET}")
+        for n in notes:
+            print(f"  - {n}")
     print(
         f"{DIM}Note: 2 published releases were created during this run and remain in the DB"
         f" (immutable). The transient staff user '{STAFF_EMAIL}' also remains;"

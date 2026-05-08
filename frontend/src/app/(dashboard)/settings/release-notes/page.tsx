@@ -8,6 +8,15 @@ import { Plus, Wand2, ArrowLeft, Trash2, ArrowRight, FileText } from "lucide-rea
 import { api, swrFetcher } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/layout/page-header";
 import { ErrorState } from "@/components/shared/error-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -16,6 +25,8 @@ import { useRouter } from "next/navigation";
 import { cn, relativeTime } from "@/lib/utils";
 import { Lock } from "lucide-react";
 import type { ReleaseAdminResponse, DraftSuggestionResponse } from "@/lib/types";
+
+const PASTE_MAX_CHARS = 50_000;
 
 const KEY = "/api/v1/admin/releases";
 
@@ -31,6 +42,8 @@ export default function ReleaseNotesListPage() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ReleaseAdminResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
 
   if (userLoading) {
     return null;
@@ -62,48 +75,79 @@ export default function ReleaseNotesListPage() {
   const drafts = releases.filter((r) => r.status === "draft");
   const published = releases.filter((r) => r.status === "published");
 
+  /** Step 2 of the generate flow: take a successful suggestion, create a
+   *  draft from it, and navigate to the editor. Shared between the
+   *  github_api and manual_paste paths. */
+  const createDraftFromSuggestion = async (suggestion: DraftSuggestionResponse) => {
+    if (suggestion.commit_count === 0) {
+      toast.info("No user-facing commits found in the input.");
+      return;
+    }
+    const created = await api.post<ReleaseAdminResponse>(KEY, {
+      title: suggestion.title_suggestion,
+      body: suggestion.body_suggestion,
+      generated_from: suggestion.generated_from,
+      commit_sha_at_release: suggestion.commit_sha_at_release,
+    });
+    await mutate();
+    toast.success("Draft created from commits.");
+    router.push(`/settings/release-notes/${created.id}`);
+  };
+
   const handleGenerateFromCommits = async () => {
     setGenerating(true);
     try {
-      // Step 1: Get AI suggestion from GitHub API
-      let suggestion: DraftSuggestionResponse;
       try {
-        suggestion = await api.post<DraftSuggestionResponse>(
+        const suggestion = await api.post<DraftSuggestionResponse>(
           "/api/v1/admin/releases/draft-from-commits",
           { source: "github_api" },
         );
+        await createDraftFromSuggestion(suggestion);
       } catch (err: unknown) {
         // api.ts throws ApiError(status, message) where `message` is the
-        // backend's response.detail field (or "HTTP <status>" if unparseable).
+        // backend's response.detail field.
         const message = (err as Error)?.message ?? "";
         if (message === "github_not_configured") {
-          toast.error("GitHub auto-fetch isn't configured. Use 'New draft' and paste commits manually.");
-        } else if (message === "ai_unavailable") {
-          toast.error("AI is not configured. Set up Groq or another LLM provider.");
-        } else {
-          toast.error(`Failed to generate from commits: ${message || "unknown error"}.`);
+          // Open the manual-paste fallback dialog instead of failing hard.
+          setPasteOpen(true);
+          return;
         }
-        return;
+        if (message === "ai_unavailable") {
+          toast.error("AI is not configured. Set up Groq or another LLM provider.");
+          return;
+        }
+        toast.error(`Failed to generate from commits: ${message || "unknown error"}.`);
       }
+    } finally {
+      setGenerating(false);
+    }
+  };
 
-      if (suggestion.commit_count === 0) {
-        toast.info("No user-facing commits since the last release.");
-        return;
+  const handleManualPasteGenerate = async () => {
+    const lines = pasteText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (lines.length === 0) {
+      toast.error("Paste at least one commit message.");
+      return;
+    }
+    setGenerating(true);
+    try {
+      const suggestion = await api.post<DraftSuggestionResponse>(
+        "/api/v1/admin/releases/draft-from-commits",
+        { source: "manual_paste", commits: lines },
+      );
+      setPasteOpen(false);
+      setPasteText("");
+      await createDraftFromSuggestion(suggestion);
+    } catch (err: unknown) {
+      const message = (err as Error)?.message ?? "";
+      if (message === "ai_unavailable") {
+        toast.error("AI is not configured. Set up Groq or another LLM provider.");
+      } else {
+        toast.error(`Failed to generate: ${message || "unknown error"}.`);
       }
-
-      // Step 2: Create a draft release from the suggestion
-      const created = await api.post<ReleaseAdminResponse>(KEY, {
-        title: suggestion.title_suggestion,
-        body: suggestion.body_suggestion,
-        generated_from: "github_api",
-        commit_sha_at_release: suggestion.commit_sha_at_release,
-      });
-
-      await mutate();
-      toast.success("Draft created from commits.");
-      router.push(`/settings/release-notes/${created.id}`);
-    } catch {
-      toast.error("Failed to create draft. Please try again.");
     } finally {
       setGenerating(false);
     }
@@ -315,6 +359,54 @@ export default function ReleaseNotesListPage() {
         onConfirm={handleDeleteConfirm}
         loading={deleting}
       />
+
+      {/* Manual-paste fallback dialog (shown when GitHub auto-fetch isn't configured) */}
+      <Dialog open={pasteOpen} onOpenChange={setPasteOpen}>
+        <DialogContent className="sm:max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle>Paste recent commits</DialogTitle>
+            <DialogDescription>
+              GitHub auto-fetch isn&apos;t configured. Paste commit subjects from
+              {" "}
+              <code className="text-[11px] bg-muted px-1 rounded">git log --oneline</code>
+              {" "}
+              (one per line). Only <code className="text-[11px] bg-muted px-1 rounded">feat:</code>{" "}
+              and <code className="text-[11px] bg-muted px-1 rounded">fix:</code> commits will be
+              summarised by the AI.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value.slice(0, PASTE_MAX_CHARS))}
+            placeholder={`feat: smarter draft suggestions\nfix: don't drop attachments on resend\nchore: bump deps`}
+            rows={10}
+            className="font-mono text-xs"
+          />
+          <p className="text-xs text-muted-foreground -mt-1">
+            {pasteText.length.toLocaleString()} / {PASTE_MAX_CHARS.toLocaleString()} chars
+          </p>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPasteOpen(false);
+                setPasteText("");
+              }}
+              disabled={generating}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleManualPasteGenerate()}
+              disabled={generating || pasteText.trim().length === 0}
+            >
+              {generating ? "Generating…" : "Generate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

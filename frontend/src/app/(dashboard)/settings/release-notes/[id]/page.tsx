@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -12,6 +11,11 @@ import {
   CheckCircle2,
   Save,
   Eye,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  Lock,
 } from "lucide-react";
 import Link from "next/link";
 import { api, swrFetcher } from "@/lib/api";
@@ -20,19 +24,32 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { ReleaseNoteCard } from "@/components/whats-new/release-note-card";
 import { useUser } from "@/hooks/use-user";
 import { cn, relativeTime } from "@/lib/utils";
-import { Lock } from "lucide-react";
-import type { ReleaseAdminResponse, DraftSuggestionResponse } from "@/lib/types";
+import type {
+  ReleaseAdminResponse,
+  DraftSuggestionResponse,
+  Highlight,
+  HighlightCategory,
+} from "@/lib/types";
 
 const LIST_KEY = "/api/v1/admin/releases";
+const MAX_HIGHLIGHTS = 20;
+const MAX_HIGHLIGHT_TEXT = 140;
+const MAX_SUMMARY = 400;
+
+const CATEGORY_OPTIONS: { value: HighlightCategory; label: string }[] = [
+  { value: "new", label: "NEW" },
+  { value: "improved", label: "IMPROVED" },
+  { value: "fixed", label: "FIXED" },
+];
 
 export default function ReleaseNoteEditPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { isAdmin, isLoading: userLoading } = useUser();
 
-  // Fetch list and find by id — no single-item endpoint exists.
   const {
     data: list,
     isLoading: listLoading,
@@ -43,13 +60,21 @@ export default function ReleaseNoteEditPage() {
 
   // Local form state
   const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
+  const [summary, setSummary] = useState("");
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  // Legacy body — preserved for already-published releases that pre-date
+  // the structured shape. Editable so admins can clear / migrate.
+  const [body, setBody] = useState<string>("");
+  const [showLegacyBody, setShowLegacyBody] = useState(false);
 
   // Seed once the release loads
   useEffect(() => {
     if (release) {
       setTitle(release.title);
-      setBody(release.body);
+      setSummary(release.summary ?? "");
+      setHighlights(release.highlights ?? []);
+      setBody(release.body ?? "");
+      setShowLegacyBody(!!release.body && release.body.trim().length > 0);
     }
   }, [release?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -59,7 +84,14 @@ export default function ReleaseNoteEditPage() {
   const [regenerating, setRegenerating] = useState(false);
 
   const isPublished = release?.status === "published";
-  const canPublish = !isPublished && title.trim().length > 0 && body.trim().length > 0;
+
+  // Strict publish gate matches backend: title + summary + ≥1 highlight.
+  const canPublish =
+    !isPublished &&
+    title.trim().length > 0 &&
+    summary.trim().length > 0 &&
+    highlights.length > 0 &&
+    highlights.every((h) => h.text.trim().length > 0);
 
   if (userLoading || listLoading) {
     return (
@@ -90,11 +122,39 @@ export default function ReleaseNoteEditPage() {
     );
   }
 
+  // ── Highlight row helpers ──────────────────────────────────────────────
+  const addHighlight = () => {
+    if (highlights.length >= MAX_HIGHLIGHTS) return;
+    setHighlights((prev) => [...prev, { category: "improved", text: "" }]);
+  };
+
+  const removeHighlight = (idx: number) => {
+    setHighlights((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const updateHighlight = (idx: number, patch: Partial<Highlight>) => {
+    setHighlights((prev) =>
+      prev.map((h, i) => (i === idx ? { ...h, ...patch } : h)),
+    );
+  };
+
+  // ── Mutations ───────────────────────────────────────────────────────────
+  const buildPayload = () => ({
+    title,
+    summary: summary || null,
+    // Backend coerces empty text to validation failure; we strip here too
+    // so saving never persists junk rows.
+    highlights: highlights
+      .filter((h) => h.text.trim().length > 0)
+      .map((h) => ({ category: h.category, text: h.text.trim() })),
+    body: body || null,
+  });
+
   const handleSave = async () => {
     if (!release) return;
     setSaving(true);
     try {
-      await api.patch(`${LIST_KEY}/${release.id}`, { title, body });
+      await api.patch(`${LIST_KEY}/${release.id}`, buildPayload());
       await mutate();
       toast.success("Draft saved.");
     } catch {
@@ -108,12 +168,23 @@ export default function ReleaseNoteEditPage() {
     if (!release) return;
     setPublishing(true);
     try {
+      // Save first so the publish gate sees the latest local edits.
+      await api.patch(`${LIST_KEY}/${release.id}`, buildPayload());
       await api.post(`${LIST_KEY}/${release.id}/publish`);
       await mutate();
       toast.success("Release published! Staff will see the What's New modal on next load.");
       router.push("/settings/release-notes");
-    } catch {
-      toast.error("Failed to publish. It may already be published.");
+    } catch (err: unknown) {
+      const message = (err as Error)?.message ?? "";
+      if (message === "release_summary_required") {
+        toast.error("Add a summary before publishing.");
+      } else if (message === "release_highlights_required") {
+        toast.error("Add at least one highlight before publishing.");
+      } else if (message === "release_title_required") {
+        toast.error("Add a title before publishing.");
+      } else {
+        toast.error(`Failed to publish: ${message || "unknown error"}.`);
+      }
     } finally {
       setPublishing(false);
       setShowPublishConfirm(false);
@@ -134,17 +205,27 @@ export default function ReleaseNoteEditPage() {
         return;
       }
 
+      // Local state first — replaces title/summary/highlights atomically
+      // even before the PATCH lands.
+      setTitle(suggestion.title_suggestion);
+      setSummary(suggestion.summary_suggestion);
+      setHighlights(suggestion.highlights_suggestion);
+
       await api.patch(`${LIST_KEY}/${release.id}`, {
         title: suggestion.title_suggestion,
-        body: suggestion.body_suggestion,
+        summary: suggestion.summary_suggestion || null,
+        highlights: suggestion.highlights_suggestion,
       });
-      setTitle(suggestion.title_suggestion);
-      setBody(suggestion.body_suggestion);
       await mutate();
-      toast.success("Draft regenerated from commits.");
+
+      if (suggestion.low_confidence) {
+        toast.warning(
+          "AI returned an unstructured response. Please review and add highlights manually.",
+        );
+      } else {
+        toast.success("Draft regenerated from commits.");
+      }
     } catch (err: unknown) {
-      // api.ts throws ApiError(status, message) where `message` is the
-      // backend's response.detail field.
       const message = (err as Error)?.message ?? "";
       if (message === "github_not_configured") {
         toast.error("GitHub auto-fetch isn't configured.");
@@ -157,6 +238,9 @@ export default function ReleaseNoteEditPage() {
       setRegenerating(false);
     }
   };
+
+  const summaryLen = summary.length;
+  const summaryOver = summaryLen > MAX_SUMMARY;
 
   return (
     <div className="space-y-4">
@@ -203,6 +287,11 @@ export default function ReleaseNoteEditPage() {
                 size="sm"
                 onClick={() => setShowPublishConfirm(true)}
                 disabled={!canPublish || saving || regenerating}
+                title={
+                  canPublish
+                    ? "Publish this release"
+                    : "Publish requires title + summary + at least one highlight"
+                }
               >
                 <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
                 Publish
@@ -249,34 +338,197 @@ export default function ReleaseNoteEditPage() {
               onChange={(e) => setTitle(e.target.value)}
               disabled={isPublished}
               placeholder="e.g. What's New in May 2025"
+              maxLength={120}
               className={cn(isPublished && "opacity-60 cursor-not-allowed")}
             />
           </div>
 
           <div>
             <label
-              htmlFor="release-body"
+              htmlFor="release-summary"
               className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5"
             >
-              Body (Markdown)
+              Summary
             </label>
             <Textarea
-              id="release-body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
+              id="release-summary"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
               disabled={isPublished}
-              placeholder="Write release notes in Markdown. Use ## headings, **bold**, and bullet lists."
-              rows={18}
+              placeholder="1-2 sentences describing what staff will notice this release."
+              rows={3}
               className={cn(
-                "font-mono text-sm resize-none",
+                "text-sm resize-none",
                 isPublished && "opacity-60 cursor-not-allowed",
               )}
             />
+            <p
+              className={cn(
+                "text-xs mt-1 tabular-nums",
+                summaryOver ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {summaryLen} / {MAX_SUMMARY}
+            </p>
           </div>
+
+          {/* Highlights list */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Highlights{" "}
+                <span className="text-muted-foreground/70 normal-case font-normal">
+                  ({highlights.length}/{MAX_HIGHLIGHTS})
+                </span>
+              </label>
+              {!isPublished && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addHighlight}
+                  disabled={highlights.length >= MAX_HIGHLIGHTS}
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  Add
+                </Button>
+              )}
+            </div>
+
+            {highlights.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border p-4 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No highlights yet.
+                </p>
+                {!isPublished && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Add at least one before publishing — it&apos;s what staff see as a chip.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {highlights.map((h, i) => {
+                  const overLimit = h.text.length > MAX_HIGHLIGHT_TEXT;
+                  return (
+                    <li
+                      key={i}
+                      className="flex items-start gap-2 rounded-lg border border-border bg-card p-2"
+                    >
+                      <select
+                        value={h.category}
+                        onChange={(e) =>
+                          updateHighlight(i, {
+                            category: e.target.value as HighlightCategory,
+                          })
+                        }
+                        disabled={isPublished}
+                        className={cn(
+                          "h-9 rounded-md border border-input bg-background px-2 text-xs font-semibold uppercase tracking-wider shrink-0",
+                          "focus:outline-none focus:ring-2 focus:ring-ring",
+                          isPublished && "opacity-60 cursor-not-allowed",
+                        )}
+                        aria-label="Highlight category"
+                      >
+                        {CATEGORY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex-1 min-w-0">
+                        <Input
+                          value={h.text}
+                          onChange={(e) =>
+                            updateHighlight(i, { text: e.target.value })
+                          }
+                          disabled={isPublished}
+                          placeholder="Lead with a verb — adds, speeds up, fixes…"
+                          maxLength={MAX_HIGHLIGHT_TEXT + 20}
+                          className={cn(
+                            "h-9 text-sm",
+                            overLimit && "border-destructive",
+                          )}
+                        />
+                        {h.text.length > 100 && (
+                          <p
+                            className={cn(
+                              "text-[10px] mt-0.5 tabular-nums",
+                              overLimit
+                                ? "text-destructive"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {h.text.length} / {MAX_HIGHLIGHT_TEXT}
+                          </p>
+                        )}
+                      </div>
+                      {!isPublished && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeHighlight(i)}
+                          className="h-9 w-9 p-0 text-muted-foreground hover:text-destructive shrink-0"
+                          aria-label="Remove highlight"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          {/* Legacy body — collapsed by default unless content present */}
+          {(body || showLegacyBody) && (
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <button
+                type="button"
+                onClick={() => setShowLegacyBody((v) => !v)}
+                className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground"
+              >
+                {showLegacyBody ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+                Legacy markdown body{" "}
+                {body && (
+                  <span className="text-muted-foreground/70 normal-case font-normal">
+                    ({body.length} chars)
+                  </span>
+                )}
+              </button>
+              {showLegacyBody && (
+                <>
+                  <Textarea
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    disabled={isPublished}
+                    placeholder="Legacy markdown body — only rendered when no highlights are set. Migrate content into highlights above."
+                    rows={6}
+                    className={cn(
+                      "font-mono text-xs resize-none mt-2",
+                      isPublished && "opacity-60 cursor-not-allowed",
+                    )}
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Legacy body is shown as a fallback only when there are no
+                    highlights. Publishing requires highlights — once you add
+                    them, the body is hidden from staff.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
 
           {release && (
             <p className="text-xs text-muted-foreground">
-              Created by {release.created_by.name} · Last updated {relativeTime(release.updated_at)}
+              Created by {release.created_by.name} · Last updated{" "}
+              {relativeTime(release.updated_at)}
             </p>
           )}
         </div>
@@ -287,21 +539,16 @@ export default function ReleaseNoteEditPage() {
             <Eye className="w-3.5 h-3.5" />
             Preview
           </div>
-          <div className="bg-card border border-border rounded-xl p-5 min-h-[300px]">
-            {title ? (
-              <h2 className="text-lg font-bold text-foreground mb-3">{title}</h2>
-            ) : (
-              <p className="text-sm text-muted-foreground italic mb-3">Title will appear here…</p>
-            )}
-            {body ? (
-              <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
-                <ReactMarkdown>{body}</ReactMarkdown>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground italic">
-                Body preview will appear here as you type…
-              </p>
-            )}
+          <div className="sticky top-4">
+            <ReleaseNoteCard
+              title={title}
+              summary={summary}
+              highlights={highlights.filter(
+                (h) => h.text.trim().length > 0,
+              )}
+              body={body}
+              publishedAt={release?.published_at ?? new Date().toISOString()}
+            />
           </div>
         </div>
       </div>

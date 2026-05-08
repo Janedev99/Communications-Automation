@@ -59,12 +59,27 @@ def _make_authenticated_client(app_instance, user: User) -> TestClient:
     return tc
 
 
-def _make_draft_release(*, created_by: User, title: str = "Publish Test Draft") -> Release:
+def _make_draft_release(
+    *,
+    created_by: User,
+    title: str = "Publish Test Draft",
+    summary: str | None = "Some summary about staff-visible changes.",
+    highlights: list[dict] | None = None,
+) -> Release:
+    """Make a draft release with VALID structured fields so publish succeeds.
+
+    Tests that exercise the strict gate (missing summary / no highlights)
+    pass overrides explicitly.
+    """
+    if highlights is None:
+        highlights = [{"category": "new", "text": "Adds publish-flow test capability"}]
     db = _db_mod.SessionLocal()
     try:
         rel = Release(
             title=title,
-            body="## draft body for publish test",
+            body=None,
+            summary=summary,
+            highlights=highlights,
             status=ReleaseStatus.draft,
             created_by_id=created_by.id,
             published_at=None,
@@ -82,7 +97,9 @@ def _make_published_release(*, created_by: User, title: str = "Publish Test Publ
     try:
         rel = Release(
             title=title,
-            body="## published body for publish test",
+            body=None,
+            summary="Already-published summary",
+            highlights=[{"category": "fixed", "text": "Already published"}],
             status=ReleaseStatus.published,
             created_by_id=created_by.id,
             # Backdate so it never appears as "latest" for other test modules
@@ -196,3 +213,64 @@ def test_publish_requires_csrf(client):
     """Request without CSRF token returns 401 or 403."""
     res = client.post(f"/api/v1/admin/releases/{uuid.uuid4()}/publish")
     assert res.status_code in (401, 403)
+
+
+# ─── Strict publish gate ────────────────────────────────────────────────────
+
+
+def test_publish_422_when_summary_missing(app_instance):
+    """A draft with no summary cannot be published — 422 release_summary_required."""
+    admin = _make_user(email="pub-admin-no-summary@example.com", role=UserRole.admin)
+    draft = _make_draft_release(
+        created_by=admin,
+        title="No Summary Draft",
+        summary=None,
+        highlights=[{"category": "new", "text": "Has highlight but no summary"}],
+    )
+
+    tc = _make_authenticated_client(app_instance, admin)
+    res = tc.post(f"/api/v1/admin/releases/{draft.id}/publish")
+
+    assert res.status_code == 422
+    assert res.json()["detail"] == "release_summary_required"
+
+    # Status unchanged.
+    after = _get_release(draft.id)
+    assert after is not None and after.status == ReleaseStatus.draft
+
+
+def test_publish_422_when_highlights_empty(app_instance):
+    """A draft with empty highlights cannot be published — 422 release_highlights_required."""
+    admin = _make_user(email="pub-admin-no-highlights@example.com", role=UserRole.admin)
+    draft = _make_draft_release(
+        created_by=admin,
+        title="No Highlights Draft",
+        summary="Has summary but no highlights",
+        highlights=[],
+    )
+
+    tc = _make_authenticated_client(app_instance, admin)
+    res = tc.post(f"/api/v1/admin/releases/{draft.id}/publish")
+
+    assert res.status_code == 422
+    assert res.json()["detail"] == "release_highlights_required"
+
+    after = _get_release(draft.id)
+    assert after is not None and after.status == ReleaseStatus.draft
+
+
+def test_publish_422_when_summary_only_whitespace(app_instance):
+    """Whitespace-only summary fails the gate the same as None."""
+    admin = _make_user(email="pub-admin-ws-summary@example.com", role=UserRole.admin)
+    draft = _make_draft_release(
+        created_by=admin,
+        title="WS Summary Draft",
+        summary="   \n  \t  ",
+        highlights=[{"category": "fixed", "text": "Has a real highlight"}],
+    )
+
+    tc = _make_authenticated_client(app_instance, admin)
+    res = tc.post(f"/api/v1/admin/releases/{draft.id}/publish")
+
+    assert res.status_code == 422
+    assert res.json()["detail"] == "release_summary_required"

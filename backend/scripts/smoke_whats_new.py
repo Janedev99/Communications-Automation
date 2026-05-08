@@ -268,12 +268,18 @@ def main() -> int:
         print(f"     {DIM}No accumulated releases to clear{RESET}")
 
     # -- 5. Create a draft (manual_only) ---------------------------------------
+    # Uses the structured shape (summary + highlights) so the publish step
+    # downstream passes the strict gate (title + summary + ≥1 highlight).
     log_step("POST /admin/releases - create draft 1 (manual_only)")
     res = admin_client.post(
         "/api/v1/admin/releases",
         json={
             "title": "Smoke draft 1",
-            "body": "## What changed\n- smoke-test draft body 1",
+            "summary": "Smoke-test summary about what staff will notice.",
+            "highlights": [
+                {"category": "new", "text": "Smoke-test new highlight"},
+                {"category": "fixed", "text": "Smoke-test fixed highlight"},
+            ],
             "generated_from": "manual_only",
         },
         headers=admin_headers,
@@ -393,7 +399,10 @@ def main() -> int:
         "/api/v1/admin/releases",
         json={
             "title": "Smoke draft 2",
-            "body": "## Second release\nshould be hidden by hide-forever",
+            "summary": "Second release summary — should be hidden by hide-forever.",
+            "highlights": [
+                {"category": "improved", "text": "Second release improvement"},
+            ],
             "generated_from": "manual_only",
         },
         headers=admin_headers,
@@ -471,9 +480,15 @@ def main() -> int:
             expect(body["commit_count"], 2, "commit_count (chore filtered out)")
             expect(body["commit_sha_at_release"], None, "commit_sha_at_release None")
             expect_truthy(body["title_suggestion"], "title_suggestion non-empty")
-            expect_truthy(body["body_suggestion"], "body_suggestion non-empty")
+            expect_truthy("summary_suggestion" in body, "summary_suggestion field present")
+            expect_truthy("highlights_suggestion" in body, "highlights_suggestion field present")
+            expect_truthy(
+                isinstance(body["highlights_suggestion"], list),
+                "highlights_suggestion is a list",
+            )
             expect_truthy("low_confidence" in body, "low_confidence field present")
             print(f"     {DIM}LLM produced title: {body['title_suggestion'][:80]}{RESET}")
+            print(f"     {DIM}Highlights: {len(body['highlights_suggestion'])}{RESET}")
 
     log_step("POST /admin/releases/draft-from-commits - github_api without GITHUB_TOKEN")
     res = admin_client.post(
@@ -507,7 +522,8 @@ def main() -> int:
             body = res.json()
             expect(body["commit_count"], 0, "commit_count zero")
             expect(body["title_suggestion"], "", "title_suggestion empty")
-            expect(body["body_suggestion"], "", "body_suggestion empty")
+            expect(body["summary_suggestion"], "", "summary_suggestion empty")
+            expect(body["highlights_suggestion"], [], "highlights_suggestion empty")
             expect(body["low_confidence"], False, "low_confidence false on zero-count")
 
     log_step("Staff hitting draft-from-commits - expect 403")

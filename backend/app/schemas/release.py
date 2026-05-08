@@ -3,9 +3,24 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.release import GeneratedFromSource, ReleaseStatus
+from app.models.release import (
+    GeneratedFromSource,
+    HighlightCategory,
+    ReleaseStatus,
+)
+
+
+# ── Highlights ───────────────────────────────────────────────────────────────
+
+
+class Highlight(BaseModel):
+    """One row in a release's highlights list — drives chip rendering."""
+    model_config = ConfigDict(use_enum_values=True)
+
+    category: HighlightCategory
+    text: str = Field(min_length=1, max_length=140)
 
 
 # ── User-facing ──────────────────────────────────────────────────────────────
@@ -14,7 +29,11 @@ from app.models.release import GeneratedFromSource, ReleaseStatus
 class LatestUnreadResponse(BaseModel):
     id: uuid.UUID
     title: str
-    body: str
+    # body is preserved for legacy releases that pre-date the structured
+    # shape; new releases set summary + highlights and may set body=None.
+    body: str | None
+    summary: str | None
+    highlights: list[Highlight]
     published_at: datetime
 
 
@@ -38,7 +57,9 @@ class CreatedByBrief(BaseModel):
 class ReleaseAdminResponse(BaseModel):
     id: uuid.UUID
     title: str
-    body: str
+    body: str | None
+    summary: str | None
+    highlights: list[Highlight]
     status: ReleaseStatus
     generated_from: GeneratedFromSource | None
     commit_sha_at_release: str | None
@@ -50,14 +71,22 @@ class ReleaseAdminResponse(BaseModel):
 
 class CreateReleaseRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    body: str = Field(min_length=1)
+    # At least one of body / (summary + highlights) must be present —
+    # enforced in the API layer because the rule is cross-field. The
+    # publish endpoint additionally requires summary + highlights≥1.
+    body: str | None = Field(default=None)
+    summary: str | None = Field(default=None, max_length=400)
+    highlights: list[Highlight] = Field(default_factory=list, max_length=20)
     generated_from: GeneratedFromSource | None = None
     commit_sha_at_release: str | None = Field(default=None, max_length=40)
 
 
 class UpdateReleaseRequest(BaseModel):
+    """All fields optional — patch semantics. Pass [] for highlights to clear."""
     title: str | None = Field(default=None, min_length=1, max_length=120)
-    body: str | None = Field(default=None, min_length=1)
+    body: str | None = Field(default=None)
+    summary: str | None = Field(default=None, max_length=400)
+    highlights: list[Highlight] | None = Field(default=None, max_length=20)
 
 
 # ── AI generation ────────────────────────────────────────────────────────────
@@ -75,7 +104,8 @@ class DraftFromCommitsManualRequest(BaseModel):
 
 class DraftSuggestionResponse(BaseModel):
     title_suggestion: str
-    body_suggestion: str
+    summary_suggestion: str
+    highlights_suggestion: list[Highlight]
     commit_count: int
     commit_sha_at_release: str | None
     generated_from: GeneratedFromSource

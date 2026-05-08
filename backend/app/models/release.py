@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Enum,
@@ -28,6 +29,13 @@ class GeneratedFromSource(str, enum.Enum):
     manual_only = "manual_only"
 
 
+class HighlightCategory(str, enum.Enum):
+    """Category badge shown on each highlight chip in the modal/archive."""
+    new = "new"
+    improved = "improved"
+    fixed = "fixed"
+
+
 class Release(Base):
     __tablename__ = "releases"
 
@@ -35,7 +43,17 @@ class Release(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
     )
     title: Mapped[str] = mapped_column(String(120), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # body is preserved for backward compat with already-published releases
+    # that pre-date the structured (summary + highlights) shape. New
+    # publishes are blocked from body-only mode by API-layer validation.
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # list[{category: "new"|"improved"|"fixed", text: str}] — see
+    # HighlightCategory enum and the Pydantic Highlight schema for the
+    # validated shape. Stored as generic JSON (works on Postgres + SQLite).
+    highlights: Mapped[list[dict]] = mapped_column(
+        JSON, nullable=False, default=list,
+    )
     status: Mapped[ReleaseStatus] = mapped_column(
         Enum(ReleaseStatus, name="release_status"),
         nullable=False, default=ReleaseStatus.draft, index=True,

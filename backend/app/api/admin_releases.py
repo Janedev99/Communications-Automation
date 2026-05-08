@@ -49,6 +49,8 @@ def _to_admin_response(rel: Release) -> ReleaseAdminResponse:
         id=rel.id,
         title=rel.title,
         body=rel.body,
+        summary=rel.summary,
+        highlights=rel.highlights or [],
         status=rel.status,
         generated_from=rel.generated_from,
         commit_sha_at_release=rel.commit_sha_at_release,
@@ -84,10 +86,28 @@ def create_release(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> ReleaseAdminResponse:
-    """Create a new draft release."""
+    """Create a new draft release.
+
+    Drafts may be created with any combination of body / summary / highlights —
+    the publish endpoint enforces the gate (title + summary + ≥1 highlight).
+    Drafts with neither body nor summary nor highlights are rejected here
+    so the admin can't end up with a totally empty record.
+    """
+    has_legacy_body = bool(payload.body and payload.body.strip())
+    has_structured = bool(
+        (payload.summary and payload.summary.strip()) or payload.highlights
+    )
+    if not has_legacy_body and not has_structured:
+        raise HTTPException(
+            status_code=422,
+            detail="release_must_have_body_or_summary_or_highlights",
+        )
+
     rel = Release(
         title=payload.title,
         body=payload.body,
+        summary=payload.summary,
+        highlights=[h.model_dump() for h in payload.highlights],
         status=ReleaseStatus.draft,
         generated_from=payload.generated_from,
         commit_sha_at_release=payload.commit_sha_at_release,
@@ -120,6 +140,11 @@ def update_release(
         rel.title = payload.title
     if payload.body is not None:
         rel.body = payload.body
+    if payload.summary is not None:
+        rel.summary = payload.summary
+    if payload.highlights is not None:
+        # Pass [] explicitly to clear; passing None means "leave alone".
+        rel.highlights = [h.model_dump() for h in payload.highlights]
     db.commit()
     db.refresh(rel)
     return _to_admin_response(rel)
@@ -156,12 +181,26 @@ def publish_release(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ) -> ReleaseAdminResponse:
-    """Publish a draft release. Sets status=published and published_at=now(UTC). 409 if already published."""
+    """Publish a draft release. Sets status=published and published_at=now(UTC).
+
+    Strict gate (per the structured-shape adoption): a release must have a
+    non-empty title, a non-empty summary, and at least one highlight. Body
+    is optional and exists only for backward compat with legacy releases.
+
+    Returns 422 if the gate fails, 404 if not found, 409 if already published.
+    """
     rel = db.query(Release).filter_by(id=release_id).one_or_none()
     if rel is None:
         raise HTTPException(status_code=404, detail="release_not_found")
     if rel.status == ReleaseStatus.published:
         raise HTTPException(status_code=409, detail="release_already_published")
+
+    if not rel.title or not rel.title.strip():
+        raise HTTPException(status_code=422, detail="release_title_required")
+    if not rel.summary or not rel.summary.strip():
+        raise HTTPException(status_code=422, detail="release_summary_required")
+    if not rel.highlights or len(rel.highlights) < 1:
+        raise HTTPException(status_code=422, detail="release_highlights_required")
 
     rel.status = ReleaseStatus.published
     rel.published_at = datetime.now(timezone.utc)
@@ -185,7 +224,7 @@ def draft_from_commits(
 ) -> DraftSuggestionResponse:
     """Generate a release-notes suggestion from commits (no DB write).
 
-    Returns DraftSuggestionResponse with title/body suggestion + metadata.
+    Returns DraftSuggestionResponse with title + summary + highlights[] + metadata.
     Admin reviews/edits in the form, then explicitly POSTs to /admin/releases to create.
     """
     # AI check first — if no LLM is configured, neither path can work.
@@ -255,7 +294,8 @@ def draft_from_commits(
     if not filtered:
         return DraftSuggestionResponse(
             title_suggestion="",
-            body_suggestion="",
+            summary_suggestion="",
+            highlights_suggestion=[],
             commit_count=0,
             commit_sha_at_release=latest_sha,
             generated_from=generated_from_label,
@@ -271,7 +311,8 @@ def draft_from_commits(
 
     return DraftSuggestionResponse(
         title_suggestion=suggestion.title,
-        body_suggestion=suggestion.body,
+        summary_suggestion=suggestion.summary,
+        highlights_suggestion=suggestion.highlights,
         commit_count=len(filtered),
         commit_sha_at_release=latest_sha,
         generated_from=generated_from_label,

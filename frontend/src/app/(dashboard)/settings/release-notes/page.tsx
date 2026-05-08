@@ -22,7 +22,7 @@ import { ErrorState } from "@/components/shared/error-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { useUser } from "@/hooks/use-user";
 import { useRouter } from "next/navigation";
-import { cn, relativeTime } from "@/lib/utils";
+import { relativeTime } from "@/lib/utils";
 import { Lock } from "lucide-react";
 import type { ReleaseAdminResponse, DraftSuggestionResponse } from "@/lib/types";
 
@@ -85,12 +85,19 @@ export default function ReleaseNotesListPage() {
     }
     const created = await api.post<ReleaseAdminResponse>(KEY, {
       title: suggestion.title_suggestion,
-      body: suggestion.body_suggestion,
+      summary: suggestion.summary_suggestion || null,
+      highlights: suggestion.highlights_suggestion,
       generated_from: suggestion.generated_from,
       commit_sha_at_release: suggestion.commit_sha_at_release,
     });
     await mutate();
-    toast.success("Draft created from commits.");
+    if (suggestion.low_confidence) {
+      toast.warning(
+        "Draft created, but the AI response was unstructured. Review and add highlights manually.",
+      );
+    } else {
+      toast.success("Draft created from commits.");
+    }
     router.push(`/settings/release-notes/${created.id}`);
   };
 
@@ -156,11 +163,13 @@ export default function ReleaseNotesListPage() {
   const handleNewDraft = async () => {
     setCreatingDraft(true);
     try {
-      // Body must be non-empty per the backend's Pydantic min_length=1.
-      // Seed a markdown placeholder; the editor will let the admin replace it.
+      // Backend requires at least one of body / summary / highlights to be
+      // non-empty on create. Seed summary so the editor opens with a valid
+      // draft; admin replaces it before adding highlights and publishing.
       const created = await api.post<ReleaseAdminResponse>(KEY, {
         title: "Untitled release",
-        body: "# What's new\n\n_Replace this with a short summary of the changes._",
+        summary: "Replace this with a short summary of what staff will notice.",
+        highlights: [],
         generated_from: "manual_only",
       });
       await mutate();

@@ -62,6 +62,8 @@ def get_latest_unread(
         id=release.id,
         title=release.title,
         body=release.body,
+        summary=release.summary,
+        highlights=release.highlights or [],
         published_at=release.published_at,
     )
 

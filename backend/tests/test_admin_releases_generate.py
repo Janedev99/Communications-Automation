@@ -118,7 +118,11 @@ def test_github_path_happy(app_instance):
     ]
     suggestion = ReleaseNotesSuggestion(
         title="Smarter Drafts and Fixes",
-        body="## What's New\n- Smarter drafts\n- Fixed pagination",
+        summary="Drafts are smarter and pagination is fixed.",
+        highlights=[
+            {"category": "improved", "text": "Smarter drafts"},
+            {"category": "fixed", "text": "Fixed pagination"},
+        ],
         low_confidence=False,
     )
 
@@ -136,7 +140,11 @@ def test_github_path_happy(app_instance):
     assert res.status_code == 200
     data = res.json()
     assert data["title_suggestion"] == "Smarter Drafts and Fixes"
-    assert data["body_suggestion"] == "## What's New\n- Smarter drafts\n- Fixed pagination"
+    assert data["summary_suggestion"] == "Drafts are smarter and pagination is fixed."
+    assert data["highlights_suggestion"] == [
+        {"category": "improved", "text": "Smarter drafts"},
+        {"category": "fixed", "text": "Fixed pagination"},
+    ]
     assert data["commit_count"] == 2
     # SHA of the most-recent *included* commit (feat: smarter drafts = aaa111)
     assert data["commit_sha_at_release"] == "aaa111"
@@ -169,7 +177,8 @@ def test_github_path_no_user_facing_commits_returns_zero_count(app_instance):
     data = res.json()
     assert data["commit_count"] == 0
     assert data["title_suggestion"] == ""
-    assert data["body_suggestion"] == ""
+    assert data["summary_suggestion"] == ""
+    assert data["highlights_suggestion"] == []
     assert data["low_confidence"] is False
     # AI should NOT have been called — nothing to summarize
     mock_gen.assert_not_called()
@@ -220,7 +229,8 @@ def test_github_path_default_since_sha_uses_last_published(app_instance):
     ]
     suggestion = ReleaseNotesSuggestion(
         title="Default SHA Test",
-        body="- New feature",
+        summary="A new feature",
+        highlights=[{"category": "new", "text": "New feature"}],
         low_confidence=False,
     )
 
@@ -276,7 +286,11 @@ def test_manual_paste_path_works(app_instance):
 
     suggestion = ReleaseNotesSuggestion(
         title="Manual Paste Release",
-        body="- Feature A\n- Bug fix B",
+        summary="A new feature and a bug fix.",
+        highlights=[
+            {"category": "new", "text": "Feature A"},
+            {"category": "fixed", "text": "Bug fix B"},
+        ],
         low_confidence=False,
     )
 
@@ -307,7 +321,8 @@ def test_manual_paste_works_without_github_configured(app_instance):
 
     suggestion = ReleaseNotesSuggestion(
         title="No GitHub Needed",
-        body="- Feature X",
+        summary="Feature X added.",
+        highlights=[{"category": "new", "text": "Feature X"}],
         low_confidence=False,
     )
 
@@ -389,7 +404,8 @@ def test_low_confidence_passes_through(app_instance):
 
     suggestion = ReleaseNotesSuggestion(
         title="Updates on today",
-        body="Some raw output that couldn't be parsed.",
+        summary="Some unstructured raw output that couldn't be parsed.",
+        highlights=[],
         low_confidence=True,
     )
 

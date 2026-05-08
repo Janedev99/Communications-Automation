@@ -22,4 +22,10 @@ from app.models.audit import AuditLog  # noqa: F401
 from app.models.ai_budget import AIBudgetUsage  # noqa: F401
 from app.models.tier_rule import TierRule  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401
-from app.models.release import Release, UserReleaseDismissal, ReleaseStatus, GeneratedFromSource  # noqa: F401
+from app.models.release import (  # noqa: F401
+    Release,
+    UserReleaseDismissal,
+    ReleaseStatus,
+    GeneratedFromSource,
+    HighlightCategory,
+)

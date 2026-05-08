@@ -387,10 +387,20 @@ export type ReleaseStatus = "draft" | "published";
 
 export type GeneratedFromSource = "github_api" | "manual_paste" | "manual_only";
 
+export type HighlightCategory = "new" | "improved" | "fixed";
+
+export interface Highlight {
+  category: HighlightCategory;
+  text: string;
+}
+
 export interface LatestUnreadResponse {
   id: string;
   title: string;
-  body: string;
+  /** Legacy markdown body — preserved for releases pre-dating the structured shape. */
+  body: string | null;
+  summary: string | null;
+  highlights: Highlight[];
   published_at: string;
 }
 
@@ -403,7 +413,9 @@ export interface CreatedByBrief {
 export interface ReleaseAdminResponse {
   id: string;
   title: string;
-  body: string;
+  body: string | null;
+  summary: string | null;
+  highlights: Highlight[];
   status: ReleaseStatus;
   generated_from: GeneratedFromSource | null;
   commit_sha_at_release: string | null;
@@ -415,7 +427,8 @@ export interface ReleaseAdminResponse {
 
 export interface DraftSuggestionResponse {
   title_suggestion: string;
-  body_suggestion: string;
+  summary_suggestion: string;
+  highlights_suggestion: Highlight[];
   commit_count: number;
   commit_sha_at_release: string | null;
   generated_from: GeneratedFromSource;

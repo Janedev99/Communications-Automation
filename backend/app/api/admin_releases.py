@@ -8,6 +8,7 @@ DELETE /api/v1/admin/releases/{release_id} — delete a draft (published are imm
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from sqlalchemy.orm import Session
@@ -125,3 +126,27 @@ def delete_release(
         raise HTTPException(status_code=409, detail="release_is_published_immutable")
     db.delete(rel)
     db.commit()
+
+
+@router.post(
+    "/{release_id}/publish",
+    response_model=ReleaseAdminResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def publish_release(
+    release_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> ReleaseAdminResponse:
+    """Publish a draft release. Sets status=published and published_at=now(UTC). 409 if already published."""
+    rel = db.query(Release).filter_by(id=release_id).one_or_none()
+    if rel is None:
+        raise HTTPException(status_code=404, detail="release_not_found")
+    if rel.status == ReleaseStatus.published:
+        raise HTTPException(status_code=409, detail="release_already_published")
+
+    rel.status = ReleaseStatus.published
+    rel.published_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(rel)
+    return _to_admin_response(rel)

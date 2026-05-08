@@ -5,37 +5,38 @@ POST   /api/v1/admin/releases                        — create a draft
 PATCH  /api/v1/admin/releases/{release_id}           — update a draft (published are immutable)
 DELETE /api/v1/admin/releases/{release_id}           — delete a draft (published are immutable)
 POST   /api/v1/admin/releases/draft-from-commits     — AI-generate a suggestion (no DB write)
+
+The draft-from-commits endpoint reads commits from a build-time JSON
+snapshot (backend/release-meta.json) instead of calling GitHub or
+asking admins to paste. See app/services/release_meta_file.py and
+scripts/generate_release_meta.py.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Union
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin, require_csrf
-from app.config import get_settings
 from app.models.release import GeneratedFromSource, Release, ReleaseStatus
 from app.models.user import User
 from app.schemas.release import (
     CreateReleaseRequest,
     CreatedByBrief,
-    DraftFromCommitsGitHubRequest,
-    DraftFromCommitsManualRequest,
+    DraftFromCommitsRequest,
     DraftSuggestionResponse,
     ReleaseAdminResponse,
     UpdateReleaseRequest,
 )
-from app.services.github_commits import (
-    Commit,
-    GitHubCommitsService,
-    GitHubError,
-    filter_user_facing,
-    is_github_configured,
-)
+from app.services.github_commits import filter_user_facing
 from app.services.llm_client import LLMError
+from app.services.release_meta_file import (
+    ReleaseMetaUnavailable,
+    commits_since,
+    read_release_meta,
+)
 from app.services.release_notes_ai import (
     generate_release_notes_suggestion,
     is_release_notes_ai_available,
@@ -215,82 +216,58 @@ def publish_release(
     dependencies=[Depends(require_csrf)],
 )
 def draft_from_commits(
-    payload: Annotated[
-        Union[DraftFromCommitsGitHubRequest, DraftFromCommitsManualRequest],
-        Body(discriminator="source"),
-    ],
+    payload: DraftFromCommitsRequest,
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ) -> DraftSuggestionResponse:
-    """Generate a release-notes suggestion from commits (no DB write).
+    """Generate a release-notes suggestion from local commit metadata.
 
-    Returns DraftSuggestionResponse with title + summary + highlights[] + metadata.
-    Admin reviews/edits in the form, then explicitly POSTs to /admin/releases to create.
+    Reads backend/release-meta.json (a build-time snapshot of `git log`),
+    filters to user-facing commits (feat:/fix: prefixes or `[user-facing]`
+    body opt-in token), and asks the configured LLM to produce a
+    title + summary + highlights triple. No DB write — the admin reviews
+    the suggestion and explicitly POSTs to /admin/releases to create.
+
+    Error cases:
+        422 ai_unavailable          — no LLM provider configured
+        422 release_meta_unavailable — meta file missing or unreadable
+        502 llm_error: <detail>      — LLM upstream failure
     """
-    # AI check first — if no LLM is configured, neither path can work.
     if not is_release_notes_ai_available():
         raise HTTPException(status_code=422, detail="ai_unavailable")
 
-    if isinstance(payload, DraftFromCommitsGitHubRequest):
-        if not is_github_configured():
-            raise HTTPException(status_code=422, detail="github_not_configured")
+    try:
+        meta = read_release_meta()
+    except ReleaseMetaUnavailable as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="release_meta_unavailable",
+            headers=None,
+        ) from exc
 
-        settings = get_settings()
-
-        # Pick since_sha: explicit → last published release's SHA → None.
-        since_sha = payload.since_sha
-        if since_sha is None:
-            last_pub = (
-                db.query(Release)
-                .filter(Release.status == ReleaseStatus.published)
-                .order_by(Release.published_at.desc())
-                .first()
-            )
-            since_sha = last_pub.commit_sha_at_release if last_pub else None
-
-        svc = GitHubCommitsService(
-            token=settings.github_token,
-            owner=settings.github_repo_owner,
-            repo=settings.github_repo_name,
+    # Resolve since_sha: explicit → last published release → None (full snapshot).
+    since_sha = payload.since_sha
+    if since_sha is None:
+        last_pub = (
+            db.query(Release)
+            .filter(Release.status == ReleaseStatus.published)
+            .order_by(Release.published_at.desc())
+            .first()
         )
-        try:
-            raw_commits = svc.commits_since(
-                since_sha=since_sha,
-                branch="master",
-                limit=200,
-            )
-        except GitHubError as exc:
-            raise HTTPException(status_code=502, detail=f"github_error: {exc}")
+        since_sha = last_pub.commit_sha_at_release if last_pub else None
 
-        # Track the most-recent fetched SHA BEFORE filtering — this is the
-        # boundary for next time even if everything filters out.
-        latest_sha: str | None = raw_commits[0].sha if raw_commits else None
-        filtered = filter_user_facing(raw_commits)
-        # If anything passed the filter, update latest_sha to the most-recent
-        # included commit (so the next generation starts after what's about to
-        # be published, not at a pre-filter boundary).
-        if filtered:
-            latest_sha = filtered[0].sha
-        generated_from_label = GeneratedFromSource.github_api
+    raw_commits = commits_since(meta, since_sha)
 
-    else:  # manual_paste
-        # Build synthetic Commit objects so filter_user_facing has something
-        # to operate on — manual paste gives subjects only, no SHAs.
-        synthetic = [
-            Commit(
-                sha="",
-                subject=line,
-                author_name="",
-                committed_at=None,
-            )
-            for line in payload.commits
-        ]
-        filtered = filter_user_facing(synthetic)
-        latest_sha = None
-        generated_from_label = GeneratedFromSource.manual_paste
+    # Track the most-recent fetched SHA BEFORE filtering — this is the
+    # boundary for next time even if everything filters out.
+    latest_sha: str | None = raw_commits[0].sha if raw_commits else None
+    filtered = filter_user_facing(raw_commits)
+    # If anything passed the filter, update latest_sha to the most-recent
+    # included commit (so the next generation starts after what's about to
+    # be published, not at a pre-filter boundary).
+    if filtered:
+        latest_sha = filtered[0].sha
 
-    # No user-facing commits — return a zero-count response.
-    # Frontend will show "nothing user-facing has shipped" copy.
     if not filtered:
         return DraftSuggestionResponse(
             title_suggestion="",
@@ -298,7 +275,7 @@ def draft_from_commits(
             highlights_suggestion=[],
             commit_count=0,
             commit_sha_at_release=latest_sha,
-            generated_from=generated_from_label,
+            generated_from=GeneratedFromSource.local_meta,
             low_confidence=False,
         )
 
@@ -315,6 +292,6 @@ def draft_from_commits(
         highlights_suggestion=suggestion.highlights,
         commit_count=len(filtered),
         commit_sha_at_release=latest_sha,
-        generated_from=generated_from_label,
+        generated_from=GeneratedFromSource.local_meta,
         low_confidence=suggestion.low_confidence,
     )

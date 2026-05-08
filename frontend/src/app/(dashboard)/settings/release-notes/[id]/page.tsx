@@ -197,7 +197,7 @@ export default function ReleaseNoteEditPage() {
     try {
       const suggestion = await api.post<DraftSuggestionResponse>(
         `${LIST_KEY}/draft-from-commits`,
-        { source: "github_api" },
+        {},
       );
 
       if (suggestion.commit_count === 0) {
@@ -227,8 +227,10 @@ export default function ReleaseNoteEditPage() {
       }
     } catch (err: unknown) {
       const message = (err as Error)?.message ?? "";
-      if (message === "github_not_configured") {
-        toast.error("GitHub auto-fetch isn't configured.");
+      if (message === "release_meta_unavailable") {
+        toast.error(
+          "Build-time commit metadata is missing. Restart the backend to regenerate it.",
+        );
       } else if (message === "ai_unavailable") {
         toast.error("AI is not configured. Set up Groq or another LLM provider.");
       } else {

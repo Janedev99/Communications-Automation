@@ -29,6 +29,12 @@ class Commit:
     subject: str
     author_name: str
     committed_at: datetime | None
+    # Full commit body (everything after the subject line). Optional —
+    # the GitHub API path doesn't fetch bodies (it would cost an extra
+    # call per commit) so this stays empty for that source. The local
+    # release-meta.json path populates it, which lets filter_user_facing
+    # honor the `[user-facing]` opt-in token for non-feat/fix commits.
+    body: str = ""
 
 
 class GitHubError(Exception):
@@ -130,10 +136,18 @@ def is_github_configured() -> bool:
     return bool(settings.github_token)
 
 
-def filter_user_facing(commits: Iterable[Commit]) -> list[Commit]:
-    """Keep only user-facing commits (feat: or fix: prefix, scoped or unscoped).
+_USER_FACING_OPT_IN = "[user-facing]"
 
-    Matches both `feat: x`, `feat(scope): x`, `fix: y`, and `fix(scope): y`.
+
+def filter_user_facing(commits: Iterable[Commit]) -> list[Commit]:
+    """Keep only user-facing commits.
+
+    Inclusion rules (any one is sufficient):
+      - Subject begins with `feat:` or `fix:` (unscoped form)
+      - Subject begins with `feat(scope):` or `fix(scope):` (scoped form)
+      - Commit body contains the literal token `[user-facing]` (escape
+        hatch for chore/refactor/etc. that admins want surfaced anyway)
+
     The repo's conventional-commits style uses scoped prefixes (e.g.
     `feat(seed):`, `fix(drafts):`), so both forms are kept.
     """
@@ -142,7 +156,8 @@ def filter_user_facing(commits: Iterable[Commit]) -> list[Commit]:
         s = c.subject
         if s.startswith(("feat:", "fix:")):
             out.append(c)
-        elif s.startswith(("feat(", "fix(")):
+            continue
+        if s.startswith(("feat(", "fix(")):
             # Require closing paren immediately followed by colon: feat(scope):
             close_paren = s.find(")")
             if (
@@ -151,4 +166,8 @@ def filter_user_facing(commits: Iterable[Commit]) -> list[Commit]:
                 and s[close_paren + 1] == ":"
             ):
                 out.append(c)
+                continue
+        # Escape hatch: any prefix is allowed if the body opts in explicitly.
+        if c.body and _USER_FACING_OPT_IN in c.body:
+            out.append(c)
     return out

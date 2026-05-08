@@ -4,29 +4,17 @@ import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Plus, Wand2, ArrowLeft, Trash2, ArrowRight, FileText } from "lucide-react";
+import { Plus, Wand2, ArrowLeft, Trash2, ArrowRight, FileText, Lock } from "lucide-react";
 import { api, swrFetcher } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/layout/page-header";
 import { ErrorState } from "@/components/shared/error-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { useUser } from "@/hooks/use-user";
 import { useRouter } from "next/navigation";
 import { relativeTime } from "@/lib/utils";
-import { Lock } from "lucide-react";
 import type { ReleaseAdminResponse, DraftSuggestionResponse } from "@/lib/types";
-
-const PASTE_MAX_CHARS = 50_000;
 
 const KEY = "/api/v1/admin/releases";
 
@@ -42,8 +30,6 @@ export default function ReleaseNotesListPage() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ReleaseAdminResponse | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
 
   if (userLoading) {
     return null;
@@ -75,85 +61,49 @@ export default function ReleaseNotesListPage() {
   const drafts = releases.filter((r) => r.status === "draft");
   const published = releases.filter((r) => r.status === "published");
 
-  /** Step 2 of the generate flow: take a successful suggestion, create a
-   *  draft from it, and navigate to the editor. Shared between the
-   *  github_api and manual_paste paths. */
-  const createDraftFromSuggestion = async (suggestion: DraftSuggestionResponse) => {
-    if (suggestion.commit_count === 0) {
-      toast.info("No user-facing commits found in the input.");
-      return;
-    }
-    const created = await api.post<ReleaseAdminResponse>(KEY, {
-      title: suggestion.title_suggestion,
-      summary: suggestion.summary_suggestion || null,
-      highlights: suggestion.highlights_suggestion,
-      generated_from: suggestion.generated_from,
-      commit_sha_at_release: suggestion.commit_sha_at_release,
-    });
-    await mutate();
-    if (suggestion.low_confidence) {
-      toast.warning(
-        "Draft created, but the AI response was unstructured. Review and add highlights manually.",
-      );
-    } else {
-      toast.success("Draft created from commits.");
-    }
-    router.push(`/settings/release-notes/${created.id}`);
-  };
-
+  /** Calls the zero-input draft-from-commits endpoint, which reads the
+   *  build-time release-meta.json snapshot. No GitHub token required, no
+   *  manual paste — same as cappj's pattern. */
   const handleGenerateFromCommits = async () => {
     setGenerating(true);
     try {
-      try {
-        const suggestion = await api.post<DraftSuggestionResponse>(
-          "/api/v1/admin/releases/draft-from-commits",
-          { source: "github_api" },
-        );
-        await createDraftFromSuggestion(suggestion);
-      } catch (err: unknown) {
-        // api.ts throws ApiError(status, message) where `message` is the
-        // backend's response.detail field.
-        const message = (err as Error)?.message ?? "";
-        if (message === "github_not_configured") {
-          // Open the manual-paste fallback dialog instead of failing hard.
-          setPasteOpen(true);
-          return;
-        }
-        if (message === "ai_unavailable") {
-          toast.error("AI is not configured. Set up Groq or another LLM provider.");
-          return;
-        }
-        toast.error(`Failed to generate from commits: ${message || "unknown error"}.`);
-      }
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const handleManualPasteGenerate = async () => {
-    const lines = pasteText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (lines.length === 0) {
-      toast.error("Paste at least one commit message.");
-      return;
-    }
-    setGenerating(true);
-    try {
       const suggestion = await api.post<DraftSuggestionResponse>(
-        "/api/v1/admin/releases/draft-from-commits",
-        { source: "manual_paste", commits: lines },
+        `${KEY}/draft-from-commits`,
+        {},
       );
-      setPasteOpen(false);
-      setPasteText("");
-      await createDraftFromSuggestion(suggestion);
+
+      if (suggestion.commit_count === 0) {
+        toast.info("No user-facing commits since the last release.");
+        return;
+      }
+
+      const created = await api.post<ReleaseAdminResponse>(KEY, {
+        title: suggestion.title_suggestion,
+        summary: suggestion.summary_suggestion || null,
+        highlights: suggestion.highlights_suggestion,
+        generated_from: suggestion.generated_from,
+        commit_sha_at_release: suggestion.commit_sha_at_release,
+      });
+      await mutate();
+
+      if (suggestion.low_confidence) {
+        toast.warning(
+          "Draft created, but the AI response was unstructured. Review and add highlights manually.",
+        );
+      } else {
+        toast.success("Draft created from commits.");
+      }
+      router.push(`/settings/release-notes/${created.id}`);
     } catch (err: unknown) {
       const message = (err as Error)?.message ?? "";
-      if (message === "ai_unavailable") {
+      if (message === "release_meta_unavailable") {
+        toast.error(
+          "Build-time commit metadata is missing. Restart the backend or rebuild to regenerate it.",
+        );
+      } else if (message === "ai_unavailable") {
         toast.error("AI is not configured. Set up Groq or another LLM provider.");
       } else {
-        toast.error(`Failed to generate: ${message || "unknown error"}.`);
+        toast.error(`Failed to generate from commits: ${message || "unknown error"}.`);
       }
     } finally {
       setGenerating(false);
@@ -368,54 +318,6 @@ export default function ReleaseNotesListPage() {
         onConfirm={handleDeleteConfirm}
         loading={deleting}
       />
-
-      {/* Manual-paste fallback dialog (shown when GitHub auto-fetch isn't configured) */}
-      <Dialog open={pasteOpen} onOpenChange={setPasteOpen}>
-        <DialogContent className="sm:max-w-[640px]">
-          <DialogHeader>
-            <DialogTitle>Paste recent commits</DialogTitle>
-            <DialogDescription>
-              GitHub auto-fetch isn&apos;t configured. Paste commit subjects from
-              {" "}
-              <code className="text-[11px] bg-muted px-1 rounded">git log --oneline</code>
-              {" "}
-              (one per line). Only <code className="text-[11px] bg-muted px-1 rounded">feat:</code>{" "}
-              and <code className="text-[11px] bg-muted px-1 rounded">fix:</code> commits will be
-              summarised by the AI.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Textarea
-            value={pasteText}
-            onChange={(e) => setPasteText(e.target.value.slice(0, PASTE_MAX_CHARS))}
-            placeholder={`feat: smarter draft suggestions\nfix: don't drop attachments on resend\nchore: bump deps`}
-            rows={10}
-            className="font-mono text-xs"
-          />
-          <p className="text-xs text-muted-foreground -mt-1">
-            {pasteText.length.toLocaleString()} / {PASTE_MAX_CHARS.toLocaleString()} chars
-          </p>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setPasteOpen(false);
-                setPasteText("");
-              }}
-              disabled={generating}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => void handleManualPasteGenerate()}
-              disabled={generating || pasteText.trim().length === 0}
-            >
-              {generating ? "Generating…" : "Generate"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -26,6 +26,12 @@ openai>=1.50.0,<2.0.0
 # HTTP client (MS Graph, webhooks)
 httpx==0.28.1
 
+# OS-native cert store for HTTPS — required when TLS-intercepting middleware
+# (corporate proxies, AV like Norton) re-signs certs with a private root that
+# certifi's bundle doesn't know about. truststore.inject_into_ssl() is called
+# at app startup so httpx/openai use the OS trust store instead of certifi.
+truststore>=0.10,<1.0
+
 # Email / IMAP
 # imaplib and smtplib are part of stdlib — no extra package needed
 

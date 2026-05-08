@@ -24,6 +24,12 @@ class ReleaseStatus(str, enum.Enum):
 
 
 class GeneratedFromSource(str, enum.Enum):
+    # local_meta is the active path: backend/release-meta.json (generated
+    # at build time from `git log`) feeds the AI drafter without external
+    # services or admin paste.
+    local_meta = "local_meta"
+    # Legacy values — preserved for already-published rows in the DB.
+    # Not emitted by current code paths.
     github_api = "github_api"
     manual_paste = "manual_paste"
     manual_only = "manual_only"

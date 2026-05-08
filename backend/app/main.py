@@ -5,6 +5,22 @@ Registers all routers, middleware, lifespan events, and exception handlers.
 """
 from __future__ import annotations
 
+# ── TLS trust store bootstrap ─────────────────────────────────────────────────
+# Must run before any HTTPS-using import (httpx, openai, anthropic). Tells
+# Python's ssl module to use the OS-native cert store instead of certifi's
+# bundle. Required on machines where TLS-intercepting middleware (corporate
+# proxies, Norton AV's "Web/Mail Shield", Zscaler, etc.) re-signs HTTPS with
+# a private root that certifi doesn't know about. No-op cost on machines
+# without interception — they just keep using their existing trust chain.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    # truststore is in requirements.txt; this fallback only fires if someone
+    # is running an old venv. They'll see TLS errors on intercepted networks
+    # until they reinstall deps.
+    pass
+
 import asyncio
 import contextvars
 import json
@@ -153,12 +169,59 @@ async def _session_cleanup_loop() -> None:
             logger.warning("Session cleanup failed: %s", exc)
 
 
+def _maybe_regen_release_meta() -> None:
+    """In dev, refresh backend/release-meta.json if it's missing or stale.
+
+    The file is consumed by the release-notes "Generate from commits"
+    endpoint. Regenerating on startup means admins never have to think
+    about it locally — the file follows the local git history.
+
+    In production this is a no-op: the Dockerfile build stage runs the
+    script before sealing the runtime image, so the file is already
+    present and the runtime container has no .git/ to read from anyway.
+    """
+    if settings.is_production:
+        return
+    try:
+        from app.services.release_meta_file import DEFAULT_META_PATH
+        # Stale threshold: 5 minutes. Keeps dev frictionless without
+        # re-running git on every reload while uvicorn --reload is active.
+        is_stale = True
+        if DEFAULT_META_PATH.exists():
+            import time
+            age_s = time.time() - DEFAULT_META_PATH.stat().st_mtime
+            is_stale = age_s > 5 * 60
+        if not is_stale:
+            return
+
+        import subprocess, sys as _sys
+        from pathlib import Path as _Path
+        script = _Path(__file__).resolve().parent.parent / "scripts" / "generate_release_meta.py"
+        repo_root = _Path(__file__).resolve().parent.parent.parent
+        result = subprocess.run(
+            [_sys.executable, str(script), "--repo-root", str(repo_root)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "release-meta regeneration returned non-zero: %s",
+                result.stderr.strip()[:300],
+            )
+        else:
+            logger.info("release-meta.json refreshed")
+    except Exception as exc:  # never block startup
+        logger.warning("release-meta regeneration skipped: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start background tasks on startup, cancel them on shutdown."""
     global _polling_task, _session_cleanup_task
 
     logger.info("Starting Jane Communication Automation backend (env=%s)", settings.app_env)
+
+    # Refresh build-time release-meta snapshot if stale (dev only).
+    _maybe_regen_release_meta()
 
     # Start email polling background task
     from app.services.email_intake import start_polling_loop

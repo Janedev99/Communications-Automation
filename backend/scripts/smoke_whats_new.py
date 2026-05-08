@@ -23,9 +23,9 @@ Walks through the full workflow against a running backend:
  17. Toggle hide_releases_forever back to False - second release returns
  18-19. Auth boundary checks (anon 401, staff-on-admin 403)
  20-23. Phase 4: AI generation endpoint (draft-from-commits)
-        - manual_paste happy path (real LLM call if configured)
-        - github_api without GITHUB_TOKEN -> 422
-        - manual_paste with zero feat:/fix: commits -> commit_count 0
+        - local_meta happy path (real LLM call if configured + meta file present)
+        - 422 release_meta_unavailable when meta file is missing
+        - 422 ai_unavailable when LLM provider not configured
         - staff hitting draft-from-commits -> 403
  24. Cleanup
 
@@ -447,39 +447,40 @@ def main() -> int:
     expect(res.status_code, 403, "status")
 
     # -- Phase 4: AI generation endpoint (draft-from-commits) -----------------
-    # First call probes whether AI is configured. If not, skip the happy
-    # path but still verify the 422 ai_unavailable contract.
-    log_step("POST /admin/releases/draft-from-commits - manual_paste happy path")
+    # The endpoint reads backend/release-meta.json (build-time snapshot of git
+    # log). If the file is missing, expect 422 release_meta_unavailable. If AI
+    # is unconfigured, expect 422 ai_unavailable (AI gate fires first).
+    log_step("POST /admin/releases/draft-from-commits - local_meta happy path")
     res = admin_client.post(
         "/api/v1/admin/releases/draft-from-commits",
-        json={
-            "source": "manual_paste",
-            "commits": [
-                "feat: smoke-test smarter draft suggestions",
-                "fix: smoke-test missing attachment on resend",
-                "chore: smoke-test internal logging refactor",
-            ],
-        },
+        json={},
         headers=admin_headers,
     )
     ai_available = True
-    if res.status_code == 422 and res.json().get("detail") == "ai_unavailable":
-        ai_available = False
-        log_note(
-            "AI is not configured (LLM placeholder or missing key). "
-            "Skipping happy-path assertions; verifying ai_unavailable "
-            "contract instead."
-        )
-        expect(res.status_code, 422, "status (ai_unavailable expected)")
-        expect(res.json().get("detail"), "ai_unavailable", "detail")
+    meta_available = True
+    if res.status_code == 422:
+        detail = res.json().get("detail")
+        if detail == "ai_unavailable":
+            ai_available = False
+            log_note(
+                "AI is not configured (LLM placeholder or missing key). "
+                "Skipping happy-path assertions; verifying contract instead."
+            )
+        elif detail == "release_meta_unavailable":
+            meta_available = False
+            log_note(
+                "release-meta.json is missing — generate it with "
+                "`python scripts/generate_release_meta.py` before smoke."
+            )
+            expect(detail, "release_meta_unavailable", "release_meta_unavailable contract")
+        else:
+            expect(res.status_code, 200, "status (got 422 with unexpected detail)")
     else:
         expect(res.status_code, 200, "status")
         if res.status_code == 200:
             body = res.json()
-            expect(body["generated_from"], "manual_paste", "generated_from")
-            expect(body["commit_count"], 2, "commit_count (chore filtered out)")
-            expect(body["commit_sha_at_release"], None, "commit_sha_at_release None")
-            expect_truthy(body["title_suggestion"], "title_suggestion non-empty")
+            expect(body["generated_from"], "local_meta", "generated_from")
+            expect_truthy("title_suggestion" in body, "title_suggestion field present")
             expect_truthy("summary_suggestion" in body, "summary_suggestion field present")
             expect_truthy("highlights_suggestion" in body, "highlights_suggestion field present")
             expect_truthy(
@@ -490,46 +491,10 @@ def main() -> int:
             print(f"     {DIM}LLM produced title: {body['title_suggestion'][:80]}{RESET}")
             print(f"     {DIM}Highlights: {len(body['highlights_suggestion'])}{RESET}")
 
-    log_step("POST /admin/releases/draft-from-commits - github_api without GITHUB_TOKEN")
-    res = admin_client.post(
-        "/api/v1/admin/releases/draft-from-commits",
-        json={"source": "github_api"},
-        headers=admin_headers,
-    )
-    if not ai_available:
-        # AI gate fires before GitHub gate, so we expect ai_unavailable.
-        expect(res.status_code, 422, "status (ai_unavailable expected first)")
-        expect(res.json().get("detail"), "ai_unavailable", "ai_unavailable wins")
-    elif res.status_code == 422:
-        expect(res.json().get("detail"), "github_not_configured", "github_not_configured")
-    elif res.status_code == 200:
-        log_note("GITHUB_TOKEN appears configured; github_api path returned 200")
-    else:
-        expect_in(res.status_code, {200, 422}, "github_api status code")
-
-    if ai_available:
-        log_step("POST /admin/releases/draft-from-commits - manual_paste with zero feat:/fix:")
-        res = admin_client.post(
-            "/api/v1/admin/releases/draft-from-commits",
-            json={
-                "source": "manual_paste",
-                "commits": ["chore: bump deps", "refactor: tidy"],
-            },
-            headers=admin_headers,
-        )
-        expect(res.status_code, 200, "status")
-        if res.status_code == 200:
-            body = res.json()
-            expect(body["commit_count"], 0, "commit_count zero")
-            expect(body["title_suggestion"], "", "title_suggestion empty")
-            expect(body["summary_suggestion"], "", "summary_suggestion empty")
-            expect(body["highlights_suggestion"], [], "highlights_suggestion empty")
-            expect(body["low_confidence"], False, "low_confidence false on zero-count")
-
     log_step("Staff hitting draft-from-commits - expect 403")
     res = staff_client.post(
         "/api/v1/admin/releases/draft-from-commits",
-        json={"source": "manual_paste", "commits": ["feat: x"]},
+        json={},
         headers=staff_headers,
     )
     expect(res.status_code, 403, "status")

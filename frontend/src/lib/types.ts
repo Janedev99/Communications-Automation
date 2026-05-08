@@ -385,7 +385,11 @@ export class ApiError extends Error {
 
 export type ReleaseStatus = "draft" | "published";
 
-export type GeneratedFromSource = "github_api" | "manual_paste" | "manual_only";
+export type GeneratedFromSource =
+  | "local_meta"
+  | "github_api"
+  | "manual_paste"
+  | "manual_only";
 
 export type HighlightCategory = "new" | "improved" | "fixed";
 
@@ -435,6 +439,8 @@ export interface DraftSuggestionResponse {
   low_confidence: boolean;
 }
 
-export type DraftFromCommitsRequest =
-  | { source: "github_api"; since_sha?: string }
-  | { source: "manual_paste"; commits: string[] };
+export interface DraftFromCommitsRequest {
+  /** Optional boundary SHA. When omitted, the backend uses the last
+   *  published release's commit_sha_at_release as the boundary. */
+  since_sha?: string;
+}

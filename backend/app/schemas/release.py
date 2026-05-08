@@ -1,7 +1,6 @@
 """Pydantic schemas for the What's New / release_notes feature."""
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -92,14 +91,16 @@ class UpdateReleaseRequest(BaseModel):
 # ── AI generation ────────────────────────────────────────────────────────────
 
 
-class DraftFromCommitsGitHubRequest(BaseModel):
-    source: Literal["github_api"]
+class DraftFromCommitsRequest(BaseModel):
+    """Single shape for the draft-from-commits endpoint.
+
+    The endpoint now reads commits from the build-time release-meta.json
+    snapshot — no source discriminator, no admin paste, no GitHub call.
+    The optional since_sha boundary lets admins generate notes for a
+    sub-range; when omitted, the endpoint defaults to the SHA of the
+    last published release (or the full snapshot if none published yet).
+    """
     since_sha: str | None = Field(default=None, max_length=40)
-
-
-class DraftFromCommitsManualRequest(BaseModel):
-    source: Literal["manual_paste"]
-    commits: list[str] = Field(min_length=1, max_length=500)
 
 
 class DraftSuggestionResponse(BaseModel):

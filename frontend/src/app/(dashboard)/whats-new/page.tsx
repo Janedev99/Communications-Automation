@@ -53,7 +53,7 @@ export default function WhatsNewArchivePage() {
   return (
     <div className="space-y-6">
       <Link
-        href="/dashboard"
+        href="/"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="w-3.5 h-3.5" />

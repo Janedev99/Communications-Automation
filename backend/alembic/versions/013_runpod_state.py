@@ -1,21 +1,25 @@
 """Create runpod_state table for the in-process pod orchestrator.
 
-Revision ID: 009
-Revises: 008
-Create Date: 2026-05-14
+Revision ID: 013
+Revises: 012
+Create Date: 2026-05-15
 
 Backing store for app.services.runpod_orchestrator. Single-row-per-pod
 state (keyed by pod_id) capturing last_used_at / last_started_at and the
 daily uptime accumulator that enforces the daily cap. See
 app/models/runpod_state.py for field-level docs.
+
+(Originally authored as 009 - bumped to 013 to chain after 012 because
+the local branch hadn't seen 009_tier_and_confidence / 010 / 011 / 012
+when this file was first written.)
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "009"
-down_revision: Union[str, None] = "008"
+revision: str = "013"
+down_revision: Union[str, None] = "012"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -165,7 +165,7 @@ def test_ensure_ready_daily_cap_reached_raises(db_session, enabled_orchestrator)
     state = RunPodState(
         pod_id="test-pod-id",
         uptime_today_seconds=11 * 3600,  # 11h > 10h cap
-        uptime_day_utc=date.today(),
+        uptime_day_utc=datetime.now(timezone.utc).date(),
         updated_at=datetime.now(timezone.utc),
     )
     db_session.add(state)
@@ -263,7 +263,7 @@ def test_stop_if_idle_recent_use_does_nothing(db_session, enabled_orchestrator):
         last_started_at=now - timedelta(seconds=30),
         last_used_at=now - timedelta(seconds=30),  # very recent
         uptime_today_seconds=0,
-        uptime_day_utc=date.today(),
+        uptime_day_utc=datetime.now(timezone.utc).date(),
         updated_at=now,
     )
     db_session.add(state)
@@ -286,7 +286,7 @@ def test_stop_if_idle_idle_stops_and_accumulates_uptime(
         last_started_at=now - timedelta(seconds=900),  # 15 min session
         last_used_at=now - timedelta(seconds=600),  # 10 min idle
         uptime_today_seconds=0,
-        uptime_day_utc=date.today(),
+        uptime_day_utc=datetime.now(timezone.utc).date(),
         updated_at=now,
     )
     db_session.add(state)
@@ -311,7 +311,7 @@ def test_stop_if_idle_already_exited_does_nothing(db_session, enabled_orchestrat
         pod_id="test-pod-id",
         last_known_state="EXITED",
         uptime_today_seconds=0,
-        uptime_day_utc=date.today(),
+        uptime_day_utc=datetime.now(timezone.utc).date(),
         updated_at=datetime.now(timezone.utc),
     )
     db_session.add(state)
@@ -334,7 +334,7 @@ def test_stop_if_idle_stop_failure_keeps_state_running(
         last_started_at=now - timedelta(seconds=900),
         last_used_at=now - timedelta(seconds=600),
         uptime_today_seconds=0,
-        uptime_day_utc=date.today(),
+        uptime_day_utc=datetime.now(timezone.utc).date(),
         updated_at=now,
     )
     db_session.add(state)
@@ -354,14 +354,15 @@ def test_stop_if_idle_stop_failure_keeps_state_running(
 
 def test_daily_counter_rolls_over_at_midnight_utc(db_session, enabled_orchestrator):
     """uptime_day_utc != today → reset to 0 on next access."""
-    yesterday = date.today() - timedelta(days=1)
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
     state = RunPodState(
         pod_id="test-pod-id",
         last_known_state="RUNNING",
         last_started_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         last_used_at=datetime.now(timezone.utc),
         uptime_today_seconds=8 * 3600,  # 8h from yesterday
-        uptime_day_utc=yesterday,
+        uptime_day_utc=yesterday_utc,
         updated_at=datetime.now(timezone.utc),
     )
     db_session.add(state)
@@ -373,7 +374,7 @@ def test_daily_counter_rolls_over_at_midnight_utc(db_session, enabled_orchestrat
         enabled_orchestrator.ensure_ready(db_session)
 
     db_session.refresh(state)
-    assert state.uptime_day_utc == date.today()
+    assert state.uptime_day_utc == today_utc
     assert state.uptime_today_seconds == 0
 
 

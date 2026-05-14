@@ -271,8 +271,60 @@ def get_llm_client() -> LLMClient:
 
 def reset_llm_client() -> None:
     """Test hook — clears the singleton so a fresh provider can be picked up."""
-    global _client
+    global _client, _fallback_client
     _client = None
+    _fallback_client = None
+
+
+# ── Claude fallback (orchestrator failure path) ───────────────────────────────
+
+
+_fallback_client: LLMClient | None = None
+
+
+def get_claude_fallback_client() -> LLMClient:
+    """
+    Return an AnthropicLLMClient configured for the *fallback* path.
+
+    Forced to Anthropic regardless of LLM_PROVIDER — this is the safety
+    net the draft_generator hits when the RunPod orchestrator raises
+    RunPodUnavailableError AND ALLOW_CLAUDE_FALLBACK=true. See the
+    project_claude_fallback_override memory for policy context: this
+    fallback path knowingly relaxes the closed-loop guarantee from the
+    05/02 Schiller migration.
+
+    Reads ANTHROPIC_API_KEY + CLAUDE_MODEL from settings (the legacy
+    fields) so dev environments that always had a real Claude key keep
+    working as a fallback target without re-configuration.
+
+    Raises LLMError when no real Anthropic key is configured — that
+    is the signal to the caller to surface "fallback unavailable" to
+    the user (escalation, retry, etc.) rather than masking the failure.
+    """
+    global _fallback_client
+    if _fallback_client is not None:
+        return _fallback_client
+
+    settings = get_settings()
+    api_key = settings.anthropic_api_key
+    model = settings.claude_model
+
+    is_placeholder = api_key.startswith("sk-ant-placeholder")
+    if not api_key or is_placeholder:
+        raise LLMError(
+            "Claude fallback requested but ANTHROPIC_API_KEY is not configured "
+            "(empty or placeholder). Either set ALLOW_CLAUDE_FALLBACK=false to "
+            "disable fallback and surface RunPod outages as draft failures, or "
+            "provide a real Anthropic API key."
+        )
+
+    logger.info("Claude fallback client initialised: model=%s", model)
+    _fallback_client = AnthropicLLMClient(
+        api_key=api_key,
+        model=model,
+        timeout=settings.llm_timeout,
+    )
+    return _fallback_client
 
 
 def is_llm_configured() -> bool:

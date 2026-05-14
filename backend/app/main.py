@@ -129,6 +129,7 @@ class RequestIdMiddleware:
 
 _polling_task: asyncio.Task | None = None
 _session_cleanup_task: asyncio.Task | None = None
+_runpod_watchdog_task: asyncio.Task | None = None
 
 
 def _sync_cleanup_sessions() -> int:
@@ -156,7 +157,7 @@ async def _session_cleanup_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start background tasks on startup, cancel them on shutdown."""
-    global _polling_task, _session_cleanup_task
+    global _polling_task, _session_cleanup_task, _runpod_watchdog_task
 
     logger.info("Starting Jane Communication Automation backend (env=%s)", settings.app_env)
 
@@ -169,10 +170,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _session_cleanup_task = asyncio.create_task(_session_cleanup_loop(), name="session-cleanup")
     logger.info("Session cleanup task started")
 
+    # Start RunPod idle-stop watchdog. No-ops itself when orchestration is
+    # disabled (no RUNPOD_POD_ID configured), so it's safe to start in every env.
+    from app.services.runpod_watchdog import start_watchdog_loop
+    _runpod_watchdog_task = asyncio.create_task(start_watchdog_loop(), name="runpod-watchdog")
+    logger.info("RunPod watchdog task started")
+
     yield  # Application is running
 
     # Shutdown
-    for task in (_polling_task, _session_cleanup_task):
+    for task in (_polling_task, _session_cleanup_task, _runpod_watchdog_task):
         if task and not task.done():
             task.cancel()
             try:

@@ -42,21 +42,39 @@ Note: --start does NOT auto-stop on failure (unlike runpod_bootstrap.py).
 The intent of --start is to leave the pod RUNNING for the operator to use,
 so partial failures leave the pod in whatever state RunPod left it. Run
 --stop explicitly when done.
+
+Architectural note: REST primitives (start_pod / stop_pod / fetch_pod /
+wait_for_running / probe_vllm) live in app.services.runpod_client and are
+shared with the in-process orchestrator (app.services.runpod_orchestrator).
+This script is the CLI shell on top: arg parsing, ownership gating,
+confirmation prompts, exit codes, and print()-based progress output.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
-import httpx
-from dotenv import load_dotenv
+# Make `app` importable when run as `python scripts/runpod_check.py` from backend/.
+# Same trick used by scripts/seed_demo.py.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from dotenv import load_dotenv  # noqa: E402
+
+from app.services.runpod_client import (  # noqa: E402
+    fetch_pod,
+    fetch_pods,
+    pod_inference_url,
+    probe_vllm,
+    start_pod,
+    stop_pod,
+    terminate_pod,
+    wait_for_running,
+)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-RUNPOD_API_BASE = "https://rest.runpod.io/v1"
 POD_NAME_PREFIX = "jane-autocomms"
 
 # Whitelist of pod fields we'll render. Anything else is dropped before print.
@@ -71,14 +89,6 @@ SAFE_FIELDS = (
     "imageName",
     "createdAt",
 )
-
-# --start tuning. Warm-start is much faster than bootstrap's cold-start
-# because the container disk is preserved (image + model already there).
-# Only VRAM load + HTTP bind needs to happen.
-START_WAIT_TIMEOUT_S = 300      # 5 min ceiling for pod to reach RUNNING
-START_POLL_INTERVAL_S = 10
-START_PROBE_ATTEMPTS = 30       # 30 * 10s = 5 min ceiling for vLLM to serve
-START_PROBE_DELAY_S = 10
 
 
 def _project_root() -> Path:
@@ -102,164 +112,55 @@ def load_api_key() -> str:
     return key
 
 
-def _headers(api_key: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+# ── CLI wrappers — add print() over the stateless REST primitives ────────────
+# The functions in runpod_client log via logger but never print. These CLI
+# wrappers add a one-line user-visible result; the maybe_* flows below stack
+# additional context around them (banners, confirmations, exit codes).
 
 
-# ── API calls ────────────────────────────────────────────────────────────────
+def cli_stop(api_key: str, pod_id: str) -> bool:
+    if stop_pod(api_key, pod_id):
+        print(f"[STOP] pod {pod_id} stopped")
+        return True
+    print(f"[STOP] FAILED for {pod_id} — see logs above")
+    return False
 
 
-def fetch_pods(api_key: str) -> list[dict]:
-    """List all pods on the account. Returns [] if none."""
-    with httpx.Client() as client:
-        r = client.get(
-            f"{RUNPOD_API_BASE}/pods",
-            headers=_headers(api_key),
-            timeout=30.0,
-        )
-        if r.status_code >= 400:
-            print(f"[FATAL] GET /pods HTTP {r.status_code}: {r.text[:300]}")
-            sys.exit(2)
-        body = r.json()
-    # Normalize: older API returns {"pods": [...]}, newer returns a list.
-    if isinstance(body, list):
-        return body
-    return body.get("pods", []) or []
+def cli_terminate(api_key: str, pod_id: str) -> bool:
+    if terminate_pod(api_key, pod_id):
+        print(f"[TERMINATE] pod {pod_id} deleted")
+        return True
+    print(f"[TERMINATE] FAILED for {pod_id} — see logs above")
+    return False
 
 
-def fetch_pod(api_key: str, pod_id: str) -> dict | None:
-    """Fetch one pod by id. Returns None if not found (pod was terminated / never existed)."""
-    with httpx.Client() as client:
-        r = client.get(
-            f"{RUNPOD_API_BASE}/pods/{pod_id}",
-            headers=_headers(api_key),
-            timeout=30.0,
-        )
-        if r.status_code == 404:
-            return None
-        if r.status_code >= 400:
-            print(f"[FATAL] GET /pods/{pod_id} HTTP {r.status_code}: {r.text[:300]}")
-            sys.exit(2)
-        return r.json()
+def cli_start(api_key: str, pod_id: str) -> bool:
+    if start_pod(api_key, pod_id):
+        print(f"[START] pod {pod_id} start accepted")
+        return True
+    print(f"[START] FAILED for {pod_id} — see logs above")
+    return False
 
 
-def stop_pod(api_key: str, pod_id: str) -> bool:
-    """POST /pods/{id}/stop. Returns True on success. Pod can later be resumed."""
-    with httpx.Client() as client:
-        r = client.post(
-            f"{RUNPOD_API_BASE}/pods/{pod_id}/stop",
-            headers=_headers(api_key),
-            timeout=30.0,
-        )
-        if r.status_code < 400:
-            print(f"[STOP] pod {pod_id} stopped (HTTP {r.status_code})")
-            return True
-        print(f"[STOP] FAILED for {pod_id}: HTTP {r.status_code}: {r.text[:300]}")
-        return False
+def cli_wait_for_running(api_key: str, pod_id: str) -> str | None:
+    print(f"[WAIT] polling pod {pod_id} for RUNNING (every 10s)...")
+
+    def _on_status(status: str | None, elapsed: float) -> None:
+        print(f"[WAIT] status={status} (elapsed {elapsed:.0f}s)")
+
+    return wait_for_running(api_key, pod_id, on_status=_on_status)
 
 
-def terminate_pod(api_key: str, pod_id: str) -> bool:
-    """DELETE /pods/{id}. Returns True on success. PERMANENT — container disk wiped."""
-    with httpx.Client() as client:
-        r = client.delete(
-            f"{RUNPOD_API_BASE}/pods/{pod_id}",
-            headers=_headers(api_key),
-            timeout=30.0,
-        )
-        # 404 means the pod is already gone — that's the goal state, so treat
-        # as success. Makes the operation idempotent: re-running --terminate
-        # on an already-terminated pod won't return a spurious failure.
-        if r.status_code < 400 or r.status_code == 404:
-            print(f"[TERMINATE] pod {pod_id} deleted (HTTP {r.status_code})")
-            return True
-        print(f"[TERMINATE] FAILED for {pod_id}: HTTP {r.status_code}: {r.text[:300]}")
-        return False
-
-
-def start_pod(api_key: str, pod_id: str) -> bool:
-    """POST /pods/{id}/start. Returns True if accepted (billing resumes on accept)."""
-    with httpx.Client() as client:
-        r = client.post(
-            f"{RUNPOD_API_BASE}/pods/{pod_id}/start",
-            headers=_headers(api_key),
-            timeout=30.0,
-        )
-        if r.status_code < 400:
-            print(f"[START] pod {pod_id} start accepted (HTTP {r.status_code})")
-            return True
-        print(f"[START] FAILED for {pod_id}: HTTP {r.status_code}: {r.text[:300]}")
-        return False
-
-
-def wait_for_running(api_key: str, pod_id: str) -> str | None:
-    """
-    Poll fetch_pod until desiredStatus == RUNNING.
-
-    Returns the inference URL on success, None on timeout or terminal failure.
-    """
-    print(f"[WAIT] polling pod {pod_id} for RUNNING (every {START_POLL_INTERVAL_S}s)...")
-    start = time.monotonic()
-    last_status: str | None = None
-    while True:
-        elapsed = time.monotonic() - start
-        if elapsed > START_WAIT_TIMEOUT_S:
-            print(f"[WAIT] timeout {START_WAIT_TIMEOUT_S}s exceeded — pod did not reach RUNNING")
-            return None
-        info = fetch_pod(api_key, pod_id)
-        if info is None:
-            print(f"[WAIT] pod {pod_id} disappeared while waiting")
-            return None
-        status = info.get("desiredStatus")
-        if status != last_status:
-            print(f"[WAIT] status={status} (elapsed {elapsed:.0f}s)")
-            last_status = status
-        if status == "RUNNING":
-            return f"https://{pod_id}-8000.proxy.runpod.net/v1"
-        if status in ("FAILED", "TERMINATED"):
-            print(f"[WAIT] pod entered terminal status {status!r} — giving up")
-            return None
-        time.sleep(START_POLL_INTERVAL_S)
-
-
-def probe_vllm(api_key: str, base_url: str, model: str) -> bool:
-    """Retry chat/completions until vLLM responds with 200, or budget exhausts."""
+def cli_probe_vllm(api_key: str, base_url: str, model: str) -> bool:
     print(f"[PROBE] confirming vLLM is serving (model={model})...")
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Respond with exactly one word."},
-            {"role": "user", "content": "Say: pong"},
-        ],
-        "max_tokens": 10,
-        "temperature": 0,
-    }
-    with httpx.Client() as client:
-        for attempt in range(1, START_PROBE_ATTEMPTS + 1):
-            try:
-                r = client.post(
-                    f"{base_url}/chat/completions",
-                    headers=_headers(api_key),
-                    json=payload,
-                    timeout=60.0,
-                )
-                if r.status_code == 200:
-                    body = r.json()
-                    content = body["choices"][0]["message"]["content"]
-                    print(f"[PROBE] OK — response: {content!r}")
-                    return True
-                # 404 from vLLM = wrong model loaded (different fault than
-                # 502 = backend not reachable yet). Both are retried —
-                # 502 will resolve as vLLM starts, 404 is unusual on warm
-                # start since the same model was loaded last time.
-                print(f"[PROBE] attempt {attempt}/{START_PROBE_ATTEMPTS} HTTP {r.status_code}")
-            except Exception as exc:
-                print(f"[PROBE] attempt {attempt}/{START_PROBE_ATTEMPTS} raised {type(exc).__name__}: {exc}")
-            if attempt < START_PROBE_ATTEMPTS:
-                time.sleep(START_PROBE_DELAY_S)
-    print(f"[PROBE] gave up after {START_PROBE_ATTEMPTS} attempts")
+
+    def _on_attempt(attempt: int, total: int, detail: str) -> None:
+        print(f"[PROBE] attempt {attempt}/{total} {detail}")
+
+    if probe_vllm(base_url, api_key, model, on_attempt=_on_attempt):
+        print("[PROBE] OK")
+        return True
+    print("[PROBE] gave up — see logs above")
     return False
 
 
@@ -320,11 +221,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def maybe_stop_running(api_key: str, running: list[dict], stop_flag: bool) -> int:
-    """
-    Decide what to do about the running pods we found.
-
-    Returns the exit code to bubble up.
-    """
+    """Decide what to do about the running pods we found. Returns exit code."""
     if not stop_flag:
         print()
         print(f"[WARN] {len(running)} jane-autocomms pod(s) RUNNING — still billing.")
@@ -353,26 +250,20 @@ def maybe_stop_running(api_key: str, running: list[dict], stop_flag: bool) -> in
             print("[STOP] skipping pod with missing id")
             all_ok = False
             continue
-        if not stop_pod(api_key, pid):
+        if not cli_stop(api_key, pid):
             all_ok = False
     return 0 if all_ok else 1
 
 
 def maybe_start(api_key: str, pod: dict) -> int:
-    """
-    Confirm + start + wait + probe vLLM for one EXITED pod.
-
-    Unlike maybe_stop_running and maybe_terminate, this acts on ONE pod
-    (the orchestrator's job is to manage multiple — for manual --start we
-    handle one at a time so the user always knows which pod is RUNNING).
-    """
+    """Confirm + start + wait + probe vLLM for one EXITED pod."""
     pid = pod.get("id") or ""
     name = pod.get("name") or "?"
     status = pod.get("desiredStatus") or "?"
     cost = pod.get("costPerHr")
 
     if status == "RUNNING":
-        url = f"https://{pid}-8000.proxy.runpod.net/v1"
+        url = pod_inference_url(pid)
         print()
         print(f"[OK] pod {pid} is already RUNNING.")
         print(f"     URL: {url}")
@@ -385,7 +276,7 @@ def maybe_start(api_key: str, pod: dict) -> int:
     print()
     cost_str = f"${cost}/hr" if cost is not None else "rate unknown"
     print(f"[START] Pod {name} ({pid}) will resume billing at {cost_str}.")
-    print(f"        Warm start expected (~30-90s). Stop it with: python scripts/runpod_check.py --stop")
+    print("        Warm start expected (~30-90s). Stop it with: python scripts/runpod_check.py --stop")
     try:
         confirm = input("Type 'yes' to start: ")
     except EOFError:
@@ -395,13 +286,13 @@ def maybe_start(api_key: str, pod: dict) -> int:
         print("[ABORT] user did not type 'yes' — pod left in EXITED state.")
         return 1
 
-    if not start_pod(api_key, pid):
+    if not cli_start(api_key, pid):
         return 1
 
-    url = wait_for_running(api_key, pid)
+    url = cli_wait_for_running(api_key, pid)
     if not url:
         print()
-        print(f"[WARN] start was accepted but pod did not reach RUNNING. Check dashboard.")
+        print("[WARN] start was accepted but pod did not reach RUNNING. Check dashboard.")
         return 1
 
     # Probe needs the model name. We try LLM_MODEL from env first (the .env
@@ -412,14 +303,14 @@ def maybe_start(api_key: str, pod: dict) -> int:
         print()
         print("[NOTE] LLM_MODEL not set in environment — skipping vLLM readiness probe.")
         print(f"       Pod is RUNNING at: {url}")
-        print(f"       Test in the app, or set LLM_MODEL=... and re-run to probe.")
+        print("       Test in the app, or set LLM_MODEL=... and re-run to probe.")
         return 0
 
-    if not probe_vllm(api_key, url, model):
+    if not cli_probe_vllm(api_key, url, model):
         print()
-        print(f"[WARN] pod is RUNNING but vLLM did not respond within the probe budget.")
+        print("[WARN] pod is RUNNING but vLLM did not respond within the probe budget.")
         print(f"       URL: {url}")
-        print(f"       It may still come up — check the app, or stop with: python scripts/runpod_check.py --stop")
+        print("       It may still come up — check the app, or stop with: python scripts/runpod_check.py --stop")
         return 1
 
     print()
@@ -434,16 +325,7 @@ def maybe_start(api_key: str, pod: dict) -> int:
 
 
 def maybe_terminate(api_key: str, candidates: list[dict]) -> int:
-    """
-    Permanently delete jane-autocomms pods regardless of their state.
-
-    Different filter from maybe_stop_running: stop only acts on RUNNING
-    ("make it stop billing"); terminate acts on every state including
-    EXITED ("delete the entity, free the disk, leave no trace").
-
-    Caller is responsible for ensuring `candidates` is already filtered
-    to jane-autocomms-* — this function will terminate everything passed in.
-    """
+    """Permanently delete jane-autocomms pods regardless of their state."""
     if not candidates:
         print()
         print("[OK] No jane-autocomms pods to terminate.")
@@ -471,7 +353,7 @@ def maybe_terminate(api_key: str, candidates: list[dict]) -> int:
             print("[TERMINATE] skipping pod with missing id")
             all_ok = False
             continue
-        if not terminate_pod(api_key, pid):
+        if not cli_terminate(api_key, pid):
             all_ok = False
     return 0 if all_ok else 1
 
@@ -532,7 +414,7 @@ def main() -> int:
     scope = "all pods on account" if args.all else f"pods matching '{POD_NAME_PREFIX}-*'"
     print(f"Found {len(pods)} {scope}:")
     if not pods:
-        print(f"  (none — no jane-autocomms pods on this account, nothing billing)")
+        print("  (none — no jane-autocomms pods on this account, nothing billing)")
         return 0
 
     for p in pods:

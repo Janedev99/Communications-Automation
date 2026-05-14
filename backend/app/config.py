@@ -124,6 +124,50 @@ class Settings(BaseSettings):
     # Useful for initial deployment validation without sending AI-generated replies.
     shadow_mode: bool = False
 
+    # ── RunPod orchestrator ───────────────────────────────────────────────────
+    # The orchestrator wraps the runpod_client REST primitives in a service
+    # that auto-starts the pod before a draft generation and auto-stops it
+    # after a period of idleness — replacing the manual `runpod_check.py
+    # --start` / `--stop` cycle once this iteration lands.
+    #
+    # RUNPOD_POD_ID is the persistent pod the orchestrator manages. Set by
+    # runpod_bootstrap.py on first deploy; subsequent app starts read it
+    # here. Leave empty to disable orchestration entirely (falls back to
+    # calling the LLM endpoint blindly; useful for Anthropic-only dev).
+    runpod_pod_id: str = ""
+
+    # Idle threshold — how long after the last draft completed before the
+    # watchdog stops the pod. 300s (5 min) is aggressive/cheapest; bump to
+    # 900s if you want fewer cold starts at the cost of more idle billing.
+    runpod_idle_timeout_seconds: int = 300
+
+    # Daily cap — refuse to start the pod if cumulative uptime today (UTC)
+    # already exceeds this many hours. Hard circuit breaker against a bug
+    # or pathological workload turning into a surprise bill.
+    runpod_daily_cap_hours: int = 10
+
+    # Watchdog tick interval — how often the background task wakes to check
+    # for idle-timeout. Lower = more responsive idle-stop, higher = less
+    # overhead. 60s is plenty for a 300s idle window.
+    runpod_watchdog_interval_seconds: int = 60
+
+    # How long to wait for the pod to reach RUNNING after a start_pod call,
+    # before giving up and treating the start as failed (falls back to
+    # Claude). Cold-start of vLLM with model download can take a couple
+    # of minutes; 300s leaves buffer.
+    runpod_start_wait_timeout_seconds: int = 300
+
+    # How long the orchestrator's health probe (GET /v1/models) waits before
+    # declaring the pod unhealthy. Short — the endpoint is fast when healthy.
+    runpod_health_probe_timeout_seconds: int = 10
+
+    # Kill switch for the Claude fallback (see project_claude_fallback_override
+    # memory for the policy context). Default true: if RunPod fails, the draft
+    # generator switches to Anthropic with ANTHROPIC_API_KEY for that draft and
+    # logs draft.fallback_to_claude in the audit trail. Flip to false to force
+    # escalation-on-failure, restoring the original closed-loop guarantee.
+    allow_claude_fallback: bool = True
+
     # ── Computed helpers ──────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:

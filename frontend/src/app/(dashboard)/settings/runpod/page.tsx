@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  CalendarRange,
   Clock,
   DollarSign,
   Lock,
@@ -25,9 +26,15 @@ import { ErrorState } from "@/components/shared/error-state";
 import { api, swrFetcher } from "@/lib/api";
 import { useUser } from "@/hooks/use-user";
 import { cn, relativeTime } from "@/lib/utils";
-import type { RunPodStatus, RunPodActionResponse } from "@/lib/types";
+import type {
+  RunPodStatus,
+  RunPodActionResponse,
+  RunPodHistoryResponse,
+  RunPodDailyUsageRow,
+} from "@/lib/types";
 
 const STATUS_ENDPOINT = "/api/v1/runpod/status";
+const HISTORY_ENDPOINT = "/api/v1/runpod/history?days=30";
 
 // ── State → visual mapping ────────────────────────────────────────────────────
 // last_known_state values: RUNNING / STARTING / EXITED / FAILED / TERMINATED /
@@ -151,6 +158,19 @@ function truncateMiddle(text: string, keepStart = 8, keepEnd = 4): string {
   return `${text.slice(0, keepStart)}…${text.slice(-keepEnd)}`;
 }
 
+function formatDayUtc(iso: string): string {
+  // Parse as UTC-noon to avoid TZ shifting the displayed date.
+  // toLocaleDateString without TZ option would interpret "2026-05-14" as
+  // midnight UTC and could display "May 13" for users west of UTC.
+  const d = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+  });
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function RunPodPage() {
@@ -174,6 +194,15 @@ export default function RunPodPage() {
           ? 5_000
           : 30_000,
     },
+  );
+
+  // History only changes at the UTC midnight rollover, so a long refresh
+  // interval is fine. 1h means an admin who leaves this tab open overnight
+  // still sees yesterday's row appear without manual reload.
+  const { data: history } = useSWR<RunPodHistoryResponse>(
+    isAdmin ? HISTORY_ENDPOINT : null,
+    swrFetcher,
+    { refreshInterval: 60 * 60 * 1000 },
   );
 
   if (userLoading) return null;
@@ -495,6 +524,12 @@ export default function RunPodPage() {
         </section>
       </div>
 
+      {/* History */}
+      <HistorySection
+        history={history}
+        dailyCapSeconds={data.daily_cap_seconds ?? 0}
+      />
+
       {/* Diagnostics (collapsed) */}
       <section className="mt-6 bg-card border border-border rounded-xl overflow-hidden">
         <button
@@ -572,6 +607,147 @@ function BackLink() {
       <ArrowLeft className="w-3.5 h-3.5" />
       Back to settings
     </Link>
+  );
+}
+
+function HistorySection({
+  history,
+  dailyCapSeconds,
+}: {
+  history: RunPodHistoryResponse | undefined;
+  dailyCapSeconds: number;
+}) {
+  // Loading shimmer.
+  if (history === undefined) {
+    return (
+      <section className="mt-6 bg-card border border-border rounded-xl p-5">
+        <header className="mb-4 flex items-center gap-2">
+          <CalendarRange className="w-4 h-4 text-muted-foreground" strokeWidth={1.75} />
+          <h2 className="text-sm font-semibold text-foreground">History</h2>
+        </header>
+        <div className="space-y-2">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-6" />
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  const items = history.items ?? [];
+  const days = history.days ?? 30;
+
+  // Total cost across the window — items with null cost contribute nothing.
+  const totalCost = items.reduce(
+    (sum, row) => sum + (row.cost_usd ?? 0),
+    0,
+  );
+  const totalUptime = items.reduce(
+    (sum, row) => sum + row.uptime_seconds,
+    0,
+  );
+
+  // Empty state — no rollovers captured yet (fresh deploy, or pod never used).
+  if (items.length === 0) {
+    return (
+      <section className="mt-6 bg-card border border-border rounded-xl p-5">
+        <header className="mb-4 flex items-center gap-2">
+          <CalendarRange className="w-4 h-4 text-muted-foreground" strokeWidth={1.75} />
+          <h2 className="text-sm font-semibold text-foreground">
+            History — last {days} days
+          </h2>
+        </header>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          No usage captured yet. A row gets recorded for each UTC day the pod
+          ran at least once — your first row will appear after the next
+          midnight UTC rollover.
+        </p>
+      </section>
+    );
+  }
+
+  // Scale denominator for bars: the daily cap is the most meaningful
+  // denominator (a half-filled bar = half the budget that day) — but if
+  // the cap isn't configured, fall back to the max uptime in the window
+  // so bars still render proportionally.
+  const maxObserved = items.reduce(
+    (m, row) => Math.max(m, row.uptime_seconds),
+    0,
+  );
+  const scaleDenom = dailyCapSeconds > 0 ? dailyCapSeconds : maxObserved || 1;
+
+  return (
+    <section className="mt-6 bg-card border border-border rounded-xl p-5">
+      <header className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <CalendarRange className="w-4 h-4 text-muted-foreground" strokeWidth={1.75} />
+          <h2 className="text-sm font-semibold text-foreground">
+            History — last {days} days
+          </h2>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-muted-foreground">Window total</div>
+          <div className="text-sm font-semibold tabular-nums text-foreground">
+            ${totalCost.toFixed(2)}
+            <span className="text-muted-foreground font-normal text-xs ml-1.5">
+              · {formatDuration(totalUptime)}
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <ol className="space-y-1.5">
+        {items.map((row) => (
+          <HistoryRow key={row.day_utc} row={row} scaleDenom={scaleDenom} />
+        ))}
+      </ol>
+
+      <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
+        Days where the pod wasn&apos;t used at all are omitted. Bars are
+        scaled to the {dailyCapSeconds > 0 ? "daily cap" : "peak day in this window"}.
+      </p>
+    </section>
+  );
+}
+
+function HistoryRow({
+  row,
+  scaleDenom,
+}: {
+  row: RunPodDailyUsageRow;
+  scaleDenom: number;
+}) {
+  // Width percentage; min 2% so non-zero rows always show a sliver.
+  const rawPct = (row.uptime_seconds / scaleDenom) * 100;
+  const widthPct = Math.max(2, Math.min(100, rawPct));
+  // Colour cue: red when a day burned >75% of the cap.
+  const overCap = rawPct >= 100;
+  const high = rawPct >= 75;
+  const barColor = overCap
+    ? "bg-red-500"
+    : high
+      ? "bg-amber-500"
+      : "bg-emerald-500";
+
+  return (
+    <li className="flex items-center gap-3 text-xs">
+      <span className="w-24 shrink-0 text-muted-foreground tabular-nums">
+        {formatDayUtc(row.day_utc)}
+      </span>
+      <span className="relative flex-1 h-5 bg-muted rounded">
+        <span
+          className={cn("absolute inset-y-0 left-0 rounded", barColor)}
+          style={{ width: `${widthPct}%` }}
+          aria-hidden
+        />
+        <span className="absolute inset-0 flex items-center justify-end pr-2 font-medium text-foreground/90 tabular-nums">
+          {formatDuration(row.uptime_seconds)}
+        </span>
+      </span>
+      <span className="w-16 shrink-0 text-right font-semibold tabular-nums text-foreground">
+        {formatCost(row.cost_usd)}
+      </span>
+    </li>
   );
 }
 

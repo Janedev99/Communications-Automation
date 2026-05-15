@@ -375,6 +375,18 @@ export interface RunPodActionResponse {
   reason?: string;
 }
 
+export interface RunPodDailyUsageRow {
+  day_utc: string;          // YYYY-MM-DD
+  uptime_seconds: number;
+  cost_per_hour_usd: number | null;
+  cost_usd: number | null;
+}
+
+export interface RunPodHistoryResponse {
+  days: number;             // the (clamped) days param the backend honoured
+  items: RunPodDailyUsageRow[];  // newest first; sparse — zero-uptime days are omitted
+}
+
 // ── System settings (admin) ───────────────────────────────────────────────────
 export interface SystemSetting {
   key: string;

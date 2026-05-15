@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
 import { useUser } from "@/hooks/use-user";
+import { api } from "@/lib/api";
 
 export default function DashboardLayout({
   children,
@@ -115,6 +116,35 @@ export default function DashboardLayout({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // RunPod pre-warm + login-time draft catch-up. Fires once per
+  // dashboard-layout mount (per login session). Both endpoints are
+  // fire-and-forget: errors logged to console, never surface to the user.
+  //
+  // - /runpod/wake : tells the backend to start the RunPod pod in
+  //   background NOW, so by the time Jane clicks Generate Draft the
+  //   pod is already warm (or close to it).
+  // - /runpod/login-sweep : finds T1/T2 threads missing drafts and
+  //   queues them for background generation, so Jane sees drafts
+  //   ready when she navigates to the emails page.
+  //
+  // Gated on !authLoading so we don't fire before the user is logged in
+  // (the api helper would 401 and redirect). wakeFiredRef ensures we
+  // never fire twice for the same session even if useEffect re-runs.
+  const wakeFiredRef = useRef(false);
+  useEffect(() => {
+    if (authLoading || wakeFiredRef.current) return;
+    wakeFiredRef.current = true;
+    api.post("/api/v1/runpod/wake").catch((err) => {
+      // Don't disrupt the user — drafts still work without pre-warm,
+      // just slower on cold-start. The orchestrator's normal paths
+      // catch and handle this on demand.
+      console.warn("[runpod] wake failed (non-fatal):", err);
+    });
+    api.post("/api/v1/runpod/login-sweep").catch((err) => {
+      console.warn("[runpod] login-sweep failed (non-fatal):", err);
+    });
+  }, [authLoading]);
 
   if (authLoading) {
     return (

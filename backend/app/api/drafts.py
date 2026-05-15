@@ -166,11 +166,16 @@ def generate_draft(
         generator = get_draft_generator()
         # Record the AI call now — before generate() so even a partial attempt counts
         record_ai_call(current_user.id)
+        # wait_for_ready=False: user-facing API path. If the RunPod pod is
+        # cold-starting, fast-fail to Claude (~10s) rather than blocking the
+        # user for 2-3 minutes. The orchestrator schedules a bg start so the
+        # NEXT draft request hits the warm pod.
         draft = generator.generate(
             db,
             thread,
             skip_escalation_guard=is_escalated,
             tone_override=_body.tone or None,
+            wait_for_ready=False,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -698,11 +703,14 @@ def regenerate_draft(
     try:
         generator = get_draft_generator()
         record_ai_call(current_user.id)
+        # Same fast-fail rationale as the /generate-draft path: regenerate
+        # is also user-facing, so cold-start latency falls through to Claude.
         new_draft = generator.generate(
             db,
             thread,
             skip_escalation_guard=is_escalated,
             tone_override=_body.tone or None,
+            wait_for_ready=False,
         )
     except ValueError as exc:
         raise HTTPException(

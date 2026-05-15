@@ -167,6 +167,7 @@ class DraftGeneratorService:
         *,
         skip_escalation_guard: bool = False,
         tone_override: str | None = None,
+        wait_for_ready: bool = True,
     ) -> DraftResponse:
         """
         Generate an AI draft reply for the given email thread.
@@ -293,11 +294,19 @@ class DraftGeneratorService:
 
         if orchestrator.enabled:
             try:
-                orchestrator.ensure_ready(db)
+                # wait_for_ready=False on user-facing API path (fast-fail
+                # to Claude on cold-start), True on background paths
+                # (polling, login sweep — those can afford to wait).
+                orchestrator.ensure_ready(db, wait_for_ready=wait_for_ready)
             except RunPodUnavailableError as exc:
                 if settings.allow_claude_fallback:
                     use_fallback = True
-                    fallback_reason = f"runpod_unavailable: {exc}"
+                    # Reason string structure: first colon-separated token is
+                    # the canonical reason code from the orchestrator (e.g.
+                    # "runpod_cold_start_in_progress" for fast-fail,
+                    # "daily_cap_reached" for circuit breaker). Audit log
+                    # dashboards can filter on this prefix.
+                    fallback_reason = str(exc)
                     logger.warning(
                         "DraftGenerator: RunPod unavailable, falling back to Claude: %s",
                         exc,

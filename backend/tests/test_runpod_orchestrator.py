@@ -172,7 +172,7 @@ def test_ensure_ready_daily_cap_reached_raises(db_session, enabled_orchestrator)
     db_session.commit()
 
     with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
-        with pytest.raises(RunPodUnavailableError, match="daily cap"):
+        with pytest.raises(RunPodUnavailableError, match="daily_cap_reached"):
             enabled_orchestrator.ensure_ready(db_session)
     mock_client.start_pod.assert_not_called()
 
@@ -194,7 +194,9 @@ def test_ensure_ready_start_failure_raises(db_session, enabled_orchestrator):
     with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
         mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
         mock_client.start_pod.return_value = False
-        with pytest.raises(RunPodUnavailableError, match="start_pod accept failed"):
+        # New: failure surfaces as terminal_state=START_FAILED from the
+        # background-start path (refactor for fast-fail mode).
+        with pytest.raises(RunPodUnavailableError, match="terminal_state=START_FAILED"):
             enabled_orchestrator.ensure_ready(db_session)
 
 
@@ -206,7 +208,8 @@ def test_ensure_ready_wait_timeout_raises(db_session, enabled_orchestrator):
         mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
         mock_client.start_pod.return_value = True
         mock_client.wait_for_running.return_value = None  # timeout
-        with pytest.raises(RunPodUnavailableError, match="did not reach RUNNING"):
+        # New: wait_for_running returning None surfaces as terminal_state=FAILED_START
+        with pytest.raises(RunPodUnavailableError, match="terminal_state=FAILED_START"):
             enabled_orchestrator.ensure_ready(db_session)
 
 
@@ -221,7 +224,8 @@ def test_ensure_ready_probe_failure_raises(db_session, enabled_orchestrator):
             "https://test-pod-8000.proxy.runpod.net/v1"
         )
         mock_client.probe_vllm.return_value = False
-        with pytest.raises(RunPodUnavailableError, match="vLLM did not respond"):
+        # New: probe failure surfaces as terminal_state=UNHEALTHY
+        with pytest.raises(RunPodUnavailableError, match="terminal_state=UNHEALTHY"):
             enabled_orchestrator.ensure_ready(db_session)
 
 
@@ -402,6 +406,203 @@ def test_status_snapshot_enabled_returns_full_state(db_session, enabled_orchestr
     assert "daily_cap_remaining_seconds" in snap
 
 
+# ── wake_async ───────────────────────────────────────────────────────────────
+
+
+def _wait_for_bg_thread(orchestrator, timeout: float = 5.0) -> None:
+    """Wait for any background-start thread to finish.
+
+    Avoids flakiness: tests that mock runpod_client need the bg thread to
+    finish *within* the patch context, otherwise the next test's patch
+    catches stale invocations.
+    """
+    orchestrator._start_completed.wait(timeout=timeout)
+
+
+def test_wake_async_disabled_returns_disabled(db_session: Session):
+    from app.services.runpod_orchestrator import (
+        get_runpod_orchestrator,
+        reset_runpod_orchestrator,
+    )
+    reset_runpod_orchestrator()
+    orchestrator = get_runpod_orchestrator()
+    assert orchestrator.wake_async(db_session) == {"status": "disabled"}
+
+
+def test_wake_async_running_and_healthy_returns_ready(db_session, enabled_orchestrator):
+    """Pod already RUNNING + healthy → no bg start, status=ready."""
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "RUNNING"}
+        mock_client.list_models.return_value = ["test/model"]
+        result = enabled_orchestrator.wake_async(db_session)
+    assert result["status"] == "ready"
+    assert result["pod_id"] == "test-pod-id"
+    mock_client.start_pod.assert_not_called()
+
+
+def test_wake_async_exited_spawns_background_start(db_session, enabled_orchestrator):
+    """Pod EXITED → bg thread spawned, status=starting."""
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
+        mock_client.start_pod.return_value = True
+        mock_client.wait_for_running.return_value = (
+            "https://test-pod-8000.proxy.runpod.net/v1"
+        )
+        mock_client.probe_vllm.return_value = True
+
+        result = enabled_orchestrator.wake_async(db_session)
+        assert result["status"] == "starting"
+        assert result["pod_id"] == "test-pod-id"
+
+        # Wait for bg thread to finish before exiting the patch
+        _wait_for_bg_thread(enabled_orchestrator)
+
+    mock_client.start_pod.assert_called_once()
+
+
+def test_wake_async_second_call_returns_already_starting(
+    db_session, enabled_orchestrator
+):
+    """Calling wake_async twice in rapid succession → second returns already_starting."""
+    # Block the bg thread by making start_pod hang briefly
+    import threading
+    block = threading.Event()
+
+    def slow_start_pod(*a, **kw):
+        block.wait(timeout=3.0)
+        return True
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
+        mock_client.start_pod.side_effect = slow_start_pod
+        mock_client.wait_for_running.return_value = (
+            "https://test-pod-8000.proxy.runpod.net/v1"
+        )
+        mock_client.probe_vllm.return_value = True
+
+        # First call: spawns bg thread
+        first = enabled_orchestrator.wake_async(db_session)
+        assert first["status"] == "starting"
+
+        # Second call while bg thread blocked: already_starting
+        second = enabled_orchestrator.wake_async(db_session)
+        assert second["status"] == "already_starting"
+
+        # Release bg thread + wait for it
+        block.set()
+        _wait_for_bg_thread(enabled_orchestrator)
+
+
+def test_wake_async_missing_pod_returns_missing(db_session, enabled_orchestrator):
+    """fetch_pod returns None → status=missing (no exception, no bg start)."""
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = None
+        result = enabled_orchestrator.wake_async(db_session)
+    assert result["status"] == "missing"
+    mock_client.start_pod.assert_not_called()
+
+
+def test_wake_async_daily_cap_returns_capacity_exceeded(
+    db_session, enabled_orchestrator
+):
+    """uptime_today_seconds >= cap → status=capacity_exceeded (no API call, no bg start)."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        uptime_today_seconds=11 * 3600,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        result = enabled_orchestrator.wake_async(db_session)
+    assert result["status"] == "capacity_exceeded"
+    assert result["uptime_today_seconds"] >= 11 * 3600
+    mock_client.fetch_pod.assert_not_called()
+
+
+# ── ensure_ready fast-fail (wait_for_ready=False) ────────────────────────────
+
+
+def test_ensure_ready_fast_fail_returns_url_when_pod_running(
+    db_session, enabled_orchestrator
+):
+    """Pod RUNNING + healthy → returns URL immediately, no bg start (same as default)."""
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "RUNNING"}
+        mock_client.list_models.return_value = ["test/model"]
+        url = enabled_orchestrator.ensure_ready(db_session, wait_for_ready=False)
+    assert url == "https://test-pod-8000.proxy.runpod.net/v1"
+    mock_client.start_pod.assert_not_called()
+
+
+def test_ensure_ready_fast_fail_raises_immediately_when_pod_exited(
+    db_session, enabled_orchestrator
+):
+    """Pod EXITED → fast-fail raises RunPodUnavailableError + spawns bg start."""
+    from app.services.runpod_orchestrator import RunPodUnavailableError
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
+        mock_client.start_pod.return_value = True
+        mock_client.wait_for_running.return_value = (
+            "https://test-pod-8000.proxy.runpod.net/v1"
+        )
+        mock_client.probe_vllm.return_value = True
+
+        with pytest.raises(
+            RunPodUnavailableError, match="runpod_cold_start_in_progress"
+        ):
+            enabled_orchestrator.ensure_ready(db_session, wait_for_ready=False)
+
+        # The bg start should have been kicked off (one of these will be called)
+        _wait_for_bg_thread(enabled_orchestrator)
+
+    # After bg thread completes, start_pod should have been called
+    mock_client.start_pod.assert_called_once()
+
+
+def test_ensure_ready_fast_fail_concurrent_calls_only_spawn_one_bg_thread(
+    db_session, enabled_orchestrator
+):
+    """Two ensure_ready(wait_for_ready=False) calls → only one bg thread spawns."""
+    from app.services.runpod_orchestrator import RunPodUnavailableError
+
+    import threading
+    block = threading.Event()
+    start_pod_call_count = [0]
+
+    def slow_counting_start_pod(*a, **kw):
+        start_pod_call_count[0] += 1
+        block.wait(timeout=3.0)
+        return True
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
+        mock_client.start_pod.side_effect = slow_counting_start_pod
+        mock_client.wait_for_running.return_value = (
+            "https://test-pod-8000.proxy.runpod.net/v1"
+        )
+        mock_client.probe_vllm.return_value = True
+
+        # First call spawns bg thread + raises
+        with pytest.raises(RunPodUnavailableError):
+            enabled_orchestrator.ensure_ready(db_session, wait_for_ready=False)
+
+        # Second call: bg is still running. Should also raise without
+        # spawning a second start_pod call.
+        with pytest.raises(RunPodUnavailableError):
+            enabled_orchestrator.ensure_ready(db_session, wait_for_ready=False)
+
+        # Release bg thread + wait
+        block.set()
+        _wait_for_bg_thread(enabled_orchestrator)
+
+    # start_pod should have been called exactly once (one bg thread)
+    assert start_pod_call_count[0] == 1
+
+
 # ── Integration: draft_generator fallback path ───────────────────────────────
 
 
@@ -470,8 +671,11 @@ def test_draft_generator_falls_back_to_claude_on_runpod_unavailable(
     # get_runpod_orchestrator() returns our prepared mock.
     fake_orchestrator = MagicMock()
     fake_orchestrator.enabled = True
+    # Use the canonical reason code shape the orchestrator now produces.
+    # The draft_generator preserves this verbatim in the audit log so
+    # downstream dashboards can filter fallbacks by cause.
     fake_orchestrator.ensure_ready.side_effect = RunPodUnavailableError(
-        "test: pod start failed"
+        "runpod_capacity_error: test capacity failure"
     )
     monkeypatch.setattr(
         "app.services.draft_generator.get_runpod_orchestrator",
@@ -510,7 +714,10 @@ def test_draft_generator_falls_back_to_claude_on_runpod_unavailable(
     )
     assert len(fallback_rows) == 1
     details = fallback_rows[0].details
-    assert details["reason"].startswith("runpod_unavailable")
+    # Reason is the structured reason code from the orchestrator. Filter
+    # criteria: prefix matches one of the canonical codes documented in
+    # runpod_orchestrator.py module docstring.
+    assert details["reason"].startswith("runpod_capacity_error")
     assert details["draft_id"] == str(draft.id)
 
     # draft.generated also records the fallback flag for dashboards

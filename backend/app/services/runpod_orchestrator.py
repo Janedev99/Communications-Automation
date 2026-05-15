@@ -456,19 +456,31 @@ class RunPodOrchestrator:
         state = _load_or_create_state(db, self._pod_id)
         _maybe_reset_daily_counter(state)
 
-        # Pull live cost-per-hour from RunPod. Fail soft — if the fetch
-        # errors or the pod is gone, leave cost fields None.
+        # Pull live cost-per-hour AND authoritative state from RunPod.
+        # Fail soft on any error — cost goes null, display falls back to
+        # the cached state. This is also where we reconcile cache drift:
+        # status_snapshot is otherwise the only orchestrator path that
+        # doesn't sync with RunPod's view, so a fresh deploy (cache null)
+        # or out-of-band stop (cache says RUNNING, RunPod says EXITED)
+        # would display stale data without this sync.
         cost_per_hour: float | None = None
+        display_state: str | None = state.last_known_state  # cache fallback
         try:
             pod = runpod_client.fetch_pod(self._api_key, self._pod_id)
-            if pod is not None:
+            if pod is None:
+                # 404 — pod terminated externally / never existed.
+                display_state = "MISSING"
+            else:
+                live_status = pod.get("desiredStatus")
+                if live_status:
+                    display_state = live_status
                 raw = pod.get("costPerHr")
                 if raw is not None:
                     cost_per_hour = float(raw)
         except Exception:
             logger.warning(
-                "status_snapshot: cost-per-hour fetch failed for %s; "
-                "cost fields will be null this tick",
+                "status_snapshot: RunPod fetch failed for %s; "
+                "cost fields null and display falls back to cached state",
                 self._pod_id,
                 exc_info=True,
             )
@@ -479,11 +491,12 @@ class RunPodOrchestrator:
         # session, add the in-flight delta here. The DB row stays untouched
         # (this is a read path) — accounting source of truth still lives in
         # _stop_and_account.
+        # Gated on display_state (live RunPod view when available) rather
+        # than cached last_known_state, so a stale cache that disagrees with
+        # RunPod doesn't fabricate in-flight uptime for a pod that's
+        # actually stopped.
         effective_uptime = state.uptime_today_seconds
-        if (
-            state.last_known_state == "RUNNING"
-            and state.last_started_at is not None
-        ):
+        if display_state == "RUNNING" and state.last_started_at is not None:
             in_flight_seconds = (_now() - state.last_started_at).total_seconds()
             if in_flight_seconds > 0:
                 effective_uptime = state.uptime_today_seconds + int(in_flight_seconds)
@@ -498,7 +511,7 @@ class RunPodOrchestrator:
             "enabled": True,
             "pod_id": self._pod_id,
             "inference_url": runpod_client.pod_inference_url(self._pod_id),
-            "last_known_state": state.last_known_state,
+            "last_known_state": display_state,
             "last_used_at": state.last_used_at.isoformat() if state.last_used_at else None,
             "last_started_at": state.last_started_at.isoformat() if state.last_started_at else None,
             "last_stopped_at": state.last_stopped_at.isoformat() if state.last_stopped_at else None,

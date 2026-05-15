@@ -475,7 +475,7 @@ def test_status_snapshot_includes_in_flight_session_uptime(
 def test_status_snapshot_cost_fields_null_when_fetch_fails(
     db_session, enabled_orchestrator
 ):
-    """RunPod fetch raising → cost fields stay null, snapshot still returns."""
+    """RunPod fetch raising → cost fields stay null, display falls back to cache."""
     state = RunPodState(
         pod_id="test-pod-id",
         last_known_state="RUNNING",
@@ -494,6 +494,91 @@ def test_status_snapshot_cost_fields_null_when_fetch_fails(
     assert snap["enabled"] is True
     assert snap["cost_per_hour_usd"] is None
     assert snap["cost_today_usd_estimate"] is None
+    # Display state falls back to the cached value when fetch fails.
+    assert snap["last_known_state"] == "RUNNING"
+
+
+def test_status_snapshot_uses_runpod_view_when_cache_is_null(
+    db_session, enabled_orchestrator
+):
+    """Fresh deploy (cache null) → snapshot reflects RunPod's actual state,
+    not the confusing 'Unknown' fallback. This is the reconciliation path
+    that brings status_snapshot in line with the other orchestrator methods,
+    so admins on first page-load see truth instead of a stale cache."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state=None,  # fresh — no previous orchestrator activity
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "EXITED",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    # Display state comes from RunPod's view, not the null cache.
+    assert snap["last_known_state"] == "EXITED"
+
+
+def test_status_snapshot_returns_missing_when_pod_terminated_externally(
+    db_session, enabled_orchestrator
+):
+    """fetch_pod returns None (404) → display state is MISSING regardless of cache."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",  # cache says running, but pod is gone
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = None  # 404
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    assert snap["last_known_state"] == "MISSING"
+    assert snap["cost_per_hour_usd"] is None
+
+
+def test_status_snapshot_in_flight_uptime_gated_on_runpod_view(
+    db_session, enabled_orchestrator
+):
+    """If cache says RUNNING but RunPod says EXITED, don't fabricate in-flight
+    uptime. Without this, a stale cache would inflate the displayed counter."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",  # stale cache
+        last_started_at=now - timedelta(seconds=10000),  # would inflate
+        uptime_today_seconds=600,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        # RunPod's authoritative view: pod is EXITED, not RUNNING
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "EXITED",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    assert snap["last_known_state"] == "EXITED"
+    # No in-flight uptime added because display state isn't RUNNING.
+    assert snap["uptime_today_seconds"] == 600
 
 
 # ── stop_now ─────────────────────────────────────────────────────────────────

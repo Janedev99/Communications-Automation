@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Activity, ChevronRight, Plus, Sliders } from "lucide-react";
+import { Activity, ChevronRight, Plus, Server, Sliders } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
@@ -90,6 +90,26 @@ export default function SettingsPage() {
                 </span>
                 <span className="block text-xs text-muted-foreground mt-1 leading-relaxed">
                   Live status of database, Anthropic, email provider, and notifications.
+                </span>
+              </span>
+            </Link>
+            <Link
+              href="/settings/runpod"
+              className="group flex items-start gap-3 p-4 bg-card border border-border rounded-xl hover:border-foreground/15 hover:shadow-sm transition-all duration-150"
+            >
+              <span className="flex items-center justify-center w-10 h-10 rounded-lg bg-primary/10 text-primary shrink-0">
+                <Server className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="block text-sm font-semibold text-foreground">RunPod</span>
+                  <ChevronRight
+                    className="w-4 h-4 text-muted-foreground shrink-0 group-hover:text-foreground transition-colors"
+                    aria-hidden="true"
+                  />
+                </span>
+                <span className="block text-xs text-muted-foreground mt-1 leading-relaxed">
+                  GPU pod state, uptime, cost so far, and manual stop / wake controls.
                 </span>
               </span>
             </Link>

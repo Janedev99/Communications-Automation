@@ -7,6 +7,7 @@ import {
   Activity,
   ArrowLeft,
   BookOpen,
+  ChevronRight,
   Clock,
   Database,
   Globe,
@@ -230,8 +231,36 @@ function IntegrationCard({
           </button>
         </div>
       )}
+
+      {/* RunPod-specific deep link.
+          The "llm" card is provider-agnostic — we only show the manage link
+          when the active provider routes through RunPod's proxy (openai_compat
+          base_url contains "runpod"). Otherwise the link wouldn't surface
+          anything useful (the orchestrator only manages RunPod pods). */}
+      {item.id === "llm" && isRunPodLLM(item.config) && (
+        <div className="mt-3">
+          <Link
+            href="/settings/runpod"
+            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          >
+            Manage RunPod
+            <ChevronRight className="w-3 h-3" />
+          </Link>
+        </div>
+      )}
     </div>
   );
+}
+
+// Detect whether the active LLM provider is RunPod. The integrations endpoint
+// flattens config to strings, so we check both common shapes: provider field
+// set to "runpod" explicitly, or an openai-compatible base URL containing
+// runpod's proxy host.
+function isRunPodLLM(config: Record<string, unknown>): boolean {
+  const provider = String(config?.provider ?? "").toLowerCase();
+  if (provider.includes("runpod")) return true;
+  const baseUrl = String(config?.base_url ?? "");
+  return baseUrl.includes("runpod.net") || baseUrl.includes("runpod.io");
 }
 
 function CardSkeleton() {

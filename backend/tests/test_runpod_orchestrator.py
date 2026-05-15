@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.orm import Session
 
+from app.models.runpod_daily_usage import RunPodDailyUsage
 from app.models.runpod_state import RunPodState
 
 
@@ -34,6 +35,7 @@ def enabled_orchestrator(monkeypatch, db_session):
     the pod_id PK collides on the second test that uses this fixture.
     """
     # Purge any leftover state from previous tests
+    db_session.query(RunPodDailyUsage).delete()
     db_session.query(RunPodState).delete()
     db_session.commit()
 
@@ -397,13 +399,319 @@ def test_status_snapshot_disabled_returns_enabled_false(db_session):
 
 
 def test_status_snapshot_enabled_returns_full_state(db_session, enabled_orchestrator):
-    """Enabled orchestrator status_snapshot includes pod_id, caps, and counters."""
-    snap = enabled_orchestrator.status_snapshot(db_session)
+    """Enabled orchestrator status_snapshot includes pod_id, caps, counters, and live cost."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        uptime_today_seconds=3600,  # 1h today
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = (
+            "https://test-pod-id-8000.proxy.runpod.net/v1"
+        )
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
     assert snap["enabled"] is True
     assert snap["pod_id"] == "test-pod-id"
     assert snap["daily_cap_seconds"] == 10 * 3600
     assert snap["idle_timeout_seconds"] == 300
     assert "daily_cap_remaining_seconds" in snap
+    # Live cost: 2.99/hr × 1h = 2.99
+    assert snap["cost_per_hour_usd"] == 2.99
+    assert snap["cost_today_usd_estimate"] == 2.99
+    assert snap["inference_url"].endswith("/v1")
+
+
+def test_status_snapshot_includes_in_flight_session_uptime(
+    db_session, enabled_orchestrator
+):
+    """During a RUNNING session, uptime_today_seconds reflects committed
+    sessions PLUS the in-flight one. Otherwise the displayed counter (and
+    cost estimate) would freeze mid-session until the next stop."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        last_started_at=now - timedelta(seconds=600),  # 10 min in flight
+        uptime_today_seconds=1200,  # 20 min from earlier sessions today
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    # 1200s persisted + ~600s in-flight = ~1800s. Allow slack for test timing.
+    assert snap["uptime_today_seconds"] >= 1790
+    assert snap["uptime_today_seconds"] <= 1810
+    # cap_remaining and cost should reflect the same effective uptime
+    assert (
+        snap["daily_cap_remaining_seconds"] + snap["uptime_today_seconds"]
+        == snap["daily_cap_seconds"]
+    )
+    # ~30 min × $2.99/hr ≈ $1.50
+    assert snap["cost_today_usd_estimate"] is not None
+    assert 1.40 <= snap["cost_today_usd_estimate"] <= 1.60
+
+    # DB row must NOT have been mutated — the in-flight add is read-only.
+    db_session.refresh(state)
+    assert state.uptime_today_seconds == 1200
+
+
+def test_status_snapshot_cost_fields_null_when_fetch_fails(
+    db_session, enabled_orchestrator
+):
+    """RunPod fetch raising → cost fields stay null, display falls back to cache."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        uptime_today_seconds=1800,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.side_effect = RuntimeError("network down")
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    assert snap["enabled"] is True
+    assert snap["cost_per_hour_usd"] is None
+    assert snap["cost_today_usd_estimate"] is None
+    # Display state falls back to the cached value when fetch fails.
+    assert snap["last_known_state"] == "RUNNING"
+
+
+def test_status_snapshot_uses_runpod_view_when_cache_is_null(
+    db_session, enabled_orchestrator
+):
+    """Fresh deploy (cache null) → snapshot reflects RunPod's actual state,
+    not the confusing 'Unknown' fallback. This is the reconciliation path
+    that brings status_snapshot in line with the other orchestrator methods,
+    so admins on first page-load see truth instead of a stale cache."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state=None,  # fresh — no previous orchestrator activity
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "EXITED",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    # Display state comes from RunPod's view, not the null cache.
+    assert snap["last_known_state"] == "EXITED"
+
+
+def test_status_snapshot_returns_missing_when_pod_terminated_externally(
+    db_session, enabled_orchestrator
+):
+    """fetch_pod returns None (404) → display state is MISSING regardless of cache."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",  # cache says running, but pod is gone
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = None  # 404
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    assert snap["last_known_state"] == "MISSING"
+    assert snap["cost_per_hour_usd"] is None
+
+
+def test_status_snapshot_in_flight_uptime_gated_on_runpod_view(
+    db_session, enabled_orchestrator
+):
+    """If cache says RUNNING but RunPod says EXITED, don't fabricate in-flight
+    uptime. Without this, a stale cache would inflate the displayed counter."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",  # stale cache
+        last_started_at=now - timedelta(seconds=10000),  # would inflate
+        uptime_today_seconds=600,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        # RunPod's authoritative view: pod is EXITED, not RUNNING
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "EXITED",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        snap = enabled_orchestrator.status_snapshot(db_session)
+
+    assert snap["last_known_state"] == "EXITED"
+    # No in-flight uptime added because display state isn't RUNNING.
+    assert snap["uptime_today_seconds"] == 600
+
+
+# ── stop_now ─────────────────────────────────────────────────────────────────
+
+
+def test_stop_now_disabled_returns_disabled(db_session: Session):
+    """Disabled orchestrator stop_now is a no-op echoing disabled status."""
+    from app.services.runpod_orchestrator import (
+        get_runpod_orchestrator,
+        reset_runpod_orchestrator,
+    )
+    reset_runpod_orchestrator()
+    orchestrator = get_runpod_orchestrator()
+    assert orchestrator.stop_now(db_session) == {"status": "disabled"}
+
+
+def test_stop_now_running_stops_and_accounts(db_session, enabled_orchestrator):
+    """Pod RUNNING per RunPod → stop_pod called, session uptime added to counter."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        last_started_at=now - timedelta(seconds=600),  # 10 min session
+        last_used_at=now - timedelta(seconds=30),  # very recent (not idle)
+        uptime_today_seconds=0,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "RUNNING"}
+        mock_client.stop_pod.return_value = True
+        result = enabled_orchestrator.stop_now(db_session)
+
+    assert result["status"] == "stopped"
+    assert result["pod_id"] == "test-pod-id"
+    mock_client.stop_pod.assert_called_once()
+
+    db_session.refresh(state)
+    assert state.last_known_state == "EXITED"
+    assert state.last_started_at is None
+    # ~600s session uptime; allow slack for test timing
+    assert state.uptime_today_seconds >= 550
+    assert result["uptime_today_seconds"] == state.uptime_today_seconds
+
+
+def test_stop_now_already_exited_no_double_accounting(
+    db_session, enabled_orchestrator
+):
+    """Pod EXITED per RunPod → no stop call, no phantom uptime added.
+
+    This is the cache-drift footgun the stop_now method exists to prevent:
+    if we trusted last_known_state and called stop_pod, RunPod would 2xx
+    the request and we'd add `now - last_started_at` to uptime — but the
+    pod was already stopped, so that uptime never actually happened.
+    """
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",  # cache disagrees with RunPod
+        last_started_at=now - timedelta(seconds=10000),  # would inflate counter
+        uptime_today_seconds=1200,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "EXITED"}
+        result = enabled_orchestrator.stop_now(db_session)
+
+    assert result["status"] == "already_stopped"
+    assert result["last_known_state"] == "EXITED"
+    mock_client.stop_pod.assert_not_called()
+
+    db_session.refresh(state)
+    assert state.last_known_state == "EXITED"  # synced
+    assert state.last_started_at is None  # cleared
+    assert state.uptime_today_seconds == 1200  # unchanged — no phantom add
+
+
+def test_stop_now_missing_pod_returns_missing(db_session, enabled_orchestrator):
+    """Pod terminated externally → status 'missing', cache synced."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        uptime_today_seconds=0,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = None
+        result = enabled_orchestrator.stop_now(db_session)
+
+    assert result["status"] == "missing"
+    db_session.refresh(state)
+    assert state.last_known_state == "MISSING"
+
+
+def test_stop_now_stop_call_failed_returns_stop_failed(
+    db_session, enabled_orchestrator
+):
+    """RunPod refuses the stop request → state stays RUNNING, retry next time."""
+    now = datetime.now(timezone.utc)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        last_started_at=now - timedelta(seconds=600),
+        uptime_today_seconds=0,
+        uptime_day_utc=now.date(),
+        updated_at=now,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {"desiredStatus": "RUNNING"}
+        mock_client.stop_pod.return_value = False  # refused
+        result = enabled_orchestrator.stop_now(db_session)
+
+    assert result["status"] == "stop_failed"
+    db_session.refresh(state)
+    assert state.last_known_state == "RUNNING"  # unchanged — retry next time
+    assert state.uptime_today_seconds == 0  # not accounted
 
 
 # ── wake_async ───────────────────────────────────────────────────────────────
@@ -520,6 +828,271 @@ def test_wake_async_daily_cap_returns_capacity_exceeded(
     assert result["status"] == "capacity_exceeded"
     assert result["uptime_today_seconds"] >= 11 * 3600
     mock_client.fetch_pod.assert_not_called()
+
+
+# ── Daily usage history (rollover capture + history()) ──────────────────────
+
+
+def test_daily_counter_rollover_persists_previous_day_to_history(
+    db_session, enabled_orchestrator
+):
+    """When uptime_day_utc rolls forward, the closing day's totals get
+    captured to runpod_daily_usage so the admin UI can show history."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=7200,  # 2h yesterday
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=2.99,  # rate cached from a prior fetch
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    # Trigger the rollover via any orchestrator method that calls
+    # _maybe_reset_daily_counter. stop_if_idle is simplest: it runs the
+    # rollover check, then early-returns on non-RUNNING state without
+    # making any RunPod API calls (no mocks needed).
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    # Yesterday's row should now exist.
+    row = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.pod_id == "test-pod-id")
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .one()
+    )
+    assert row.uptime_seconds == 7200
+    assert row.cost_per_hour_usd == 2.99
+    # 2h × $2.99 = $5.98
+    assert row.cost_usd == pytest.approx(5.98, abs=0.01)
+
+    # Today's counter is reset.
+    db_session.refresh(state)
+    assert state.uptime_today_seconds == 0
+    assert state.uptime_day_utc == today_utc
+
+
+def test_daily_rollover_idempotent_on_duplicate_run(
+    db_session, enabled_orchestrator
+):
+    """If the rollover fires twice for the same day (e.g. across process
+    restarts), the second attempt is a no-op — composite PK + SELECT-first
+    check prevents duplicate rows."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+
+    # Pre-seed yesterday's row to simulate "we already captured this once."
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="test-pod-id",
+            day_utc=yesterday_utc,
+            uptime_seconds=3600,
+            cost_per_hour_usd=2.50,
+            cost_usd=2.50,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=7200,  # totally different value
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=2.99,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    # Still exactly one row, with the ORIGINAL values (no overwrite).
+    rows = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].uptime_seconds == 3600  # original, not 7200
+    assert rows[0].cost_usd == 2.50
+
+
+def test_daily_rollover_skips_capture_when_uptime_is_zero(
+    db_session, enabled_orchestrator
+):
+    """Zero-uptime days don't pollute the history table — the rollover
+    silently skips them. An absent row is meaningfully different from a
+    row with cost_usd=0, and the chart UI treats both as 'no usage.'"""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=0,  # nothing happened yesterday
+        uptime_day_utc=yesterday_utc,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    rows = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.pod_id == "test-pod-id")
+        .all()
+    )
+    assert rows == []
+
+
+def test_daily_rollover_captures_uptime_when_rate_unknown(
+    db_session, enabled_orchestrator
+):
+    """If last_cost_per_hour_usd is null (e.g. RunPod was unreachable all
+    day), still capture the uptime — better to have N hours with cost_usd=null
+    than to lose the data entirely."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=3600,
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=None,  # never fetched
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    row = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .one()
+    )
+    assert row.uptime_seconds == 3600
+    assert row.cost_per_hour_usd is None
+    assert row.cost_usd is None
+
+
+def test_status_snapshot_caches_observed_cost_per_hour(
+    db_session, enabled_orchestrator
+):
+    """status_snapshot opportunistically refreshes last_cost_per_hour_usd
+    on the state row, so the rollover always has a recent rate to multiply
+    against without making its own API call at midnight."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        last_cost_per_hour_usd=None,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        enabled_orchestrator.status_snapshot(db_session)
+    db_session.commit()
+
+    db_session.refresh(state)
+    assert state.last_cost_per_hour_usd == 2.99
+
+
+def test_history_returns_newest_first_and_respects_days_cap(
+    db_session, enabled_orchestrator
+):
+    """history(days=N) returns the last N captured days sorted desc.
+    The N param is clamped to [1, 90] server-side."""
+    today_utc = datetime.now(timezone.utc).date()
+    # Seed 5 days of history with distinct uptimes
+    for i in range(5):
+        db_session.add(
+            RunPodDailyUsage(
+                pod_id="test-pod-id",
+                day_utc=today_utc - timedelta(days=i + 1),
+                uptime_seconds=3600 * (i + 1),
+                cost_per_hour_usd=2.99,
+                cost_usd=2.99 * (i + 1),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    db_session.commit()
+
+    items = enabled_orchestrator.history(db_session, days=3)
+    assert len(items) == 3
+    # Newest first: yesterday, day before, day before that
+    assert items[0]["day_utc"] == (today_utc - timedelta(days=1)).isoformat()
+    assert items[2]["day_utc"] == (today_utc - timedelta(days=3)).isoformat()
+    assert items[0]["uptime_seconds"] == 3600
+    assert items[0]["cost_usd"] == 2.99
+
+    # Asking for 200 days returns at most 90 (cap) but here we only have 5
+    items_all = enabled_orchestrator.history(db_session, days=200)
+    assert len(items_all) == 5
+
+    # days=0 clamps up to 1 (single newest row)
+    items_one = enabled_orchestrator.history(db_session, days=0)
+    assert len(items_one) == 1
+
+
+def test_history_only_returns_rows_for_this_pod(
+    db_session, enabled_orchestrator
+):
+    """If another pod's history rows exist (e.g. from a previous deploy),
+    history() must scope to the current pod_id only."""
+    today_utc = datetime.now(timezone.utc).date()
+    # Foreign pod's row
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="other-pod-id",
+            day_utc=today_utc - timedelta(days=1),
+            uptime_seconds=99999,
+            cost_per_hour_usd=2.99,
+            cost_usd=999.99,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    # Our pod's row
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="test-pod-id",
+            day_utc=today_utc - timedelta(days=1),
+            uptime_seconds=3600,
+            cost_per_hour_usd=2.99,
+            cost_usd=2.99,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    items = enabled_orchestrator.history(db_session, days=30)
+    assert len(items) == 1
+    assert items[0]["uptime_seconds"] == 3600
+
+
+def test_history_disabled_returns_empty_list(db_session: Session):
+    """Disabled orchestrator returns [] from history — no DB query needed."""
+    from app.services.runpod_orchestrator import (
+        get_runpod_orchestrator,
+        reset_runpod_orchestrator,
+    )
+    reset_runpod_orchestrator()
+    orchestrator = get_runpod_orchestrator()
+    assert orchestrator.history(db_session, days=30) == []
 
 
 # ── ensure_ready fast-fail (wait_for_ready=False) ────────────────────────────

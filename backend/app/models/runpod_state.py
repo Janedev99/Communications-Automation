@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Integer, String
+from sqlalchemy import Date, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -87,6 +87,16 @@ class RunPodState(Base):
     # the counter before adding the current session's uptime.
     uptime_day_utc: Mapped[date | None] = mapped_column(
         Date,
+        nullable=True,
+    )
+
+    # Most recent cost-per-hour observed from RunPod. Cached so that the
+    # daily-rollover write in _maybe_reset_daily_counter doesn't have to
+    # make a fresh API call at midnight UTC (which could be slow or fail).
+    # Updated opportunistically every time status_snapshot fetches the
+    # pod, so it stays current as long as the admin UI is being used.
+    last_cost_per_hour_usd: Mapped[float | None] = mapped_column(
+        Float,
         nullable=True,
     )
 

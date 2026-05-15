@@ -37,6 +37,10 @@ in-process service that:
   6. status_snapshot(db)
        Read-only summary for diagnostics / admin UI.
 
+  7. history(db, days)
+       Returns the last N days of captured daily usage (runpod_daily_usage
+       rows). Used by the admin UI to render the day-by-day cost history.
+
 Concurrency model
 -----------------
 The slow path (start_pod -> wait_for_running -> probe_vllm, up to 3 min)
@@ -79,6 +83,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.models.runpod_daily_usage import RunPodDailyUsage
 from app.models.runpod_state import RunPodState
 from app.services import runpod_client
 
@@ -140,16 +145,65 @@ def _load_or_create_state(db: Session, pod_id: str) -> RunPodState:
     return row
 
 
-def _maybe_reset_daily_counter(state: RunPodState) -> None:
-    """Roll uptime_today_seconds back to 0 when the UTC date changes."""
+def _maybe_reset_daily_counter(state: RunPodState, db: Session | None = None) -> None:
+    """Roll uptime_today_seconds back to 0 when the UTC date changes.
+
+    Before zeroing, persist the closing day's totals to runpod_daily_usage
+    so the admin UI can show a 30-day history. Capture is idempotent —
+    if a RunPodDailyUsage row already exists for (pod_id, prior_day) the
+    write is skipped, so re-running the rollover after a process restart
+    can't create duplicate rows. The SELECT-first approach is portable
+    across SQLite (test conftest) and Postgres (production); the
+    orchestrator holds _lock during the call path that reaches here, so
+    no in-process race.
+
+    db is optional so legacy in-test callers that pre-date the history
+    feature don't have to be updated all at once — when None, the
+    rollover happens without capture (the pre-existing behavior).
+    """
     today = _today_utc()
-    if state.uptime_day_utc != today:
-        logger.info(
-            "runpod_orchestrator: daily counter rolled %s -> %s (was %ds)",
-            state.uptime_day_utc, today, state.uptime_today_seconds,
-        )
-        state.uptime_today_seconds = 0
-        state.uptime_day_utc = today
+    if state.uptime_day_utc == today:
+        return
+
+    prior_day = state.uptime_day_utc
+    prior_seconds = state.uptime_today_seconds
+
+    # Capture if we have a db handle AND there's actually something to record.
+    # uptime_seconds == 0 days are skipped to keep the table tight; an absent
+    # row in the history table is meaningfully different from "0 hours used."
+    if db is not None and prior_day is not None and prior_seconds > 0:
+        rate = state.last_cost_per_hour_usd
+        cost: float | None = None
+        if rate is not None:
+            cost = round(rate * (prior_seconds / 3600.0), 4)
+        existing = db.execute(
+            select(RunPodDailyUsage).where(
+                RunPodDailyUsage.pod_id == state.pod_id,
+                RunPodDailyUsage.day_utc == prior_day,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                RunPodDailyUsage(
+                    pod_id=state.pod_id,
+                    day_utc=prior_day,
+                    uptime_seconds=prior_seconds,
+                    cost_per_hour_usd=rate,
+                    cost_usd=cost,
+                    created_at=_now(),
+                )
+            )
+            logger.info(
+                "runpod_orchestrator: captured daily usage %s = %ds (%.4f USD)",
+                prior_day, prior_seconds, cost if cost is not None else 0.0,
+            )
+
+    logger.info(
+        "runpod_orchestrator: daily counter rolled %s -> %s (was %ds)",
+        prior_day, today, prior_seconds,
+    )
+    state.uptime_today_seconds = 0
+    state.uptime_day_utc = today
 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────────
@@ -220,7 +274,7 @@ class RunPodOrchestrator:
         # to schedule a background start?
         with _lock:
             state = _load_or_create_state(db, self._pod_id)
-            _maybe_reset_daily_counter(state)
+            _maybe_reset_daily_counter(state, db)
 
             # Hard daily cap — refuse to even check pod state. This is the
             # budget circuit breaker.
@@ -298,7 +352,7 @@ class RunPodOrchestrator:
 
         with _lock:
             state = _load_or_create_state(db, self._pod_id)
-            _maybe_reset_daily_counter(state)
+            _maybe_reset_daily_counter(state, db)
 
             if state.uptime_today_seconds >= self._daily_cap_s:
                 state.updated_at = _now()
@@ -349,7 +403,7 @@ class RunPodOrchestrator:
             return False
         with _lock:
             state = _load_or_create_state(db, self._pod_id)
-            _maybe_reset_daily_counter(state)
+            _maybe_reset_daily_counter(state, db)
 
             # Only act on pods we believe to be RUNNING. STARTING/EXITED/etc
             # are left alone — ensure_ready and the bg thread own those.
@@ -392,7 +446,7 @@ class RunPodOrchestrator:
 
         with _lock:
             state = _load_or_create_state(db, self._pod_id)
-            _maybe_reset_daily_counter(state)
+            _maybe_reset_daily_counter(state, db)
 
             # Fetch RunPod's ground truth before deciding. Cheap — one GET.
             current = runpod_client.fetch_pod(self._api_key, self._pod_id)
@@ -454,7 +508,7 @@ class RunPodOrchestrator:
         if not self.enabled:
             return {"enabled": False}
         state = _load_or_create_state(db, self._pod_id)
-        _maybe_reset_daily_counter(state)
+        _maybe_reset_daily_counter(state, db)
 
         # Pull live cost-per-hour AND authoritative state from RunPod.
         # Fail soft on any error — cost goes null, display falls back to
@@ -477,6 +531,13 @@ class RunPodOrchestrator:
                 raw = pod.get("costPerHr")
                 if raw is not None:
                     cost_per_hour = float(raw)
+                    # Opportunistically refresh the cached rate so the
+                    # daily-rollover write doesn't need its own API call
+                    # at midnight UTC. status_snapshot polls every 30s while
+                    # the admin UI is open, so this stays current as long
+                    # as anyone's looking at the page during the day.
+                    if state.last_cost_per_hour_usd != cost_per_hour:
+                        state.last_cost_per_hour_usd = cost_per_hour
         except Exception:
             logger.warning(
                 "status_snapshot: RunPod fetch failed for %s; "
@@ -526,6 +587,38 @@ class RunPodOrchestrator:
             "cost_per_hour_usd": cost_per_hour,
             "cost_today_usd_estimate": cost_today_estimate,
         }
+
+    def history(self, db: Session, *, days: int = 30) -> list[dict]:
+        """Return the last `days` of daily usage rows, newest first.
+
+        Each row has day_utc, uptime_seconds, cost_per_hour_usd, cost_usd.
+        Days where the pod wasn't used at all simply have no row (we don't
+        synthesize zero rows — the frontend gap-fills if it needs a
+        contiguous chart).
+
+        `days` is clamped to [1, 90] to keep response sizes bounded. The
+        90-cap matches the table's natural retention horizon — if we ever
+        need wider history, we'd add a retention policy and a separate
+        export endpoint rather than blow up the admin UI payload.
+        """
+        if not self.enabled:
+            return []
+        clamped = max(1, min(90, days))
+        rows = db.execute(
+            select(RunPodDailyUsage)
+            .where(RunPodDailyUsage.pod_id == self._pod_id)
+            .order_by(RunPodDailyUsage.day_utc.desc())
+            .limit(clamped)
+        ).scalars().all()
+        return [
+            {
+                "day_utc": r.day_utc.isoformat(),
+                "uptime_seconds": r.uptime_seconds,
+                "cost_per_hour_usd": r.cost_per_hour_usd,
+                "cost_usd": r.cost_usd,
+            }
+            for r in rows
+        ]
 
     # ── Internals ────────────────────────────────────────────────────────────
 

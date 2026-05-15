@@ -5,6 +5,7 @@ POST /api/v1/runpod/wake          — idempotent pre-warm trigger (any user)
 POST /api/v1/runpod/login-sweep   — login-time catch-up on missing drafts (any user)
 POST /api/v1/runpod/stop          — operator-initiated manual stop (Admin only)
 GET  /api/v1/runpod/status        — read-only status (any logged-in user)
+GET  /api/v1/runpod/history       — day-by-day usage + cost (Admin only)
 
 The wake/sweep endpoints are fired by the frontend on dashboard mount as
 part of the cold-start UX strategy: pre-warm starts the pod in background
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin, require_csrf
@@ -132,3 +133,29 @@ def runpod_status(
     snap = orchestrator.status_snapshot(db)
     snap["sweep_in_flight"] = draft_catchup.is_sweep_in_flight()
     return snap
+
+
+@router.get("/history")
+def runpod_history(
+    days: int = Query(30, ge=1, le=90),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> dict:
+    """Day-by-day uptime + cost history. Admin-only.
+
+    Response shape:
+      {
+        "days": <requested-or-clamped>,
+        "items": [
+          {"day_utc": "YYYY-MM-DD", "uptime_seconds": N,
+           "cost_per_hour_usd": X | null, "cost_usd": Y | null},
+          ...
+        ]
+      }
+
+    Items are sorted newest first. Days with zero uptime have no row
+    (gap-fill is the frontend's job if it wants a contiguous chart).
+    """
+    orchestrator = get_runpod_orchestrator()
+    items = orchestrator.history(db, days=days)
+    return {"days": days, "items": items}

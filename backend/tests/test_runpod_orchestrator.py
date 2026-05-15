@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.orm import Session
 
+from app.models.runpod_daily_usage import RunPodDailyUsage
 from app.models.runpod_state import RunPodState
 
 
@@ -34,6 +35,7 @@ def enabled_orchestrator(monkeypatch, db_session):
     the pod_id PK collides on the second test that uses this fixture.
     """
     # Purge any leftover state from previous tests
+    db_session.query(RunPodDailyUsage).delete()
     db_session.query(RunPodState).delete()
     db_session.commit()
 
@@ -826,6 +828,271 @@ def test_wake_async_daily_cap_returns_capacity_exceeded(
     assert result["status"] == "capacity_exceeded"
     assert result["uptime_today_seconds"] >= 11 * 3600
     mock_client.fetch_pod.assert_not_called()
+
+
+# ── Daily usage history (rollover capture + history()) ──────────────────────
+
+
+def test_daily_counter_rollover_persists_previous_day_to_history(
+    db_session, enabled_orchestrator
+):
+    """When uptime_day_utc rolls forward, the closing day's totals get
+    captured to runpod_daily_usage so the admin UI can show history."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=7200,  # 2h yesterday
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=2.99,  # rate cached from a prior fetch
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    # Trigger the rollover via any orchestrator method that calls
+    # _maybe_reset_daily_counter. stop_if_idle is simplest: it runs the
+    # rollover check, then early-returns on non-RUNNING state without
+    # making any RunPod API calls (no mocks needed).
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    # Yesterday's row should now exist.
+    row = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.pod_id == "test-pod-id")
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .one()
+    )
+    assert row.uptime_seconds == 7200
+    assert row.cost_per_hour_usd == 2.99
+    # 2h × $2.99 = $5.98
+    assert row.cost_usd == pytest.approx(5.98, abs=0.01)
+
+    # Today's counter is reset.
+    db_session.refresh(state)
+    assert state.uptime_today_seconds == 0
+    assert state.uptime_day_utc == today_utc
+
+
+def test_daily_rollover_idempotent_on_duplicate_run(
+    db_session, enabled_orchestrator
+):
+    """If the rollover fires twice for the same day (e.g. across process
+    restarts), the second attempt is a no-op — composite PK + SELECT-first
+    check prevents duplicate rows."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+
+    # Pre-seed yesterday's row to simulate "we already captured this once."
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="test-pod-id",
+            day_utc=yesterday_utc,
+            uptime_seconds=3600,
+            cost_per_hour_usd=2.50,
+            cost_usd=2.50,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=7200,  # totally different value
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=2.99,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    # Still exactly one row, with the ORIGINAL values (no overwrite).
+    rows = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].uptime_seconds == 3600  # original, not 7200
+    assert rows[0].cost_usd == 2.50
+
+
+def test_daily_rollover_skips_capture_when_uptime_is_zero(
+    db_session, enabled_orchestrator
+):
+    """Zero-uptime days don't pollute the history table — the rollover
+    silently skips them. An absent row is meaningfully different from a
+    row with cost_usd=0, and the chart UI treats both as 'no usage.'"""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=0,  # nothing happened yesterday
+        uptime_day_utc=yesterday_utc,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    rows = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.pod_id == "test-pod-id")
+        .all()
+    )
+    assert rows == []
+
+
+def test_daily_rollover_captures_uptime_when_rate_unknown(
+    db_session, enabled_orchestrator
+):
+    """If last_cost_per_hour_usd is null (e.g. RunPod was unreachable all
+    day), still capture the uptime — better to have N hours with cost_usd=null
+    than to lose the data entirely."""
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday_utc = today_utc - timedelta(days=1)
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="EXITED",
+        uptime_today_seconds=3600,
+        uptime_day_utc=yesterday_utc,
+        last_cost_per_hour_usd=None,  # never fetched
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    enabled_orchestrator.stop_if_idle(db_session)
+    db_session.commit()
+
+    row = (
+        db_session.query(RunPodDailyUsage)
+        .filter(RunPodDailyUsage.day_utc == yesterday_utc)
+        .one()
+    )
+    assert row.uptime_seconds == 3600
+    assert row.cost_per_hour_usd is None
+    assert row.cost_usd is None
+
+
+def test_status_snapshot_caches_observed_cost_per_hour(
+    db_session, enabled_orchestrator
+):
+    """status_snapshot opportunistically refreshes last_cost_per_hour_usd
+    on the state row, so the rollover always has a recent rate to multiply
+    against without making its own API call at midnight."""
+    state = RunPodState(
+        pod_id="test-pod-id",
+        last_known_state="RUNNING",
+        uptime_today_seconds=0,
+        uptime_day_utc=datetime.now(timezone.utc).date(),
+        last_cost_per_hour_usd=None,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with patch("app.services.runpod_orchestrator.runpod_client") as mock_client:
+        mock_client.fetch_pod.return_value = {
+            "desiredStatus": "RUNNING",
+            "costPerHr": 2.99,
+        }
+        mock_client.pod_inference_url.return_value = "https://x/v1"
+        enabled_orchestrator.status_snapshot(db_session)
+    db_session.commit()
+
+    db_session.refresh(state)
+    assert state.last_cost_per_hour_usd == 2.99
+
+
+def test_history_returns_newest_first_and_respects_days_cap(
+    db_session, enabled_orchestrator
+):
+    """history(days=N) returns the last N captured days sorted desc.
+    The N param is clamped to [1, 90] server-side."""
+    today_utc = datetime.now(timezone.utc).date()
+    # Seed 5 days of history with distinct uptimes
+    for i in range(5):
+        db_session.add(
+            RunPodDailyUsage(
+                pod_id="test-pod-id",
+                day_utc=today_utc - timedelta(days=i + 1),
+                uptime_seconds=3600 * (i + 1),
+                cost_per_hour_usd=2.99,
+                cost_usd=2.99 * (i + 1),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    db_session.commit()
+
+    items = enabled_orchestrator.history(db_session, days=3)
+    assert len(items) == 3
+    # Newest first: yesterday, day before, day before that
+    assert items[0]["day_utc"] == (today_utc - timedelta(days=1)).isoformat()
+    assert items[2]["day_utc"] == (today_utc - timedelta(days=3)).isoformat()
+    assert items[0]["uptime_seconds"] == 3600
+    assert items[0]["cost_usd"] == 2.99
+
+    # Asking for 200 days returns at most 90 (cap) but here we only have 5
+    items_all = enabled_orchestrator.history(db_session, days=200)
+    assert len(items_all) == 5
+
+    # days=0 clamps up to 1 (single newest row)
+    items_one = enabled_orchestrator.history(db_session, days=0)
+    assert len(items_one) == 1
+
+
+def test_history_only_returns_rows_for_this_pod(
+    db_session, enabled_orchestrator
+):
+    """If another pod's history rows exist (e.g. from a previous deploy),
+    history() must scope to the current pod_id only."""
+    today_utc = datetime.now(timezone.utc).date()
+    # Foreign pod's row
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="other-pod-id",
+            day_utc=today_utc - timedelta(days=1),
+            uptime_seconds=99999,
+            cost_per_hour_usd=2.99,
+            cost_usd=999.99,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    # Our pod's row
+    db_session.add(
+        RunPodDailyUsage(
+            pod_id="test-pod-id",
+            day_utc=today_utc - timedelta(days=1),
+            uptime_seconds=3600,
+            cost_per_hour_usd=2.99,
+            cost_usd=2.99,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    items = enabled_orchestrator.history(db_session, days=30)
+    assert len(items) == 1
+    assert items[0]["uptime_seconds"] == 3600
+
+
+def test_history_disabled_returns_empty_list(db_session: Session):
+    """Disabled orchestrator returns [] from history — no DB query needed."""
+    from app.services.runpod_orchestrator import (
+        get_runpod_orchestrator,
+        reset_runpod_orchestrator,
+    )
+    reset_runpod_orchestrator()
+    orchestrator = get_runpod_orchestrator()
+    assert orchestrator.history(db_session, days=30) == []
 
 
 # ── ensure_ready fast-fail (wait_for_ready=False) ────────────────────────────

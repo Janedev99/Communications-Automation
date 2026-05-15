@@ -29,7 +29,12 @@ in-process service that:
        by POST /api/v1/runpod/wake (fired on dashboard mount) so the
        pod is already booting while Jane reads her inbox.
 
-  5. status_snapshot(db)
+  5. stop_now(db)
+       Operator-initiated manual stop. Used by POST /api/v1/runpod/stop
+       from the admin UI. Reconciles with RunPod's view of the pod before
+       acting so cache drift can't inflate the daily uptime counter.
+
+  6. status_snapshot(db)
        Read-only summary for diagnostics / admin UI.
 
 Concurrency model
@@ -361,27 +366,152 @@ class RunPodOrchestrator:
             self._stop_and_account(db, state)
             return True
 
+    def stop_now(self, db: Session) -> dict:
+        """Operator-initiated manual stop. Used by the admin UI.
+
+        Always reconciles with RunPod's view of the pod BEFORE touching
+        state, so a manual stop on an already-stopped pod doesn't add a
+        phantom session's uptime to the daily counter (which would happen
+        if we trusted our cache and called stop_pod blindly — RunPod
+        returns 2xx for "stop an already-stopped pod" so the cache-trust
+        path would silently inflate the counter).
+
+        Uptime accounting is shared with the idle-watchdog path
+        (_stop_and_account), so manual Stop counts toward the daily cap
+        — matching the design rule "one accounting path, no footgun."
+
+        Status values mirror wake_async for symmetry:
+          - "disabled"        : orchestrator not configured
+          - "already_stopped" : pod was already EXITED on RunPod — no-op
+          - "stopped"         : we issued + accepted a stop this call
+          - "stop_failed"     : RunPod refused the stop (rare; retry next tick)
+          - "missing"         : pod not found on RunPod (terminated externally)
+        """
+        if not self.enabled:
+            return {"status": "disabled"}
+
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            _maybe_reset_daily_counter(state)
+
+            # Fetch RunPod's ground truth before deciding. Cheap — one GET.
+            current = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if current is None:
+                state.last_known_state = "MISSING"
+                state.updated_at = _now()
+                db.flush()
+                return {"status": "missing", "pod_id": self._pod_id}
+
+            current_status = current.get("desiredStatus")
+
+            # Already stopped on RunPod's side. Sync our cache, accept gracefully.
+            # We deliberately don't roll session uptime here: if the pod was
+            # stopped out-of-band (dashboard, CLI, another process), we don't
+            # know when it actually stopped, so adding `now - last_started_at`
+            # would over-count. The next ensure_ready / wake will repopulate
+            # last_started_at cleanly.
+            if current_status != "RUNNING":
+                state.last_known_state = current_status
+                state.last_started_at = None
+                state.updated_at = _now()
+                db.flush()
+                return {
+                    "status": "already_stopped",
+                    "pod_id": self._pod_id,
+                    "last_known_state": current_status,
+                }
+
+            # Pod is RUNNING per RunPod. Sync the cache and stop + account.
+            state.last_known_state = "RUNNING"
+            if self._stop_and_account(db, state):
+                return {
+                    "status": "stopped",
+                    "pod_id": self._pod_id,
+                    "uptime_today_seconds": state.uptime_today_seconds,
+                    "daily_cap_remaining_seconds": max(
+                        0, self._daily_cap_s - state.uptime_today_seconds
+                    ),
+                }
+            return {
+                "status": "stop_failed",
+                "pod_id": self._pod_id,
+                "reason": "runpod refused stop request — retry shortly",
+            }
+
     def status_snapshot(self, db: Session) -> dict:
-        """Read-only state summary."""
+        """Read-only state summary.
+
+        Pulls authoritative cost-per-hour from RunPod on every call so the
+        admin UI's "cost today" figure tracks RunPod's actual pricing
+        (rather than a hardcoded table that goes stale). One extra GET per
+        snapshot read is cheap relative to the orchestrator's other API
+        calls.
+
+        On any RunPod fetch failure (network, 5xx, pod terminated), cost
+        fields are returned as None — UI shows "—" for those, never a
+        misleading $0.00.
+        """
         if not self.enabled:
             return {"enabled": False}
         state = _load_or_create_state(db, self._pod_id)
         _maybe_reset_daily_counter(state)
+
+        # Pull live cost-per-hour from RunPod. Fail soft — if the fetch
+        # errors or the pod is gone, leave cost fields None.
+        cost_per_hour: float | None = None
+        try:
+            pod = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if pod is not None:
+                raw = pod.get("costPerHr")
+                if raw is not None:
+                    cost_per_hour = float(raw)
+        except Exception:
+            logger.warning(
+                "status_snapshot: cost-per-hour fetch failed for %s; "
+                "cost fields will be null this tick",
+                self._pod_id,
+                exc_info=True,
+            )
+
+        # uptime_today_seconds in the DB row reflects FULLY-ACCOUNTED sessions —
+        # the in-flight session's uptime is only rolled in at stop. For the
+        # admin UI to show a live, correct figure during a long RUNNING
+        # session, add the in-flight delta here. The DB row stays untouched
+        # (this is a read path) — accounting source of truth still lives in
+        # _stop_and_account.
+        effective_uptime = state.uptime_today_seconds
+        if (
+            state.last_known_state == "RUNNING"
+            and state.last_started_at is not None
+        ):
+            in_flight_seconds = (_now() - state.last_started_at).total_seconds()
+            if in_flight_seconds > 0:
+                effective_uptime = state.uptime_today_seconds + int(in_flight_seconds)
+
+        cost_today_estimate: float | None = None
+        if cost_per_hour is not None:
+            cost_today_estimate = round(
+                cost_per_hour * (effective_uptime / 3600.0), 4
+            )
+
         return {
             "enabled": True,
             "pod_id": self._pod_id,
+            "inference_url": runpod_client.pod_inference_url(self._pod_id),
             "last_known_state": state.last_known_state,
             "last_used_at": state.last_used_at.isoformat() if state.last_used_at else None,
             "last_started_at": state.last_started_at.isoformat() if state.last_started_at else None,
             "last_stopped_at": state.last_stopped_at.isoformat() if state.last_stopped_at else None,
-            "uptime_today_seconds": state.uptime_today_seconds,
+            "uptime_today_seconds": effective_uptime,
             "uptime_day_utc": state.uptime_day_utc.isoformat() if state.uptime_day_utc else None,
             "daily_cap_seconds": self._daily_cap_s,
             "daily_cap_remaining_seconds": max(
-                0, self._daily_cap_s - state.uptime_today_seconds
+                0, self._daily_cap_s - effective_uptime
             ),
             "idle_timeout_seconds": self._idle_timeout_s,
             "start_in_flight": self._start_in_flight.is_set(),
+            "cost_per_hour_usd": cost_per_hour,
+            "cost_today_usd_estimate": cost_today_estimate,
         }
 
     # ── Internals ────────────────────────────────────────────────────────────

@@ -1,19 +1,24 @@
 """
 RunPod orchestration endpoints.
 
-POST /api/v1/runpod/wake          — idempotent pre-warm trigger
-POST /api/v1/runpod/login-sweep   — login-time catch-up on missing drafts
-GET  /api/v1/runpod/status        — read-only status (for admin UI / debugging)
+POST /api/v1/runpod/wake          — idempotent pre-warm trigger (any user)
+POST /api/v1/runpod/login-sweep   — login-time catch-up on missing drafts (any user)
+POST /api/v1/runpod/stop          — operator-initiated manual stop (Admin only)
+GET  /api/v1/runpod/status        — read-only status (any logged-in user)
 
-Both POST endpoints are fired by the frontend on dashboard mount as part
-of the cold-start UX strategy: pre-warm starts the pod in background
+The wake/sweep endpoints are fired by the frontend on dashboard mount as
+part of the cold-start UX strategy: pre-warm starts the pod in background
 while Jane reads her inbox, and the sweep auto-generates any drafts the
 background polling pipeline missed. See the FEAT/runpod-prewarm-fastfail
 iteration brief for the design rationale.
 
-Auth: all endpoints require a logged-in user. The wake/sweep endpoints
-also require CSRF since they trigger state-changing background work and
-incur billable RunPod uptime.
+Stop is admin-gated because it interrupts billable work and could affect
+in-flight draft generation. The orchestrator's stop_now() reconciles with
+RunPod's view of the pod before acting so a manual stop on an already-
+stopped pod doesn't double-count uptime.
+
+Auth: all endpoints require a logged-in user. All POSTs additionally
+require CSRF; /stop additionally requires admin role.
 """
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ import logging
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_csrf
+from app.api.deps import get_current_user, require_admin, require_csrf
 from app.database import get_db
 from app.models.user import User
 from app.services import draft_catchup
@@ -82,6 +87,32 @@ def login_sweep(
     "already_running" with no new work scheduled.
     """
     return draft_catchup.start_sweep(db)
+
+
+@router.post("/stop", status_code=status.HTTP_202_ACCEPTED)
+def stop_pod(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+    _csrf: None = Depends(require_csrf),
+) -> dict:
+    """Operator-initiated manual stop. Admin-only.
+
+    Stops the RunPod pod immediately and rolls the current session's
+    uptime into uptime_today_seconds (same accounting path the idle
+    watchdog uses — manual stops still count toward the daily cap).
+
+    Response shape mirrors wake_async for symmetry:
+      { "status": "stopped" | "already_stopped" | "stop_failed"
+                | "missing" | "disabled",
+        "pod_id": "...",
+        ...optional extra fields (uptime_today_seconds, reason, etc) ...
+      }
+
+    Idempotent: stopping a pod that's already EXITED returns
+    "already_stopped" with no state change beyond syncing the cache.
+    """
+    orchestrator = get_runpod_orchestrator()
+    return orchestrator.stop_now(db)
 
 
 @router.get("/status")

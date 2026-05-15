@@ -335,6 +335,46 @@ export interface IntegrationsResponse {
   items: IntegrationItem[];
 }
 
+// ── RunPod orchestrator (admin) ───────────────────────────────────────────────
+// Disabled shape: { enabled: false }. Every other field is only populated when
+// enabled is true.
+export interface RunPodStatus {
+  enabled: boolean;
+  pod_id?: string;
+  inference_url?: string | null;
+  last_known_state?: string | null;
+  last_used_at?: string | null;
+  last_started_at?: string | null;
+  last_stopped_at?: string | null;
+  uptime_today_seconds?: number;
+  uptime_day_utc?: string | null;
+  daily_cap_seconds?: number;
+  daily_cap_remaining_seconds?: number;
+  idle_timeout_seconds?: number;
+  start_in_flight?: boolean;
+  sweep_in_flight?: boolean;
+  cost_per_hour_usd?: number | null;
+  cost_today_usd_estimate?: number | null;
+}
+
+export interface RunPodActionResponse {
+  status:
+    | "stopped"
+    | "already_stopped"
+    | "stop_failed"
+    | "missing"
+    | "disabled"
+    | "ready"
+    | "starting"
+    | "already_starting"
+    | "capacity_exceeded";
+  pod_id?: string;
+  last_known_state?: string | null;
+  uptime_today_seconds?: number;
+  daily_cap_remaining_seconds?: number;
+  reason?: string;
+}
+
 // ── System settings (admin) ───────────────────────────────────────────────────
 export interface SystemSetting {
   key: string;

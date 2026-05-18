@@ -284,7 +284,16 @@ def list_integrations(
         _probe_postgres(db),
         _probe_llm(),
         _probe_email_provider(),
-        _probe_notifications(),
+        # Notifications card hidden 2026-05-18. The service emits events to
+        # stdout/logs regardless of config, so the probe was flagging
+        # "not_configured" whenever neither SLACK_WEBHOOK_URL nor
+        # NOTIFY_LOG_FILE was set — a misleading red signal for a service
+        # that's actually fine. Slack dispatch was never implemented
+        # (notification.py only writes JSON lines), so there's no
+        # actionable next step the card was driving toward. Reinstate by
+        # uncommenting the line below when an actual Slack integration
+        # ships, or when the probe is rewritten to report stdout-as-healthy.
+        # _probe_notifications(),
     ]
 
     # Overall status — worst-of

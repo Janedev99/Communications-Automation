@@ -241,13 +241,24 @@ function Section({
 }
 
 
+// Same threshold as the inline indicator — keeps the collapse behaviour
+// consistent across the two surfaces.
+const COLLAPSED_BODY_CHARS_DEBUG = 400;
+
 function ExampleCard({ example }: { example: FeedbackExample }) {
+  const [bodyExpanded, setBodyExpanded] = useState(false);
   const isSaved = example.source === "saved";
   const chipClass = isSaved
     ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
     : "bg-blue-500/10 text-blue-700 dark:text-blue-300 ring-blue-500/30";
   const chipText = isSaved ? "SAVED" : "APPROVED";
   const actorVerb = isSaved ? "Saved" : "Approved";
+
+  const isLong = example.body.length > COLLAPSED_BODY_CHARS_DEBUG;
+  const displayBody =
+    isLong && !bodyExpanded
+      ? example.body.slice(0, COLLAPSED_BODY_CHARS_DEBUG).trimEnd() + "…"
+      : example.body;
 
   return (
     <div className="rounded-lg ring-1 ring-foreground/10 bg-background p-4">
@@ -275,8 +286,18 @@ function ExampleCard({ example }: { example: FeedbackExample }) {
         </p>
       )}
       <p className="text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed">
-        {example.body}
+        {displayBody}
       </p>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setBodyExpanded((v) => !v)}
+          className="mt-2 text-xs font-medium text-primary hover:underline"
+          aria-expanded={bodyExpanded}
+        >
+          {bodyExpanded ? "See less" : "See more"}
+        </button>
+      )}
       {example.actor_name && (
         <p className="text-[11px] text-muted-foreground mt-2">
           {actorVerb} by {example.actor_name}

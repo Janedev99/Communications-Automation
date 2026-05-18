@@ -145,13 +145,25 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 
+// Visible-by-default body length in the collapsed-row state. Anything longer
+// gets a "See more" affordance. ~300 chars ≈ 4-5 lines of text, enough to
+// read the opening + sign-off cadence without scrolling.
+const COLLAPSED_BODY_CHARS = 300;
+
 function ExampleRow({ example }: { example: FeedbackExample }) {
+  const [bodyExpanded, setBodyExpanded] = useState(false);
   const labelClass =
     example.source === "saved"
       ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
       : "bg-blue-500/10 text-blue-700 dark:text-blue-300 ring-blue-500/30";
   const labelText = example.source === "saved" ? "SAVED" : "APPROVED";
   const actorVerb = example.source === "saved" ? "Saved" : "Approved";
+
+  const isLong = example.body.length > COLLAPSED_BODY_CHARS;
+  const displayBody =
+    isLong && !bodyExpanded
+      ? example.body.slice(0, COLLAPSED_BODY_CHARS).trimEnd() + "…"
+      : example.body;
 
   return (
     <div className="rounded-md bg-background/60 ring-1 ring-foreground/5 p-2.5">
@@ -179,8 +191,18 @@ function ExampleRow({ example }: { example: FeedbackExample }) {
         </p>
       )}
       <p className="text-xs text-foreground/85 whitespace-pre-wrap leading-relaxed">
-        {example.body}
+        {displayBody}
       </p>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setBodyExpanded((v) => !v)}
+          className="mt-1 text-[10px] font-medium text-primary hover:underline"
+          aria-expanded={bodyExpanded}
+        >
+          {bodyExpanded ? "See less" : "See more"}
+        </button>
+      )}
       {example.actor_name && (
         <p className="text-[10px] text-muted-foreground/80 mt-1.5">
           {actorVerb} by {example.actor_name}

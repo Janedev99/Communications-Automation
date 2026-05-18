@@ -56,12 +56,22 @@ from app.utils.sanitize import strip_html
 
 logger = logging.getLogger(__name__)
 
-# Per-example text cap. Keeps any single example from dominating the prompt
-# and bounds the total block size even if the row's body_text is huge.
-_PER_EXAMPLE_CHARS: Final[int] = 400
+# Per-example char caps. Two distinct budgets because the prompt and the UI
+# are different audiences with different constraints:
+#   - PROMPT: tight (token cost, signal density) — used by the formatter
+#     when building the LLM prompt block.
+#   - UI: generous — UI surfaces ("See more" expand) can show the full body.
+#     Capped at 2000 to prevent a single pathologically-long draft from
+#     blowing up the API response.
+_PER_EXAMPLE_CHARS_PROMPT: Final[int] = 400
+_PER_EXAMPLE_CHARS_UI: Final[int] = 2000
+
+# Kept as an alias for callers (tests) that referenced the old name. New
+# code should pick the right budget explicitly.
+_PER_EXAMPLE_CHARS: Final[int] = _PER_EXAMPLE_CHARS_PROMPT
 
 # Total cap per block (positives, curated, negatives). With limit=3 examples
-# at 400 chars each + delimiters, ~1500 is the natural ceiling.
+# at 400 prompt-chars each + delimiters, ~1500 is the natural ceiling.
 _BLOCK_CHARS: Final[int] = 1500
 
 # PII phrase that marks an escalation as PII-flagged. Matches the comment in
@@ -280,10 +290,14 @@ class FeedbackRetrievalService:
             # response style. Subject and actor stay out of the prompt
             # (UI-only — they help humans, not the model).
             tone_token = f" · {ex.tone} tone" if ex.tone else ""
+            # The retrieval layer caps body at the UI budget (~2000 chars)
+            # so the API consumer can show "See more". For the prompt we
+            # need a tighter cap to protect the token budget.
+            prompt_body = _truncate(ex.body, limit=_PER_EXAMPLE_CHARS_PROMPT)
             # wrap_user_content prevents past drafts from injecting
             # instructions back into the prompt (T2.7 — same defense the
             # thread formatter uses).
-            safe_body = wrap_user_content(strip_html(ex.body))
+            safe_body = wrap_user_content(strip_html(prompt_body))
             entry = f"---\n[{label}{tone_token} · {timestamp}]\n{safe_body}"
             if running + len(entry) > _BLOCK_CHARS:
                 break
@@ -335,13 +349,19 @@ def _pii_thread_subquery(thread_id_col):
     )
 
 
-def _truncate(text: str | None) -> str:
+def _truncate(text: str | None, limit: int = _PER_EXAMPLE_CHARS_UI) -> str:
+    """Trim ``text`` to ``limit`` chars, appending ``…`` if truncated.
+
+    The default ``limit`` is the UI budget — retrieval returns this for both
+    the API consumer and the prompt formatter. The formatter trims further
+    when actually emitting the prompt string (see ``format_examples``).
+    """
     if not text:
         return ""
     text = text.strip()
-    if len(text) <= _PER_EXAMPLE_CHARS:
+    if len(text) <= limit:
         return text
-    return text[:_PER_EXAMPLE_CHARS].rstrip() + "…"
+    return text[:limit].rstrip() + "…"
 
 
 def _one_line(text: str) -> str:

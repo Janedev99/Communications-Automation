@@ -425,6 +425,36 @@ def test_format_negatives_includes_tone_when_present():
     assert "too formal for ongoing client (professional tone)" in output
 
 
+def test_retrieval_returns_full_body_for_ui_budget(db_session: Session):
+    """UI gets the long body; prompt formatter trims separately."""
+    from app.services.draft_feedback import (
+        _PER_EXAMPLE_CHARS_PROMPT,
+        _PER_EXAMPLE_CHARS_UI,
+    )
+    cat = EmailCategory.appointment  # reused from earlier tone test, distinct row
+    thread = _make_thread(db_session, category=cat, subject="Long body test")
+    # Body well over the prompt cap but under the UI cap
+    long_body = "B" * (_PER_EXAMPLE_CHARS_PROMPT + 800)
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.approved,
+        body=long_body, reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+    long_one = next((r for r in results if r.body.startswith("B")), None)
+    assert long_one is not None
+    # UI-side: body should be (close to) the full thing — not the 400-cap
+    assert len(long_one.body) > _PER_EXAMPLE_CHARS_PROMPT
+    assert len(long_one.body) <= _PER_EXAMPLE_CHARS_UI + 1  # +1 for trailing ellipsis
+
+    # Prompt-side: formatter must still clip to the prompt budget
+    output = svc.format_examples([long_one], [])
+    # Count Bs in the rendered prompt to verify the formatter clipped
+    rendered_b_count = output.count("B")
+    assert rendered_b_count <= _PER_EXAMPLE_CHARS_PROMPT
+
+
 def test_subject_is_truncated_for_long_titles(db_session: Session):
     """Subjects past _SUBJECT_CHARS get trimmed with an ellipsis."""
     from app.services.draft_feedback import _SUBJECT_CHARS

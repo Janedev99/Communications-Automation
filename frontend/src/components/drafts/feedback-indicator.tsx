@@ -98,19 +98,26 @@ function FeedbackDetails({
           <p className="text-[11px] text-muted-foreground mb-2">
             Reasons past drafts in this category were rejected.
           </p>
-          <ul className="space-y-1">
+          <ul className="space-y-2">
             {preview.negative.map((neg, i) => (
               <li
                 key={`n-${i}`}
                 className="text-xs flex items-start gap-2 text-foreground/80"
               >
-                <span className="mt-0.5 inline-block h-1 w-1 rounded-full bg-amber-500 shrink-0" />
-                <span className="flex-1">
-                  {neg.reason}
-                  <span className="ml-2 text-muted-foreground">
-                    · {relativeTime(neg.occurred_at)}
-                  </span>
-                </span>
+                <span className="mt-1 inline-block h-1 w-1 rounded-full bg-amber-500 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p>{neg.reason}</p>
+                  <p className="text-[10px] text-muted-foreground/80 mt-0.5">
+                    {neg.tone && <span>{neg.tone} tone · </span>}
+                    {relativeTime(neg.occurred_at)}
+                    {neg.actor_name && <span> · by {neg.actor_name}</span>}
+                  </p>
+                  {neg.subject && (
+                    <p className="text-[10px] text-muted-foreground/70 italic truncate">
+                      Re: {neg.subject}
+                    </p>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -144,10 +151,11 @@ function ExampleRow({ example }: { example: FeedbackExample }) {
       ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30"
       : "bg-blue-500/10 text-blue-700 dark:text-blue-300 ring-blue-500/30";
   const labelText = example.source === "saved" ? "SAVED" : "APPROVED";
+  const actorVerb = example.source === "saved" ? "Saved" : "Approved";
 
   return (
     <div className="rounded-md bg-background/60 ring-1 ring-foreground/5 p-2.5">
-      <div className="flex items-center gap-2 mb-1.5">
+      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         <span
           className={cn(
             "inline-flex items-center px-1.5 py-0.5 rounded-4xl text-[9px] font-medium tracking-wider ring-1 ring-inset",
@@ -156,13 +164,28 @@ function ExampleRow({ example }: { example: FeedbackExample }) {
         >
           {labelText}
         </span>
+        {example.tone && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded-4xl text-[9px] font-medium tracking-wider bg-foreground/5 text-foreground/70 ring-1 ring-inset ring-foreground/10">
+            {example.tone.toUpperCase()}
+          </span>
+        )}
         <span className="text-[10px] text-muted-foreground">
           {relativeTime(example.occurred_at)}
         </span>
       </div>
+      {example.subject && (
+        <p className="text-[10px] text-muted-foreground italic mb-1.5 truncate">
+          Re: {example.subject}
+        </p>
+      )}
       <p className="text-xs text-foreground/85 whitespace-pre-wrap leading-relaxed">
         {example.body}
       </p>
+      {example.actor_name && (
+        <p className="text-[10px] text-muted-foreground/80 mt-1.5">
+          {actorVerb} by {example.actor_name}
+        </p>
+      )}
     </div>
   );
 }

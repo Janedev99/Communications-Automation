@@ -50,13 +50,20 @@ _CAT_BLOAT = EmailCategory.urgent
 
 # ── Helpers to seed data quickly ──────────────────────────────────────────────
 
-def _make_thread(db: Session, *, category: EmailCategory) -> EmailThread:
+def _make_thread(
+    db: Session,
+    *,
+    category: EmailCategory,
+    tone: str | None = "professional",
+    subject: str | None = None,
+) -> EmailThread:
     thread = EmailThread(
-        subject=f"Test subject {uuid.uuid4()}",
+        subject=subject or f"Test subject {uuid.uuid4()}",
         client_email=f"client-{uuid.uuid4()}@example.com",
         client_name="Test Client",
         status=EmailStatus.new,
         category=category,
+        suggested_reply_tone=tone,
     )
     db.add(thread)
     db.flush()
@@ -71,6 +78,7 @@ def _make_draft(
     body: str = "Hello — thanks for reaching out, we'll review and follow up shortly.",
     rejection_reason: str | None = None,
     reviewed_at: datetime | None = None,
+    reviewed_by_id=None,
 ) -> DraftResponse:
     draft = DraftResponse(
         thread_id=thread.id,
@@ -78,6 +86,7 @@ def _make_draft(
         status=status,
         rejection_reason=rejection_reason,
         reviewed_at=reviewed_at,
+        reviewed_by_id=reviewed_by_id,
         created_at=reviewed_at or datetime.now(timezone.utc),
     )
     db.add(draft)
@@ -295,12 +304,24 @@ def test_format_negatives_empty_input_returns_empty_string():
     assert svc.format_negatives([]) == ""
 
 
-def test_format_examples_deduplicates_across_positive_and_curated():
-    """The same body shouldn't render twice if it's both approved and saved."""
+def _example(source: str, body: str, *, tone: str | None = None) -> "FeedbackExample":
+    """Test helper — constructs a FeedbackExample with sensible defaults."""
     from app.services.draft_feedback import FeedbackExample
     now = datetime.now(timezone.utc)
-    shared = FeedbackExample(source="approved", body="identical body", occurred_at=now)
-    saved_dupe = FeedbackExample(source="saved", body="identical body", occurred_at=now)
+    return FeedbackExample(
+        source=source,
+        body=body,
+        occurred_at=now,
+        tone=tone,
+        subject=None,
+        actor_name=None,
+    )
+
+
+def test_format_examples_deduplicates_across_positive_and_curated():
+    """The same body shouldn't render twice if it's both approved and saved."""
+    shared = _example("approved", "identical body")
+    saved_dupe = _example("saved", "identical body")
 
     svc = FeedbackRetrievalService()
     output = svc.format_examples([shared], [saved_dupe])
@@ -314,13 +335,113 @@ def test_format_examples_deduplicates_across_positive_and_curated():
 
 def test_format_examples_caps_total_block_size():
     """R4: prompt bloat — total formatted block stays under the budget."""
-    from app.services.draft_feedback import FeedbackExample
-    now = datetime.now(timezone.utc)
     huge = "A" * _PER_EXAMPLE_CHARS  # already truncated by retrieval, but assert formatter cap too
-    examples = [FeedbackExample(source="approved", body=huge, occurred_at=now) for _ in range(10)]
+    examples = [_example("approved", huge) for _ in range(10)]
 
     svc = FeedbackRetrievalService()
     output = svc.format_examples([], examples)
     # Block cap is a *soft* cap (last entry that exceeds is dropped) — assert
     # the rendered length is comfortably bounded.
     assert len(output) <= _BLOCK_CHARS + 200  # header + closing "---" overhead
+
+
+# =============================================================================
+# Enrichment fields — tone, subject, actor_name (v1.1)
+# =============================================================================
+
+def test_positive_examples_surface_thread_tone_and_subject(db_session: Session):
+    """Enrichment: tone + subject populate from the source thread."""
+    cat = EmailCategory.appointment  # distinct from other tests
+    thread = _make_thread(
+        db_session,
+        category=cat,
+        tone="empathetic",
+        subject="Re: Reschedule next week's review",
+    )
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.approved,
+        body="Sure, let's move it.", reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+
+    assert len(results) == 1
+    assert results[0].tone == "empathetic"
+    assert results[0].subject == "Re: Reschedule next week's review"
+    # No reviewer attached → actor_name is None (still a valid example)
+    assert results[0].actor_name is None
+
+
+def test_positive_examples_surface_reviewer_name(db_session: Session, admin_user):
+    """Enrichment: actor_name reflects who approved the draft."""
+    cat = EmailCategory.general_inquiry  # distinct from earlier tests
+    thread = _make_thread(db_session, category=cat, tone="direct")
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.approved,
+        body="Looks good.", reviewed_at=datetime.now(timezone.utc),
+        reviewed_by_id=admin_user.id,
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+
+    assert len(results) == 1
+    assert results[0].actor_name == "Jane Admin"
+
+
+def test_format_examples_includes_tone_in_prompt_label():
+    """Tone is a steering signal — must surface in the prompt label."""
+    ex = _example("approved", "body text", tone="empathetic")
+    svc = FeedbackRetrievalService()
+    output = svc.format_examples([], [ex])
+    assert "empathetic tone" in output
+    assert "[APPROVED · empathetic tone" in output
+
+
+def test_format_examples_omits_tone_when_missing():
+    """Threads without a tone shouldn't produce ' ·  · ' artefacts in the label."""
+    ex = _example("approved", "body text", tone=None)
+    svc = FeedbackRetrievalService()
+    output = svc.format_examples([], [ex])
+    # Label should be "[APPROVED · <date>]" — no double separators or empty tokens
+    assert "·  ·" not in output
+    assert "tone" not in output
+
+
+def test_format_negatives_includes_tone_when_present():
+    """Tone helps steer Claude away from 'professional tone got rejected as too formal'."""
+    from app.services.draft_feedback import FeedbackNegative
+    now = datetime.now(timezone.utc)
+    neg = FeedbackNegative(
+        reason="too formal for ongoing client",
+        occurred_at=now,
+        tone="professional",
+        subject=None,
+        actor_name=None,
+    )
+    svc = FeedbackRetrievalService()
+    output = svc.format_negatives([neg])
+    assert "too formal for ongoing client (professional tone)" in output
+
+
+def test_subject_is_truncated_for_long_titles(db_session: Session):
+    """Subjects past _SUBJECT_CHARS get trimmed with an ellipsis."""
+    from app.services.draft_feedback import _SUBJECT_CHARS
+    cat = EmailCategory.uncategorized
+    long_subject = "X" * (_SUBJECT_CHARS + 50)
+    thread = _make_thread(db_session, category=cat, subject=long_subject)
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.approved,
+        body="ok", reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+    # Pick the one with the long subject (uncategorized may contain other rows
+    # from earlier tests; filter)
+    long_one = next((r for r in results if r.subject and r.subject.startswith("X")), None)
+    assert long_one is not None
+    assert long_one.subject is not None
+    assert len(long_one.subject) <= _SUBJECT_CHARS + 1  # +1 for ellipsis
+    assert long_one.subject.endswith("…")

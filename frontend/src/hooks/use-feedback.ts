@@ -12,11 +12,17 @@ export interface FeedbackExample {
   source: "approved" | "saved";
   body: string;
   occurred_at: string;
+  tone: string | null;
+  subject: string | null;
+  actor_name: string | null; // who approved (drafts) or saved (messages)
 }
 
 export interface FeedbackNegative {
   reason: string;
   occurred_at: string;
+  tone: string | null;
+  subject: string | null;
+  actor_name: string | null; // who rejected
 }
 
 export interface FeedbackPreview {

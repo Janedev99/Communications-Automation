@@ -41,11 +41,17 @@ class FeedbackExampleOut(BaseModel):
     source: str  # "approved" | "saved"
     body: str
     occurred_at: str
+    tone: str | None = None
+    subject: str | None = None
+    actor_name: str | None = None  # who approved (drafts) or saved (messages)
 
 
 class FeedbackNegativeOut(BaseModel):
     reason: str
     occurred_at: str
+    tone: str | None = None
+    subject: str | None = None
+    actor_name: str | None = None  # who rejected
 
 
 class FeedbackCountsOut(BaseModel):
@@ -67,6 +73,9 @@ def _example_out(ex: FeedbackExample) -> FeedbackExampleOut:
         source=ex.source,
         body=ex.body,
         occurred_at=ex.occurred_at.isoformat(),
+        tone=ex.tone,
+        subject=ex.subject,
+        actor_name=ex.actor_name,
     )
 
 
@@ -74,6 +83,9 @@ def _negative_out(neg: FeedbackNegative) -> FeedbackNegativeOut:
     return FeedbackNegativeOut(
         reason=neg.reason,
         occurred_at=neg.occurred_at.isoformat(),
+        tone=neg.tone,
+        subject=neg.subject,
+        actor_name=neg.actor_name,
     )
 
 

@@ -1,0 +1,326 @@
+"""
+Tests for FeedbackRetrievalService — the implicit-feedback retrieval layer
+that feeds approvals, saved messages, and rejection reasons back into the
+draft-generation prompt.
+
+Covers the risk register from FEAT/draft-feedback-loop Stage 1:
+  R1 — bad approval mimicked: status filter enforced
+  R2 — PII leakage: threads with PII-marked escalations excluded
+  R3 — inbound saved message mistaken for "good draft": direction filter
+  R4 — prompt bloat: per-block char cap enforced in formatters
+  R5 — bootstrap: empty retrievals → empty formatted blocks
+  R6 — recency: ORDER BY .desc() on reviewed_at / saved_at
+  R7 — regenerate-placeholder noise: filtered from rejection patterns
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy.orm import Session
+
+from app.models.email import (
+    DraftResponse,
+    DraftStatus,
+    EmailCategory,
+    EmailMessage,
+    EmailStatus,
+    EmailThread,
+    MessageDirection,
+)
+from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
+from app.services.draft_feedback import (
+    FeedbackRetrievalService,
+    _BLOCK_CHARS,
+    _PER_EXAMPLE_CHARS,
+)
+
+# Categories used per test — distinct per test to keep the StaticPool DB's
+# accumulated rows from cross-contaminating queries. conftest.py warns:
+# "tests must not rely on absence of data created by other tests."
+_CAT_POS = EmailCategory.status_update
+_CAT_PII = EmailCategory.document_request
+_CAT_CURATED_OUTBOUND = EmailCategory.appointment
+_CAT_CURATED_INBOUND_FILTER = EmailCategory.clarification
+_CAT_NEG = EmailCategory.general_inquiry
+_CAT_NEG_PLACEHOLDER = EmailCategory.complaint
+_CAT_BLOAT = EmailCategory.urgent
+
+
+# ── Helpers to seed data quickly ──────────────────────────────────────────────
+
+def _make_thread(db: Session, *, category: EmailCategory) -> EmailThread:
+    thread = EmailThread(
+        subject=f"Test subject {uuid.uuid4()}",
+        client_email=f"client-{uuid.uuid4()}@example.com",
+        client_name="Test Client",
+        status=EmailStatus.new,
+        category=category,
+    )
+    db.add(thread)
+    db.flush()
+    return thread
+
+
+def _make_draft(
+    db: Session,
+    *,
+    thread: EmailThread,
+    status: DraftStatus,
+    body: str = "Hello — thanks for reaching out, we'll review and follow up shortly.",
+    rejection_reason: str | None = None,
+    reviewed_at: datetime | None = None,
+) -> DraftResponse:
+    draft = DraftResponse(
+        thread_id=thread.id,
+        body_text=body,
+        status=status,
+        rejection_reason=rejection_reason,
+        reviewed_at=reviewed_at,
+        created_at=reviewed_at or datetime.now(timezone.utc),
+    )
+    db.add(draft)
+    db.flush()
+    return draft
+
+
+def _make_message(
+    db: Session,
+    *,
+    thread: EmailThread,
+    direction: MessageDirection,
+    body: str,
+    is_saved: bool = False,
+    saved_at: datetime | None = None,
+) -> EmailMessage:
+    msg = EmailMessage(
+        thread_id=thread.id,
+        message_id_header=f"<{uuid.uuid4()}@test>",
+        sender="someone@example.com",
+        body_text=body,
+        received_at=saved_at or datetime.now(timezone.utc),
+        direction=direction,
+        is_saved=is_saved,
+        saved_at=saved_at if is_saved else None,
+    )
+    db.add(msg)
+    db.flush()
+    return msg
+
+
+def _make_pii_escalation(db: Session, *, thread: EmailThread) -> Escalation:
+    esc = Escalation(
+        thread_id=thread.id,
+        reason="Thread contains sensitive client data (SSN detected)",
+        severity=EscalationSeverity.high,
+        status=EscalationStatus.pending,
+    )
+    db.add(esc)
+    db.flush()
+    return esc
+
+
+# =============================================================================
+# Positive examples — approved drafts in same category, recency-ordered
+# =============================================================================
+
+def test_positive_examples_returns_approved_in_category(db_session: Session):
+    """R6: most recent approved drafts come first."""
+    now = datetime.now(timezone.utc)
+    thread_old = _make_thread(db_session, category=_CAT_POS)
+    thread_new = _make_thread(db_session, category=_CAT_POS)
+    _make_draft(
+        db_session, thread=thread_old, status=DraftStatus.approved,
+        body="OLD draft", reviewed_at=now - timedelta(days=5),
+    )
+    _make_draft(
+        db_session, thread=thread_new, status=DraftStatus.approved,
+        body="NEW draft", reviewed_at=now - timedelta(hours=1),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=_CAT_POS.value, limit=5)
+
+    bodies = [r.body for r in results]
+    assert "NEW draft" in bodies
+    assert "OLD draft" in bodies
+    # Most-recent first
+    assert bodies.index("NEW draft") < bodies.index("OLD draft")
+
+
+def test_positive_examples_excludes_non_approved_statuses(db_session: Session):
+    """R1: edited/rejected/pending drafts must not surface as positive examples."""
+    cat = EmailCategory.complaint  # distinct from other tests
+    thread = _make_thread(db_session, category=cat)
+    _make_draft(db_session, thread=thread, status=DraftStatus.pending, body="PENDING")
+    _make_draft(db_session, thread=thread, status=DraftStatus.edited, body="EDITED")
+    _make_draft(db_session, thread=thread, status=DraftStatus.rejected, body="REJECTED",
+                rejection_reason="too formal")
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+
+    bodies = [r.body for r in results]
+    assert "PENDING" not in bodies
+    assert "EDITED" not in bodies
+    assert "REJECTED" not in bodies
+
+
+def test_positive_examples_excludes_pii_threads(db_session: Session):
+    """R2: drafts from threads with a PII escalation must never surface."""
+    thread_safe = _make_thread(db_session, category=_CAT_PII)
+    thread_pii = _make_thread(db_session, category=_CAT_PII)
+    _make_pii_escalation(db_session, thread=thread_pii)
+
+    _make_draft(db_session, thread=thread_safe, status=DraftStatus.approved,
+                body="SAFE", reviewed_at=datetime.now(timezone.utc))
+    _make_draft(db_session, thread=thread_pii, status=DraftStatus.approved,
+                body="PII LEAK CANDIDATE", reviewed_at=datetime.now(timezone.utc))
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=_CAT_PII.value)
+
+    bodies = [r.body for r in results]
+    assert "SAFE" in bodies
+    assert "PII LEAK CANDIDATE" not in bodies
+
+
+def test_positive_examples_respects_limit(db_session: Session):
+    cat = EmailCategory.uncategorized  # exclusive to this test
+    for i in range(5):
+        thread = _make_thread(db_session, category=cat)
+        _make_draft(
+            db_session, thread=thread, status=DraftStatus.approved,
+            body=f"draft-{i}",
+            reviewed_at=datetime.now(timezone.utc) - timedelta(minutes=i),
+        )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value, limit=2)
+    assert len(results) == 2
+
+
+# =============================================================================
+# Curated examples — outbound saved messages only
+# =============================================================================
+
+def test_curated_examples_includes_outbound_excludes_inbound(db_session: Session):
+    """R3: inbound saved messages must not be treated as good drafts."""
+    thread = _make_thread(db_session, category=_CAT_CURATED_OUTBOUND)
+    _make_message(
+        db_session, thread=thread, direction=MessageDirection.outbound,
+        body="OUTBOUND-GOOD", is_saved=True,
+        saved_at=datetime.now(timezone.utc),
+    )
+    _make_message(
+        db_session, thread=thread, direction=MessageDirection.inbound,
+        body="INBOUND-CLIENT", is_saved=True,
+        saved_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_curated_examples(db_session, category=_CAT_CURATED_OUTBOUND.value)
+
+    bodies = [r.body for r in results]
+    assert "OUTBOUND-GOOD" in bodies
+    assert "INBOUND-CLIENT" not in bodies
+
+
+def test_curated_examples_excludes_unsaved_messages(db_session: Session):
+    thread = _make_thread(db_session, category=_CAT_CURATED_INBOUND_FILTER)
+    _make_message(
+        db_session, thread=thread, direction=MessageDirection.outbound,
+        body="NOT-SAVED", is_saved=False,
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_curated_examples(db_session, category=_CAT_CURATED_INBOUND_FILTER.value)
+    assert results == []
+
+
+# =============================================================================
+# Negative patterns — rejection reasons
+# =============================================================================
+
+def test_negative_patterns_returns_real_rejection_reasons(db_session: Session):
+    thread = _make_thread(db_session, category=_CAT_NEG)
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.rejected,
+        body="...", rejection_reason="too formal for ongoing client",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_negative_patterns(db_session, category=_CAT_NEG.value)
+
+    reasons = [n.reason for n in results]
+    assert "too formal for ongoing client" in reasons
+
+
+def test_negative_patterns_excludes_regenerate_placeholder(db_session: Session):
+    """R7: the auto-set 'Regenerated by staff' placeholder must be filtered."""
+    thread = _make_thread(db_session, category=_CAT_NEG_PLACEHOLDER)
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.rejected,
+        body="...", rejection_reason="Regenerated by staff",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.rejected,
+        body="...", rejection_reason="missed the deadline",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_negative_patterns(db_session, category=_CAT_NEG_PLACEHOLDER.value)
+
+    reasons = [n.reason for n in results]
+    assert "Regenerated by staff" not in reasons
+    assert "missed the deadline" in reasons
+
+
+# =============================================================================
+# Formatters
+# =============================================================================
+
+def test_format_examples_empty_inputs_returns_empty_string():
+    """R5: bootstrap state — empty data must produce empty block, not a placeholder."""
+    svc = FeedbackRetrievalService()
+    assert svc.format_examples([], []) == ""
+
+
+def test_format_negatives_empty_input_returns_empty_string():
+    svc = FeedbackRetrievalService()
+    assert svc.format_negatives([]) == ""
+
+
+def test_format_examples_deduplicates_across_positive_and_curated():
+    """The same body shouldn't render twice if it's both approved and saved."""
+    from app.services.draft_feedback import FeedbackExample
+    now = datetime.now(timezone.utc)
+    shared = FeedbackExample(source="approved", body="identical body", occurred_at=now)
+    saved_dupe = FeedbackExample(source="saved", body="identical body", occurred_at=now)
+
+    svc = FeedbackRetrievalService()
+    output = svc.format_examples([shared], [saved_dupe])
+
+    # Only one rendering of the body — and the saved label wins (rendered first)
+    assert output.count("identical body") == 1
+    assert "[SAVED" in output
+    # Approved label should NOT appear because the saved version pre-empted it
+    assert "[APPROVED" not in output
+
+
+def test_format_examples_caps_total_block_size():
+    """R4: prompt bloat — total formatted block stays under the budget."""
+    from app.services.draft_feedback import FeedbackExample
+    now = datetime.now(timezone.utc)
+    huge = "A" * _PER_EXAMPLE_CHARS  # already truncated by retrieval, but assert formatter cap too
+    examples = [FeedbackExample(source="approved", body=huge, occurred_at=now) for _ in range(10)]
+
+    svc = FeedbackRetrievalService()
+    output = svc.format_examples([], examples)
+    # Block cap is a *soft* cap (last entry that exceeds is dropped) — assert
+    # the rendered length is comfortably bounded.
+    assert len(output) <= _BLOCK_CHARS + 200  # header + closing "---" overhead

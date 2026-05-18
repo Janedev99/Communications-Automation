@@ -112,6 +112,8 @@ function CONFIG_LABELS(key: string): string {
     budget_pct_used: "Budget used",
     slack_webhook: "Slack webhook",
     log_file: "Log file",
+    microsoft_graph: "Microsoft Graph",
+    microsoft_graph_mailbox: "M365 mailbox",
   };
   return map[key] ?? key;
 }
@@ -193,7 +195,13 @@ function IntegrationCard({
                     "text-foreground font-mono tabular-nums truncate text-right",
                     typeof value === "string" &&
                       (value === "missing" || value === "(not set)") &&
-                      "text-muted-foreground"
+                      "text-muted-foreground",
+                    // Positive signal: M365 credentials staged-but-not-active
+                    // renders emerald so it reads as "we have this" rather
+                    // than getting lost in the other neutral config rows.
+                    key === "microsoft_graph" &&
+                      value === "integrated" &&
+                      "text-emerald-700 dark:text-emerald-400"
                   )}
                 >
                   {formatConfigKey(key, value)}

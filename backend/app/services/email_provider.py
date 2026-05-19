@@ -22,6 +22,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
+import re
+
 import html2text
 import httpx
 
@@ -30,11 +32,22 @@ from app.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 
+# Matches a run of 3 or more consecutive newlines (allowing whitespace-only
+# lines in between, which is what Outlook's <p>&nbsp;</p> placeholder
+# paragraphs produce after html2text conversion).
+_EXCESSIVE_BLANK_LINES = re.compile(r'(?:[ \t\xa0]*\n){3,}')
+
+
 def _html_to_text(html_content: str) -> str:
     """
     Convert an HTML email body to clean plain text suitable for AI input and
     plain-text UI rendering. Preserves links as `[text](url)` so nothing useful
     is silently dropped. Returns an empty string for empty / None-ish input.
+
+    Excessive blank lines (4+ newlines in a row, often produced by Outlook's
+    `<p>&nbsp;</p>` placeholder paragraphs stacked between real content) are
+    collapsed to a single paragraph break — otherwise real client emails
+    render with multi-line gaps that look broken in the dashboard.
     """
     if not html_content:
         return ""
@@ -44,7 +57,11 @@ def _html_to_text(html_content: str) -> str:
     converter.ignore_images = True    # image markdown is noise for the categorizer
     converter.unicode_snob = True     # keep non-ASCII characters as-is
     converter.escape_snob = True      # don't insert backslash escapes for punctuation
-    return converter.handle(html_content).strip()
+    text = converter.handle(html_content).strip()
+    # Collapse runs of 3+ blank lines (each potentially carrying trailing
+    # whitespace / NBSP) down to one paragraph break.
+    text = _EXCESSIVE_BLANK_LINES.sub('\n\n', text)
+    return text
 
 
 @dataclass

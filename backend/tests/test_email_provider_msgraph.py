@@ -68,6 +68,47 @@ class TestHtmlToText:
         # Single logical line, no mid-sentence newlines
         assert "\n" not in out
 
+    def test_collapses_excessive_blank_lines(self):
+        """
+        Outlook composes paragraphs as `<p>&nbsp;</p>` stacked between real
+        content, which html2text renders as runs of 3-6+ consecutive newlines.
+        That looks like a UI bug ("excessive whitespace gaps") even though
+        the data round-trips correctly. Collapse to a single paragraph break.
+        """
+        # Realistic shape: Outlook puts 2-3 empty paragraphs between blocks.
+        # html2text turns each into "\n\n  \n" → multi-line gap.
+        html = (
+            "<p>Dear Jane,</p>"
+            "<p>&nbsp;</p><p>&nbsp;</p><p>&nbsp;</p>"
+            "<p>Please send the Q3 statements.</p>"
+            "<p>&nbsp;</p><p>&nbsp;</p>"
+            "<p>Best, Caroline</p>"
+        )
+        out = _html_to_text(html)
+        # No run of 3+ newlines should remain anywhere in the output.
+        assert "\n\n\n" not in out, (
+            f"Run of 3+ newlines survived collapse: {out!r}"
+        )
+        # But single paragraph breaks should still exist (don't over-collapse).
+        assert "\n\n" in out, "Paragraph breaks must survive collapse"
+        # Content order preserved
+        assert out.index("Dear Jane,") < out.index("Q3 statements") < out.index("Caroline")
+
+    def test_collapses_nbsp_blank_lines(self):
+        """
+        Some HTML emails have lines that look blank but actually contain a
+        non-breaking space (\\xa0) or stray tabs. After html2text, those
+        appear as "\\n  \\n" rather than "\\n\\n", so a naive `\\n{3,}` regex
+        would miss them. Collapse should still flatten these.
+        """
+        html = "<p>Line one</p><p> </p><p> </p><p> </p><p>Line five</p>"
+        out = _html_to_text(html)
+        # Count actual newlines between the two visible lines — should be exactly 2
+        between = out.split("Line one")[1].split("Line five")[0]
+        assert between.count("\n") == 2, (
+            f"NBSP-padded blank lines didn't collapse cleanly: {between!r}"
+        )
+
     def test_preserves_non_ascii(self):
         # unicode_snob=True — currency, accents, em-dashes must survive
         # because real client emails contain them and the categorizer's

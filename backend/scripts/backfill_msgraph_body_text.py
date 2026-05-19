@@ -11,9 +11,15 @@ them in place using the same _html_to_text converter the provider now uses.
 Safe to run multiple times: idempotent (no-op for rows that already have
 body_text). Defaults to --dry-run; pass --apply to write.
 
+The --rebuild flag also re-derives body_text on rows where it's already set,
+which is what you want after changing the html→text converter (e.g. the
+excessive-newline collapse added in FIX/llm-isolation-and-newline-cleanup).
+
 Usage:
-  python scripts/backfill_msgraph_body_text.py            # dry-run (default)
-  python scripts/backfill_msgraph_body_text.py --apply    # actually update
+  python scripts/backfill_msgraph_body_text.py                         # dry-run, NULL-only
+  python scripts/backfill_msgraph_body_text.py --apply                 # write, NULL-only
+  python scripts/backfill_msgraph_body_text.py --rebuild               # dry-run, ALL rows
+  python scripts/backfill_msgraph_body_text.py --rebuild --apply       # write, ALL rows
 """
 from __future__ import annotations
 
@@ -38,18 +44,35 @@ def main() -> int:
         action="store_true",
         help="Actually write the changes. Without this flag, runs as dry-run.",
     )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Re-derive body_text on rows that already have it. Use after "
+             "changing the html→text converter (e.g. the newline-collapse "
+             "fix in FIX/llm-isolation-and-newline-cleanup). Without this "
+             "flag, only NULL body_text rows are touched.",
+    )
     args = parser.parse_args()
 
     db = SessionLocal()
     try:
-        candidates = db.execute(
-            select(EmailMessage).where(
+        if args.rebuild:
+            # Rebuild mode: any row that has body_html, regardless of whether
+            # body_text is already set. We need to refresh stale derivations.
+            candidates_query = select(EmailMessage).where(
+                EmailMessage.body_html.isnot(None),
+            )
+            mode_label = "rebuild — all rows with body_html"
+        else:
+            candidates_query = select(EmailMessage).where(
                 EmailMessage.body_text.is_(None),
                 EmailMessage.body_html.isnot(None),
             )
-        ).scalars().all()
+            mode_label = "fill-null — body_text IS NULL AND body_html IS NOT NULL"
+        candidates = db.execute(candidates_query).scalars().all()
 
-        print(f"Candidates (body_text NULL, body_html NOT NULL): {len(candidates)}")
+        print(f"Mode: {mode_label}")
+        print(f"Candidates: {len(candidates)}")
         if not candidates:
             print("Nothing to do.")
             return 0
@@ -73,6 +96,7 @@ def main() -> int:
             return 0
 
         updated = 0
+        unchanged = 0
         for m in candidates:
             derived = _html_to_text(m.body_html)
             # If derivation produces nothing usable (e.g. body_html was all CSS),
@@ -80,11 +104,16 @@ def main() -> int:
             # rather than overwriting with empty string.
             if not derived:
                 continue
+            # In rebuild mode, only count "updated" when value actually changes
+            # — keeps the report honest about how many rows got refreshed.
+            if m.body_text == derived:
+                unchanged += 1
+                continue
             m.body_text = derived
             updated += 1
 
         db.commit()
-        print(f"\nUpdated {updated} of {len(candidates)} rows.")
+        print(f"\nUpdated {updated} of {len(candidates)} rows ({unchanged} already current).")
         return 0
     finally:
         db.close()

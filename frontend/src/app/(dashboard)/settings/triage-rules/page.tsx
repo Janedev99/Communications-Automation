@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { ArrowLeft, Lock, Loader2, Pause, Play } from "lucide-react";
+import { ArrowLeft, Lock, Loader2, Pause, Play, ShieldAlert } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { api, swrFetcher } from "@/lib/api";
 import { useUser } from "@/hooks/use-user";
+import { useSystemStatus } from "@/hooks/use-system-status";
 import { ApiError } from "@/lib/types";
 import { cn, relativeTime } from "@/lib/utils";
 import type { EmailCategory, SystemSetting, TierRule, TierRuleUpdate } from "@/lib/types";
@@ -221,6 +222,16 @@ export default function TriageRulesPage() {
   const autoSendSetting = settings?.find((s) => s.key === "auto_send_enabled");
   const autoSendEnabled = autoSendSetting?.value === "true";
 
+  // Shadow mode is the env-level kill switch (not user-controllable from UI).
+  // When it's on, even an admin-flipped auto_send_enabled=true won't cause
+  // sends to fire — auto_send.is_auto_send_enabled() checks shadow_mode
+  // first. Surface that fact prominently so the toggle isn't confusing.
+  const { status: systemStatus } = useSystemStatus();
+  const shadowModeOn = !!systemStatus?.shadow_mode;
+  // "Effective" auto-send is what actually happens in production. If shadow
+  // mode is on, the DB flag is irrelevant — no sends fire either way.
+  const effectiveAutoSend = autoSendEnabled && !shadowModeOn;
+
   const [confirmEnableOpen, setConfirmEnableOpen] = useState(false);
   const [togglingMaster, setTogglingMaster] = useState(false);
 
@@ -321,11 +332,14 @@ export default function TriageRulesPage() {
         subtitle="Decide which categories the AI may auto-handle (T1) and the minimum confidence required."
       />
 
-      {/* Master kill switch */}
+      {/* Master kill switch — colour palette + button reflect EFFECTIVE state
+          (db_flag AND NOT shadow_mode), so flipping the DB toggle while shadow
+          mode is on doesn't visually flip to "ENABLED" when nothing actually
+          changed behaviorally. */}
       <div
         className={cn(
           "rounded-xl border p-5 mb-3 transition-colors",
-          autoSendEnabled
+          effectiveAutoSend
             ? "bg-emerald-500/10 border-emerald-500/30"
             : "bg-amber-500/10 border-amber-500/30"
         )}
@@ -335,12 +349,12 @@ export default function TriageRulesPage() {
             <span
               className={cn(
                 "flex items-center justify-center w-10 h-10 rounded-md shrink-0",
-                autoSendEnabled
+                effectiveAutoSend
                   ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
                   : "bg-amber-500/20 text-amber-700 dark:text-amber-300"
               )}
             >
-              {autoSendEnabled ? (
+              {effectiveAutoSend ? (
                 <Play className="w-5 h-5" strokeWidth={2} />
               ) : (
                 <Pause className="w-5 h-5" strokeWidth={2} />
@@ -351,13 +365,13 @@ export default function TriageRulesPage() {
                 <h2
                   className={cn(
                     "text-base font-semibold",
-                    autoSendEnabled
+                    effectiveAutoSend
                       ? "text-emerald-800 dark:text-emerald-200"
                       : "text-amber-800 dark:text-amber-200"
                   )}
                 >
                   Global auto-send is{" "}
-                  {autoSendEnabled ? (
+                  {effectiveAutoSend ? (
                     <span className="inline-flex items-center gap-1.5">
                       ENABLED
                       <span
@@ -373,12 +387,12 @@ export default function TriageRulesPage() {
               <p
                 className={cn(
                   "text-sm mt-1",
-                  autoSendEnabled
+                  effectiveAutoSend
                     ? "text-emerald-700/90 dark:text-emerald-300/90"
                     : "text-amber-700/90 dark:text-amber-300/90"
                 )}
               >
-                {autoSendEnabled
+                {effectiveAutoSend
                   ? `T1-eligible threads with sufficient confidence are sent automatically. ${
                       enabledCount === 0
                         ? "No categories are currently T1-eligible — enable one below."
@@ -402,13 +416,18 @@ export default function TriageRulesPage() {
                 setConfirmEnableOpen(true);
               }
             }}
-            disabled={togglingMaster || !autoSendSetting}
+            disabled={togglingMaster || !autoSendSetting || shadowModeOn}
+            title={
+              shadowModeOn
+                ? "Disabled: shadow mode is active (env-level kill switch). Turn off SHADOW_MODE in backend config before enabling auto-send."
+                : undefined
+            }
             className={cn(
               "shrink-0 inline-flex items-center gap-1.5 px-4 h-9 rounded-md text-sm font-semibold transition-colors",
               autoSendEnabled
                 ? "bg-card text-foreground ring-1 ring-border hover:bg-accent"
                 : "bg-emerald-600 text-white hover:bg-emerald-700",
-              togglingMaster && "opacity-60 cursor-wait"
+              (togglingMaster || shadowModeOn) && "opacity-60 cursor-not-allowed"
             )}
           >
             {togglingMaster ? (
@@ -426,6 +445,37 @@ export default function TriageRulesPage() {
             )}
           </button>
         </div>
+
+        {/* Shadow-mode disclosure — only render when active. Explains WHY the
+            toggle is locked and what it would take to change. Without this,
+            an admin flipping the DB toggle would see no behavior change and
+            assume the system is broken. */}
+        {shadowModeOn && (
+          <div className="mt-4 pt-4 border-t border-amber-500/20 flex items-start gap-2.5">
+            <ShieldAlert
+              className="w-4 h-4 mt-0.5 shrink-0 text-amber-700 dark:text-amber-300"
+              aria-hidden
+            />
+            <div className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+              <span className="font-semibold">Shadow mode is active.</span>{" "}
+              An env-level kill switch (<code className="font-mono">SHADOW_MODE=true</code>)
+              is overriding this toggle — even if you enable auto-send below,
+              no emails will leave the system, and the AI won&rsquo;t generate
+              new drafts for incoming mail. To turn this off, a developer must
+              clear <code className="font-mono">SHADOW_MODE</code> in the
+              backend config and restart the service.
+              {autoSendEnabled && (
+                <>
+                  {" "}
+                  <span className="font-medium">
+                    (The DB toggle is currently set to ENABLED but has no
+                    effect while shadow mode is on.)
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Sub-summary: how many categories are flipped on */}

@@ -29,6 +29,10 @@ httpx==0.28.1
 # Email / IMAP
 # imaplib and smtplib are part of stdlib — no extra package needed
 
+# HTML → plain-text conversion for email bodies (MS Graph returns body as HTML
+# by default; we derive body_text from body_html for clean AI input + UI rendering)
+html2text==2024.2.26
+
 # Environment
 python-dotenv==1.0.1
 

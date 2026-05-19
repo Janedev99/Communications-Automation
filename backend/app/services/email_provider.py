@@ -22,11 +22,29 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
+import html2text
 import httpx
 
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _html_to_text(html_content: str) -> str:
+    """
+    Convert an HTML email body to clean plain text suitable for AI input and
+    plain-text UI rendering. Preserves links as `[text](url)` so nothing useful
+    is silently dropped. Returns an empty string for empty / None-ish input.
+    """
+    if not html_content:
+        return ""
+    converter = html2text.HTML2Text()
+    converter.body_width = 0          # don't wrap lines
+    converter.ignore_links = False    # preserve URLs as [text](url)
+    converter.ignore_images = True    # image markdown is noise for the categorizer
+    converter.unicode_snob = True     # keep non-ASCII characters as-is
+    converter.escape_snob = True      # don't insert backslash escapes for punctuation
+    return converter.handle(html_content).strip()
 
 
 @dataclass
@@ -205,13 +223,33 @@ class MSGraphProvider(EmailProvider):
                         content_type=att.get("contentType"),
                     ))
 
+            # Body extraction — MS Graph returns a single `body` object with
+            # either contentType="html" (default) or "text". Older code mapped
+            # the two fields as mutually exclusive, leaving body_text=None on
+            # every HTML email — which blanked the dashboard and forced the AI
+            # categorizer to read raw HTML (with <style>, <head>, inline CSS).
+            # Now: store HTML as-is in body_html AND derive a clean plain-text
+            # version into body_text so both consumers get what they expect.
+            body_obj = msg.get("body") or {}
+            content = body_obj.get("content") or ""
+            content_type = (body_obj.get("contentType") or "").lower()
+            if content_type == "html":
+                body_html: str | None = content or None
+                body_text: str | None = _html_to_text(content) or None
+            elif content_type == "text":
+                body_html = None
+                body_text = content or None
+            else:
+                body_html = None
+                body_text = None
+
             results.append(RawEmail(
                 message_id=msg.get("internetMessageId", msg["id"]),
                 subject=msg.get("subject", "(no subject)"),
                 sender=msg.get("from", {}).get("emailAddress", {}).get("address", ""),
                 recipient=mailbox,
-                body_text=msg.get("body", {}).get("content") if msg.get("body", {}).get("contentType") == "text" else None,
-                body_html=msg.get("body", {}).get("content") if msg.get("body", {}).get("contentType") == "html" else None,
+                body_text=body_text,
+                body_html=body_html,
                 received_at=datetime.fromisoformat(
                     msg["receivedDateTime"].replace("Z", "+00:00")
                 ),

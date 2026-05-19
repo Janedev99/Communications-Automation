@@ -68,14 +68,21 @@ def _html_to_text(html_content: str) -> str:
 class AttachmentMeta:
     """Lightweight metadata about an email attachment (no binary content)."""
     filename: str
-    size: int | None = None          # bytes; None if the provider didn't report it
-    content_type: str | None = None  # MIME type, e.g. "application/pdf"
+    size: int | None = None              # bytes; None if the provider didn't report it
+    content_type: str | None = None      # MIME type, e.g. "application/pdf"
+    # Provider-native attachment id. For MS Graph, this is the value at the
+    # /messages/{id}/attachments/{aid} URL — needed to fetch the binary on
+    # demand. May be None for legacy rows polled before this field existed,
+    # or for the IMAP provider (which doesn't have a stable per-attachment
+    # remote id). Download endpoint falls back to "look up by index" in that case.
+    attachment_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "filename": self.filename,
             "size": self.size,
             "content_type": self.content_type,
+            "attachment_id": self.attachment_id,
         }
 
 
@@ -148,6 +155,30 @@ class EmailProvider(ABC):
         """
         ...
 
+    def fetch_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        attachment_id: str | None = None,
+        attachment_index: int | None = None,
+    ) -> tuple[bytes, str, str | None]:
+        """
+        Fetch a specific attachment's binary content for an already-polled
+        message. Returns (content_bytes, filename, content_type).
+
+        Caller provides either:
+          - attachment_id (preferred — direct lookup, single API call), or
+          - attachment_index (legacy fallback for rows polled before the id
+            was persisted — provider lists attachments then picks by index)
+
+        Default implementation raises — providers that can't support
+        on-demand attachment fetch should leave this as the abstract raise so
+        the API surface degrades clearly rather than silently failing.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support on-demand attachment fetch"
+        )
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -209,7 +240,7 @@ class MSGraphProvider(EmailProvider):
             "&$select=id,subject,from,toRecipients,body,bodyPreview,"
             "receivedDateTime,conversationId,internetMessageId,"
             "internetMessageHeaders,hasAttachments,attachments"
-            "&$expand=attachments($select=name,size,contentType,isInline)"
+            "&$expand=attachments($select=id,name,size,contentType,isInline)"
             "&$top=50"
             "&$orderby=receivedDateTime asc"
         )
@@ -235,9 +266,10 @@ class MSGraphProvider(EmailProvider):
                     if att.get("isInline"):
                         continue  # Skip inline images embedded in HTML body
                     attachments.append(AttachmentMeta(
-                        filename=att.get("name", "attachment"),
+                        filename=att.get("name") or "attachment",
                         size=att.get("size"),
                         content_type=att.get("contentType"),
+                        attachment_id=att.get("id"),
                     ))
 
             # Body extraction — MS Graph returns a single `body` object with
@@ -284,29 +316,111 @@ class MSGraphProvider(EmailProvider):
             ))
         return results
 
-    def mark_as_read(self, message_id: str) -> None:
-        # message_id here is the Graph message id (not internetMessageId)
-        # In practice we need to track the Graph-native id separately.
-        # For now we use the internetMessageId to look up and patch.
+    def _resolve_graph_message_id(self, internet_message_id: str) -> str | None:
+        """
+        Translate a stored internetMessageId (e.g. "<abc@example.com>") into the
+        Graph-native message id needed for /messages/{id}/... endpoints.
+        Returns None if the message isn't found in the mailbox (deleted, moved,
+        etc.) so callers can surface a clean 404.
+        """
         mailbox = self._settings.msgraph_mailbox
-        # Escape single quotes in message_id to prevent OData filter injection
-        safe_id = message_id.replace("'", "''")
-        # Search for message by internetMessageId
+        # Escape single quotes — OData filter injection vector
+        safe_id = internet_message_id.replace("'", "''")
         url = (
             f"{self.GRAPH_BASE}/users/{mailbox}/messages"
             f"?$filter=internetMessageId eq '{safe_id}'"
             "&$select=id"
         )
+        resp = self._client.get(url, headers=self._headers())
+        resp.raise_for_status()
+        msgs = resp.json().get("value", [])
+        return msgs[0]["id"] if msgs else None
+
+    def mark_as_read(self, message_id: str) -> None:
+        # message_id here is the internetMessageId we stored at poll time.
         try:
-            resp = self._client.get(url, headers=self._headers())
-            resp.raise_for_status()
-            msgs = resp.json().get("value", [])
-            if msgs:
-                graph_id = msgs[0]["id"]
-                patch_url = f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
-                self._client.patch(patch_url, headers=self._headers(), json={"isRead": True})
+            graph_id = self._resolve_graph_message_id(message_id)
+            if graph_id is None:
+                return
+            mailbox = self._settings.msgraph_mailbox
+            patch_url = f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            self._client.patch(patch_url, headers=self._headers(), json={"isRead": True})
         except Exception as exc:
             logger.warning("MSGraph mark_as_read failed for %s: %s", message_id, exc)
+
+    def fetch_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        attachment_id: str | None = None,
+        attachment_index: int | None = None,
+    ) -> tuple[bytes, str, str | None]:
+        """
+        Fetch a single attachment's binary content from MS Graph.
+
+        Prefers `attachment_id` (stored at poll time on new rows) for a direct
+        lookup. Falls back to `attachment_index` for legacy rows by listing
+        the message's attachments and picking the Nth non-inline one.
+
+        Raises:
+          - LookupError if the message itself can't be found in the mailbox
+            (deleted / moved by the user)
+          - IndexError if attachment_index is out of range for the message
+          - ValueError if neither identifier is provided
+        """
+        if attachment_id is None and attachment_index is None:
+            raise ValueError("Provide either attachment_id or attachment_index")
+
+        import base64
+        mailbox = self._settings.msgraph_mailbox
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            raise LookupError(
+                f"Message {internet_message_id!r} not found in mailbox — "
+                "may have been deleted or moved"
+            )
+
+        # Resolve attachment_id from index if needed (legacy path).
+        if attachment_id is None:
+            list_url = (
+                f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/attachments"
+                "?$select=id,name,contentType,isInline"
+            )
+            list_resp = self._client.get(list_url, headers=self._headers())
+            list_resp.raise_for_status()
+            atts = [
+                a for a in (list_resp.json().get("value") or [])
+                if not a.get("isInline")  # match the poll-time filter exactly
+            ]
+            if not 0 <= attachment_index < len(atts):
+                raise IndexError(
+                    f"Attachment index {attachment_index} out of range "
+                    f"(message has {len(atts)} non-inline attachments)"
+                )
+            attachment_id = atts[attachment_index]["id"]
+
+        # Fetch the full attachment object — `contentBytes` is a base64 string
+        # for the standard fileAttachment resource type. Use $value for a raw
+        # binary response if the type is itemAttachment (calendar invites etc.)
+        # but that's rare; defaulting to /$value works for fileAttachment too.
+        get_url = (
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            f"/attachments/{attachment_id}"
+        )
+        resp = self._client.get(get_url, headers=self._headers())
+        resp.raise_for_status()
+        att = resp.json()
+        content_b64 = att.get("contentBytes")
+        if not content_b64:
+            raise LookupError(
+                f"Attachment {attachment_id!r} has no contentBytes "
+                "(may be an itemAttachment / inaccessible reference)"
+            )
+        return (
+            base64.b64decode(content_b64),
+            att.get("name") or "attachment",
+            att.get("contentType"),
+        )
 
     def send_email(
         self,

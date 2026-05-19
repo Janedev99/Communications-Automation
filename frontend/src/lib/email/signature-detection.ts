@@ -27,7 +27,12 @@ export interface SignatureSplit {
 }
 
 const RFC3676 = /(?:^|\n)-- ?\n([\s\S]+)$/;
-const SENT_FROM = /\n(Sent from my [^\n]{1,80})\s*$/i;
+// Sent-from-mobile family. Real corpus has three variants:
+//   "Sent from my iPhone"            (Apple Mail)
+//   "Sent with [Proton Mail]"        (Proton)
+//   "Sent by SpectrumVOIP"           (voicemail notifications)
+// All conform to "Sent (from|with|by) <token>" at the bottom of the body.
+const SENT_FROM = /\n(Sent (?:from my|with|by) [^\n]{1,80})\s*$/i;
 const DIVIDER = /\n(?:_{8,}|-{8,})\n([\s\S]+)$/;
 
 // Legal / footer marker phrases. Anchored to start-of-line via the `m` flag so
@@ -96,6 +101,39 @@ function looksLikeSignatureBlockLine(line: string): boolean {
 // walk-back to peel the sign-off + name back off the signature start.
 const SIGN_OFF_RE =
   /^(?:Best|Thanks|Thank you|Sincerely|Regards|Cheers|Kindly|Cordially|Respectfully|Warmly|Warm regards|Best regards|Kind regards|All the best|Take care|Many thanks)[,!.\s]*$/i;
+
+/**
+ * STRONG signature signal — email, phone, URL, address, or recognized title
+ * token. Used by the sign-off fallback to confirm a trailing block is really
+ * a contact block, not body prose that happens to follow a casual "Thanks,".
+ * Weak signals (short capitalized lines) are not enough on their own.
+ */
+function hasStrongSignatureSignal(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  if (/[\w.+\-]+@[\w-]+\.[\w.\-]+/.test(t)) return true; // email
+  if (/(?:\(\d{3}\)\s*\d{3}[\s.\-]?\d{4}|\d{3}[\s.\-]\d{3}[\s.\-]\d{4})/.test(t))
+    return true; // US phone
+  if (/\+\d{1,3}[\s\-]?\d{3,}/.test(t)) return true; // international phone
+  if (/(?:https?:\/\/|www\.)\S+/i.test(t)) return true; // URL
+  if (/^\d+\s+\w/.test(t)) return true; // street address
+  if (/\b\d{5}(?:-\d{4})?\s*$/.test(t)) return true; // line ending in ZIP
+  if (/^(?:tel|phone|mobile|cell|fax|direct|office|ext)[:.\s]/i.test(t))
+    return true; // labelled phone line
+  if (
+    /\b(?:CPA|EA|JD|Esq\.?|Director|Manager|Partner|Associate|Officer|VP|Vice President|Chief|CEO|CFO|COO|CTO|President|Founder|Owner|Head of|Senior|Principal|Lead|Attorney|Counsel|Accountant|Advisor|Consultant|Analyst)\b/.test(
+      t,
+    )
+  )
+    return true; // formal title
+  if (
+    /\b(?:LLC|L\.L\.C\.?|Inc\.?|Corp\.?|Ltd\.?|LLP|PLLC|PC|Group|Partners|Associates|Capital|Advisors|Consulting|Solutions|Holdings|Schoenfield|Schilmoeller)\b/.test(
+      t,
+    )
+  )
+    return true; // company suffix or known firm
+  return false;
+}
 
 export function splitEmailSignature(rawBody: string): SignatureSplit {
   if (!rawBody) return { body: "", signature: null };
@@ -184,35 +222,48 @@ export function splitEmailSignature(rawBody: string): SignatureSplit {
     }
   }
 
-  // Additional fallback for Schiller CPA-style signatures that have NO legal
-  // disclosure marker but follow a recognisable shape — sign-off ("Thank
-  // you,", "Best,") followed by a contact block. Walks back from the LAST
-  // sign-off line and captures everything after it AS LONG AS the trailing
-  // block parses as contact-block-shaped (no long prose).
+  // Additional fallback for signatures that have NO legal disclosure marker
+  // but follow a recognisable shape — sign-off ("Thank you,", "Best,")
+  // followed by a contact block. Walks back from the LAST sign-off line
+  // (latest one in the message wins; avoids triggering on a casual "Thanks,"
+  // mid-body).
+  //
+  // Tightening over the dasg-ai-comms version: the trailing block must
+  // contain at least ONE strong signature signal (email / phone / URL /
+  // address / title / firm) — weak signals alone (short capitalized words)
+  // aren't enough. This is what stops agency boilerplate (Census Bureau
+  // "OMB Number / Authority / Burden Estimate" footers) from being
+  // misclassified as a signature.
   for (let i = lines.length - 1; i >= 0; i--) {
     if (SIGN_OFF_RE.test(lines[i].trim())) {
-      // Everything after the sign-off line (skipping blanks) is a signature
-      // candidate. Must be at least one contact-block line for us to bother.
       let cand = i + 1;
       while (cand < lines.length && lines[cand].trim() === "") cand++;
       if (cand >= lines.length) break;
+
+      // Every line after the sign-off must look at least signature-shaped
+      // (weak or strong)…
       let allLook = true;
+      let hasStrong = false;
       for (let j = cand; j < lines.length; j++) {
         if (!looksLikeSignatureBlockLine(lines[j])) {
           allLook = false;
           break;
         }
+        if (hasStrongSignatureSignal(lines[j])) {
+          hasStrong = true;
+        }
       }
-      if (allLook) {
-        // Keep the sign-off WITH the body — the user wrote it.
-        // Include the sign-off in the body, capture everything after as sig.
+      // …AND at least one must be a strong signal. Weak-only blocks
+      // (vague short capitalised lines) are too easily confused with
+      // forwarded notes, single-line replies, etc.
+      if (allLook && hasStrong) {
         const bodyPart = lines.slice(0, i + 1).join("\n").trimEnd();
         const sigPart = lines.slice(cand).join("\n").trim();
         if (bodyPart.length > 0 && sigPart.length > 0) {
           return { body: bodyPart, signature: sigPart };
         }
       }
-      break; // first sign-off from the bottom wins; don't keep climbing
+      break; // last sign-off from the bottom wins; don't keep climbing
     }
   }
 

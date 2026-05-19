@@ -32,29 +32,32 @@ const SIGNATURE_LONG_THRESHOLD_LINES = 5;
  * block — going deeper than one level is rare and not worth the UI cost.
  */
 
+// Gmail / Apple Mail style intro that precedes quoted content. Examples:
+//   "On May 19, 2026, at 7:34 AM, Jane Schilmoeller <jane@x> wrote:"
+//   "On Friday, May 1st, 2026 at 3:36 PM, Doug Conquest <doug@x> wrote:"
+const GMAIL_INTRO_RE = /^On .+, .+ wrote:\s*$/;
+
 /**
  * Find the index in `lines` where quoted content starts. Returns lines.length
  * if no quote boundary is detected (meaning the whole message is "current").
+ *
+ * Detects three patterns observed in the real corpus:
+ *   - Apple Mail / iOS: lines beginning with "> " (or "> > " for nested)
+ *   - Outlook reply header: "**From:** ... **Sent:** ... **Subject:**"
+ *   - Gmail / Proton standalone intro: "On <date>, <person> wrote:"
+ *     (when followed by quote body that doesn't use ">" prefixes — e.g.
+ *     Proton Mail's plain-text reply quoting)
  */
 function findQuoteBoundary(lines: string[]): number {
-  // Pattern 1 + 3: a line beginning with "> " (after stripping leading whitespace)
-  // is unambiguously quoted content. Gmail's "On ... wrote:" intro lines
-  // appear immediately before > lines, so we treat the > line as the boundary
-  // and let the toggle reveal the intro along with the rest.
-  // Pattern 2: Outlook's "**From:**" reply header. html2text renders Outlook's
-  // bold "From:" as `**From:**` markdown.
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trimStart();
     if (trimmed.startsWith("> ") || trimmed === ">") {
-      // Walk backwards past a Gmail "On <date>, ... wrote:" intro if present —
-      // this lets the toggle reveal the intro alongside the quoted lines.
+      // Walk backwards past a Gmail intro line so the toggle reveals it
+      // alongside the quoted lines (it belongs to the quote, not the body).
       let start = i;
-      const introRe = /^On .+, .+ wrote:\s*$/;
-      while (start > 0 && introRe.test(lines[start - 1].trimEnd())) {
+      while (start > 0 && GMAIL_INTRO_RE.test(lines[start - 1].trimEnd())) {
         start -= 1;
       }
-      // Also walk past trailing blank lines so we don't strand them above the
-      // toggle button.
       while (start > 0 && lines[start - 1].trim() === "") {
         start -= 1;
       }
@@ -65,7 +68,18 @@ function findQuoteBoundary(lines: string[]): number {
       trimmed.startsWith("**From: **") || // tolerate stray space variant
       trimmed.startsWith("From: ") // plain-text version (no markdown bolding)
     ) {
-      // Walk back past blank-line buffer before the reply header.
+      let start = i;
+      while (start > 0 && lines[start - 1].trim() === "") {
+        start -= 1;
+      }
+      return start;
+    }
+    // Standalone Gmail / Apple Mail intro — e.g. Proton Mail's reply format
+    // doesn't use "> " prefixes. Treat the intro itself as the boundary so
+    // it (and everything after) folds into the quote toggle. Only trigger
+    // when the intro is followed by MORE content (not the last line) —
+    // otherwise an intro-only message would lose its content to the toggle.
+    if (GMAIL_INTRO_RE.test(lines[i].trimEnd()) && i < lines.length - 1) {
       let start = i;
       while (start > 0 && lines[start - 1].trim() === "") {
         start -= 1;

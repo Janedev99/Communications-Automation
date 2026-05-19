@@ -236,6 +236,45 @@ class TestMsgraphBodyExtraction:
         assert results[0].body_text is None
         assert results[0].body_html is None
 
+    def test_null_subject_coerced_to_placeholder(self):
+        """
+        Real iCloud-sent emails arrive with `"subject": null`. The previous
+        code used `msg.get("subject", "(no subject)")` which only defaults on
+        a missing key — a present-but-null value still returned None and
+        crashed downstream callers (notably _is_bounce's subject.strip()),
+        which then never marked the message as read → infinite retry loop on
+        every poll cycle. Coerce to "(no subject)" at the boundary.
+        """
+        provider = _make_provider()
+        msg = _base_message()
+        msg["subject"] = None  # iCloud / certain auto-replies do this
+        provider._client.get.return_value = _fake_graph_response([msg])
+
+        results = provider.fetch_new_emails()
+
+        assert len(results) == 1
+        assert results[0].subject == "(no subject)"
+        assert isinstance(results[0].subject, str), (
+            "Subject must always be a str — downstream code (_is_bounce, "
+            "categorizer prompt builder) assumes the str contract"
+        )
+
+    def test_null_from_yields_empty_sender_string(self):
+        """
+        Some system / quarantine messages arrive with `"from": null`. Same
+        defensive principle: coerce to empty string so downstream code can
+        rely on `raw.sender` being a string.
+        """
+        provider = _make_provider()
+        msg = _base_message()
+        msg["from"] = None
+        provider._client.get.return_value = _fake_graph_response([msg])
+
+        results = provider.fetch_new_emails()
+
+        assert results[0].sender == ""
+        assert isinstance(results[0].sender, str)
+
     def test_unknown_content_type_yields_none_for_both(self):
         # Defensive: if Graph ever returns an unexpected contentType (e.g.
         # "multipart"), we don't guess — we leave both None and let the

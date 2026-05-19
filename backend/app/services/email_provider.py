@@ -260,10 +260,16 @@ class MSGraphProvider(EmailProvider):
                 body_html = None
                 body_text = None
 
+            # Coerce nullable Graph fields. `msg.get("subject", default)` doesn't
+            # protect against `"subject": null` — that returns None, which then
+            # crashes downstream calls like `subject.strip()` (seen in real
+            # production data: iCloud-sent emails routinely omit the subject).
+            # Same for `from`: occasional system messages have a null `from`.
+            sender_obj = (msg.get("from") or {}).get("emailAddress") or {}
             results.append(RawEmail(
-                message_id=msg.get("internetMessageId", msg["id"]),
-                subject=msg.get("subject", "(no subject)"),
-                sender=msg.get("from", {}).get("emailAddress", {}).get("address", ""),
+                message_id=msg.get("internetMessageId") or msg["id"],
+                subject=msg.get("subject") or "(no subject)",
+                sender=sender_obj.get("address") or "",
                 recipient=mailbox,
                 body_text=body_text,
                 body_html=body_html,

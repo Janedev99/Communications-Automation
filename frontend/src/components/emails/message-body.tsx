@@ -3,6 +3,12 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { splitEmailSignature } from "@/lib/email/signature-detection";
+
+// Long-signature threshold (lines). At or below this, render inline + muted.
+// Above this, hide behind a "Show signature" toggle so signatures don't
+// dominate the bubble visually — matches the dasg-ai-comms behavior.
+const SIGNATURE_LONG_THRESHOLD_LINES = 5;
 
 /**
  * Rich body renderer for email messages.
@@ -119,6 +125,7 @@ interface MessageBodyProps {
 
 export function MessageBody({ text, variant }: MessageBodyProps) {
   const [showQuoted, setShowQuoted] = useState(false);
+  const [showSignature, setShowSignature] = useState(false);
 
   if (!text) {
     return (
@@ -135,12 +142,20 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
 
   const lines = text.split("\n");
   const boundary = findQuoteBoundary(lines);
-  const currentLines = lines.slice(0, boundary);
+  const currentText = lines.slice(0, boundary).join("\n");
   const quotedLines = lines.slice(boundary);
 
-  const currentParagraphs = toParagraphs(currentLines);
+  // Signature detection runs on the CURRENT-message portion only. Quoted
+  // history may contain old signatures from prior messages, but those are
+  // already visually demoted inside the quote toggle.
+  const { body: bodyText, signature } = splitEmailSignature(currentText);
+
+  const currentParagraphs = toParagraphs(bodyText.split("\n"));
+  const signatureLines = signature ? signature.split("\n") : [];
+  const signatureLong = signatureLines.length > SIGNATURE_LONG_THRESHOLD_LINES;
   const quotedParagraphs = toParagraphs(quotedLines);
 
+  const hasSignature = signature !== null && signature.length > 0;
   const hasQuote = quotedParagraphs.length > 0;
 
   // Inbound = dark text on light card. Outbound = light text on primary.
@@ -151,6 +166,43 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
       {currentParagraphs.map((para, i) => (
         <Paragraph key={`cur-${i}`} lines={para} />
       ))}
+
+      {hasSignature && (
+        <div
+          className={cn(
+            "mt-1 pt-2 border-t",
+            outbound ? "border-white/15" : "border-border",
+          )}
+        >
+          {signatureLong ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowSignature((s) => !s)}
+                className={cn(
+                  "inline-flex items-center gap-1 text-[11px] font-medium transition-colors underline-offset-2 hover:underline",
+                  outbound
+                    ? "text-primary-foreground/60 hover:text-primary-foreground/90"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                aria-expanded={showSignature}
+              >
+                {showSignature ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <ChevronRight className="w-3 h-3" />
+                )}
+                {showSignature ? "Hide signature" : "Show signature"}
+              </button>
+              {showSignature && (
+                <SignatureBlock signature={signature!} outbound={outbound} />
+              )}
+            </>
+          ) : (
+            <SignatureBlock signature={signature!} outbound={outbound} />
+          )}
+        </div>
+      )}
 
       {hasQuote && (
         <div className="mt-1">
@@ -191,6 +243,26 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Visual treatment for the signature block: smaller, italic, slightly muted. */
+function SignatureBlock({
+  signature,
+  outbound,
+}: {
+  signature: string;
+  outbound: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "mt-2 text-[12px] italic leading-relaxed whitespace-pre-line break-words",
+        outbound ? "text-primary-foreground/70" : "text-muted-foreground",
+      )}
+    >
+      {signature}
     </div>
   );
 }

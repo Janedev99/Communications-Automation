@@ -592,6 +592,119 @@ def get_thread(
     return EmailThreadResponse.from_thread(thread)
 
 
+@router.get("/{thread_id}/messages/{message_id}/attachments/{attachment_index}/download")
+def download_attachment(
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    attachment_index: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Stream an attachment's binary content from the email provider.
+
+    Fetches on-demand rather than storing binaries server-side — keeps the
+    DB lean and avoids retention / PII concerns around tax documents. Cost is
+    one extra round-trip to MS Graph per click.
+
+    Path: thread_id/message_id/attachment_index. Index matches the order
+    stored on EmailMessage.attachments (non-inline only — inline images
+    were filtered at poll time).
+    """
+    # Verify the thread-message relationship up front (security + clean 404)
+    msg = db.execute(
+        select(EmailMessage).where(
+            EmailMessage.id == message_id,
+            EmailMessage.thread_id == thread_id,
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found in this thread.",
+        )
+
+    attachments_meta = msg.attachments or []
+    if not 0 <= attachment_index < len(attachments_meta):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Attachment index {attachment_index} out of range "
+                f"(message has {len(attachments_meta)} attachments)."
+            ),
+        )
+
+    # Persisted attachment_id when available (new polls); fall back to index
+    # lookup for legacy rows.
+    stored = attachments_meta[attachment_index]
+    persisted_id = stored.get("attachment_id") if isinstance(stored, dict) else None
+
+    from app.services.email_provider import get_email_provider
+    provider = get_email_provider()
+    try:
+        provider.connect()
+        content_bytes, filename, content_type = provider.fetch_attachment(
+            internet_message_id=msg.message_id_header,
+            attachment_id=persisted_id,
+            attachment_index=None if persisted_id else attachment_index,
+        )
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Current email provider does not support attachment download.",
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except IndexError as exc:
+        # Provider's attachment list disagreed with our stored count (rare —
+        # would mean the message was modified server-side).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+
+    # Audit-log the download — sensitive tax docs flow through this path.
+    log_action(
+        db,
+        action="email.attachment_downloaded",
+        entity_type="email_message",
+        entity_id=str(message_id),
+        details={
+            "thread_id": str(thread_id),
+            "filename": filename,
+            "size": len(content_bytes),
+            "content_type": content_type,
+            "attachment_index": attachment_index,
+        },
+        user_id=current_user.id,
+    )
+    db.commit()
+
+    # `Content-Disposition: attachment` forces the browser to download rather
+    # than render inline. We don't quote-escape the filename for legacy clients
+    # — RFC 5987 encoding (filename*=UTF-8''...) handles non-ASCII filenames
+    # in modern browsers without breaking older ones.
+    import urllib.parse
+    safe_ascii = filename.encode("ascii", errors="replace").decode("ascii")
+    quoted_utf8 = urllib.parse.quote(filename)
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{safe_ascii}"; '
+            f"filename*=UTF-8''{quoted_utf8}"
+        ),
+        "Content-Length": str(len(content_bytes)),
+    }
+    import io
+    return StreamingResponse(
+        io.BytesIO(content_bytes),
+        media_type=content_type or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @router.post("/{thread_id}/categorize", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
 def manual_categorize(
     request: Request,

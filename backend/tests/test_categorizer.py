@@ -141,6 +141,79 @@ def test_json_parse_failure_fallback_escalates(mock_anthropic):
 # 4. Pydantic validation failure → fallback escalates
 # ===========================================================================
 
+# ===========================================================================
+# 5. Markdown-fenced JSON from Claude must parse cleanly
+# ===========================================================================
+# Claude wraps JSON output in ```json ... ``` fences. Before _strip_json_fences,
+# json.loads choked on the leading "```json\n", silently demoting every
+# Claude categorization to rules_fallback. These tests pin that down.
+
+
+def test_strip_json_fences_with_language_tag():
+    """```json\\n{...}\\n``` should yield bare JSON."""
+    from app.services.categorizer import _strip_json_fences
+    raw = '```json\n{"category": "status_update", "confidence": 0.9}\n```'
+    assert _strip_json_fences(raw) == '{"category": "status_update", "confidence": 0.9}'
+
+
+def test_strip_json_fences_without_language_tag():
+    """Bare ``` ... ``` (no 'json' tag) should also strip."""
+    from app.services.categorizer import _strip_json_fences
+    raw = '```\n{"a": 1}\n```'
+    assert _strip_json_fences(raw) == '{"a": 1}'
+
+
+def test_strip_json_fences_preserves_unfenced():
+    """Plain JSON (no fences) should pass through unchanged after strip()."""
+    from app.services.categorizer import _strip_json_fences
+    raw = '{"a": 1}'
+    assert _strip_json_fences(raw) == '{"a": 1}'
+
+
+def test_strip_json_fences_handles_trailing_whitespace():
+    """Trailing newlines/spaces between content and closing fence should not break parsing."""
+    from app.services.categorizer import _strip_json_fences
+    raw = '```json\n{"a": 1}\n\n  \n```'
+    assert _strip_json_fences(raw) == '{"a": 1}'
+
+
+def test_categorizer_parses_claude_fenced_response(mock_anthropic):
+    """
+    End-to-end: when Claude returns its typical ```json ... ``` wrapper,
+    the categorizer must extract a valid CategorizationResult — not silently
+    fall back to rules_fallback (which was the prior production behavior).
+    """
+    from app.models.email import CategorizationSource
+
+    mock_anthropic.messages.create.return_value = MagicMock(
+        content=[MagicMock(text=(
+            '```json\n'
+            '{"category": "document_request", "confidence": 0.92, '
+            '"escalation_needed": false, "escalation_reasons": [], '
+            '"summary": "Client requesting K-1 documents for tax filing.", '
+            '"suggested_reply_tone": "professional"}\n'
+            '```'
+        ))],
+        usage=MagicMock(input_tokens=120, output_tokens=60),
+    )
+
+    from app.services.categorizer import get_categorizer
+
+    svc = get_categorizer()
+    result = svc.categorize(
+        sender="client@example.com",
+        subject="Need last year's K-1",
+        body="Can you send the K-1 from 2024 for my tax filing?",
+    )
+
+    # Source must be claude — proves we did NOT fall back to rules_fallback
+    assert result.source == CategorizationSource.claude, (
+        "Fenced JSON should parse and attribute to claude, not rules_fallback"
+    )
+    assert result.confidence == 0.92
+    assert "K-1" in result.summary
+
+
 def test_pydantic_validation_failure_escalates(mock_anthropic):
     """
     Claude returns valid JSON but with the wrong shape (missing required fields

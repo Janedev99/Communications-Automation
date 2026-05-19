@@ -161,3 +161,72 @@ export const api = {
 
 /** SWR fetcher — pass directly as the fetcher argument */
 export const swrFetcher = <T>(path: string): Promise<T> => api.get<T>(path);
+
+
+/**
+ * Fetch a binary response from the API and trigger a browser download.
+ *
+ * Uses the same credentials/CSRF/auth handling as `request()` but consumes
+ * the body as a Blob and saves it via an <a href=URL.createObjectURL(...)>
+ * click. Filename comes from the server's Content-Disposition header (RFC
+ * 5987 UTF-8 encoded form is preferred when present); falls back to the
+ * caller-supplied default. Throws ApiError on non-OK responses.
+ */
+export async function downloadBinary(
+  path: string,
+  fallbackFilename: string,
+): Promise<void> {
+  const url = `${getBaseUrl()}${path}`;
+  const res = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+  });
+
+  if (res.status === 401) {
+    clearCsrfToken();
+    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
+    throw new ApiError(401, "Unauthorized");
+  }
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) message = body.detail;
+    } catch {
+      // server didn't return JSON — keep generic message
+    }
+    throw new ApiError(res.status, message);
+  }
+
+  // Parse RFC 5987 filename*=UTF-8''<percent-encoded> first; fall back to
+  // filename="..." then to the caller's default.
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  let filename = fallbackFilename;
+  const utf8Match = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      filename = decodeURIComponent(utf8Match[1]);
+    } catch {
+      // bad encoding — keep fallback
+    }
+  } else {
+    const plainMatch = cd.match(/filename="([^"]+)"/i) ?? cd.match(/filename=([^;]+)/i);
+    if (plainMatch) filename = plainMatch[1].trim();
+  }
+
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Defer revoke so the click handler has time to dispatch the download
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+}

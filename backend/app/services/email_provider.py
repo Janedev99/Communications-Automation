@@ -22,6 +22,9 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
+import re
+
+import html2text
 import httpx
 
 from app.config import Settings, get_settings
@@ -29,18 +32,57 @@ from app.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 
+# Matches a run of 3 or more consecutive newlines (allowing whitespace-only
+# lines in between, which is what Outlook's <p>&nbsp;</p> placeholder
+# paragraphs produce after html2text conversion).
+_EXCESSIVE_BLANK_LINES = re.compile(r'(?:[ \t\xa0]*\n){3,}')
+
+
+def _html_to_text(html_content: str) -> str:
+    """
+    Convert an HTML email body to clean plain text suitable for AI input and
+    plain-text UI rendering. Preserves links as `[text](url)` so nothing useful
+    is silently dropped. Returns an empty string for empty / None-ish input.
+
+    Excessive blank lines (4+ newlines in a row, often produced by Outlook's
+    `<p>&nbsp;</p>` placeholder paragraphs stacked between real content) are
+    collapsed to a single paragraph break — otherwise real client emails
+    render with multi-line gaps that look broken in the dashboard.
+    """
+    if not html_content:
+        return ""
+    converter = html2text.HTML2Text()
+    converter.body_width = 0          # don't wrap lines
+    converter.ignore_links = False    # preserve URLs as [text](url)
+    converter.ignore_images = True    # image markdown is noise for the categorizer
+    converter.unicode_snob = True     # keep non-ASCII characters as-is
+    converter.escape_snob = True      # don't insert backslash escapes for punctuation
+    text = converter.handle(html_content).strip()
+    # Collapse runs of 3+ blank lines (each potentially carrying trailing
+    # whitespace / NBSP) down to one paragraph break.
+    text = _EXCESSIVE_BLANK_LINES.sub('\n\n', text)
+    return text
+
+
 @dataclass
 class AttachmentMeta:
     """Lightweight metadata about an email attachment (no binary content)."""
     filename: str
-    size: int | None = None          # bytes; None if the provider didn't report it
-    content_type: str | None = None  # MIME type, e.g. "application/pdf"
+    size: int | None = None              # bytes; None if the provider didn't report it
+    content_type: str | None = None      # MIME type, e.g. "application/pdf"
+    # Provider-native attachment id. For MS Graph, this is the value at the
+    # /messages/{id}/attachments/{aid} URL — needed to fetch the binary on
+    # demand. May be None for legacy rows polled before this field existed,
+    # or for the IMAP provider (which doesn't have a stable per-attachment
+    # remote id). Download endpoint falls back to "look up by index" in that case.
+    attachment_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "filename": self.filename,
             "size": self.size,
             "content_type": self.content_type,
+            "attachment_id": self.attachment_id,
         }
 
 
@@ -113,6 +155,30 @@ class EmailProvider(ABC):
         """
         ...
 
+    def fetch_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        attachment_id: str | None = None,
+        attachment_index: int | None = None,
+    ) -> tuple[bytes, str, str | None]:
+        """
+        Fetch a specific attachment's binary content for an already-polled
+        message. Returns (content_bytes, filename, content_type).
+
+        Caller provides either:
+          - attachment_id (preferred — direct lookup, single API call), or
+          - attachment_index (legacy fallback for rows polled before the id
+            was persisted — provider lists attachments then picks by index)
+
+        Default implementation raises — providers that can't support
+        on-demand attachment fetch should leave this as the abstract raise so
+        the API surface degrades clearly rather than silently failing.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support on-demand attachment fetch"
+        )
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -174,7 +240,7 @@ class MSGraphProvider(EmailProvider):
             "&$select=id,subject,from,toRecipients,body,bodyPreview,"
             "receivedDateTime,conversationId,internetMessageId,"
             "internetMessageHeaders,hasAttachments,attachments"
-            "&$expand=attachments($select=name,size,contentType,isInline)"
+            "&$expand=attachments($select=id,name,size,contentType,isInline)"
             "&$top=50"
             "&$orderby=receivedDateTime asc"
         )
@@ -200,18 +266,45 @@ class MSGraphProvider(EmailProvider):
                     if att.get("isInline"):
                         continue  # Skip inline images embedded in HTML body
                     attachments.append(AttachmentMeta(
-                        filename=att.get("name", "attachment"),
+                        filename=att.get("name") or "attachment",
                         size=att.get("size"),
                         content_type=att.get("contentType"),
+                        attachment_id=att.get("id"),
                     ))
 
+            # Body extraction — MS Graph returns a single `body` object with
+            # either contentType="html" (default) or "text". Older code mapped
+            # the two fields as mutually exclusive, leaving body_text=None on
+            # every HTML email — which blanked the dashboard and forced the AI
+            # categorizer to read raw HTML (with <style>, <head>, inline CSS).
+            # Now: store HTML as-is in body_html AND derive a clean plain-text
+            # version into body_text so both consumers get what they expect.
+            body_obj = msg.get("body") or {}
+            content = body_obj.get("content") or ""
+            content_type = (body_obj.get("contentType") or "").lower()
+            if content_type == "html":
+                body_html: str | None = content or None
+                body_text: str | None = _html_to_text(content) or None
+            elif content_type == "text":
+                body_html = None
+                body_text = content or None
+            else:
+                body_html = None
+                body_text = None
+
+            # Coerce nullable Graph fields. `msg.get("subject", default)` doesn't
+            # protect against `"subject": null` — that returns None, which then
+            # crashes downstream calls like `subject.strip()` (seen in real
+            # production data: iCloud-sent emails routinely omit the subject).
+            # Same for `from`: occasional system messages have a null `from`.
+            sender_obj = (msg.get("from") or {}).get("emailAddress") or {}
             results.append(RawEmail(
-                message_id=msg.get("internetMessageId", msg["id"]),
-                subject=msg.get("subject", "(no subject)"),
-                sender=msg.get("from", {}).get("emailAddress", {}).get("address", ""),
+                message_id=msg.get("internetMessageId") or msg["id"],
+                subject=msg.get("subject") or "(no subject)",
+                sender=sender_obj.get("address") or "",
                 recipient=mailbox,
-                body_text=msg.get("body", {}).get("content") if msg.get("body", {}).get("contentType") == "text" else None,
-                body_html=msg.get("body", {}).get("content") if msg.get("body", {}).get("contentType") == "html" else None,
+                body_text=body_text,
+                body_html=body_html,
                 received_at=datetime.fromisoformat(
                     msg["receivedDateTime"].replace("Z", "+00:00")
                 ),
@@ -223,29 +316,111 @@ class MSGraphProvider(EmailProvider):
             ))
         return results
 
-    def mark_as_read(self, message_id: str) -> None:
-        # message_id here is the Graph message id (not internetMessageId)
-        # In practice we need to track the Graph-native id separately.
-        # For now we use the internetMessageId to look up and patch.
+    def _resolve_graph_message_id(self, internet_message_id: str) -> str | None:
+        """
+        Translate a stored internetMessageId (e.g. "<abc@example.com>") into the
+        Graph-native message id needed for /messages/{id}/... endpoints.
+        Returns None if the message isn't found in the mailbox (deleted, moved,
+        etc.) so callers can surface a clean 404.
+        """
         mailbox = self._settings.msgraph_mailbox
-        # Escape single quotes in message_id to prevent OData filter injection
-        safe_id = message_id.replace("'", "''")
-        # Search for message by internetMessageId
+        # Escape single quotes — OData filter injection vector
+        safe_id = internet_message_id.replace("'", "''")
         url = (
             f"{self.GRAPH_BASE}/users/{mailbox}/messages"
             f"?$filter=internetMessageId eq '{safe_id}'"
             "&$select=id"
         )
+        resp = self._client.get(url, headers=self._headers())
+        resp.raise_for_status()
+        msgs = resp.json().get("value", [])
+        return msgs[0]["id"] if msgs else None
+
+    def mark_as_read(self, message_id: str) -> None:
+        # message_id here is the internetMessageId we stored at poll time.
         try:
-            resp = self._client.get(url, headers=self._headers())
-            resp.raise_for_status()
-            msgs = resp.json().get("value", [])
-            if msgs:
-                graph_id = msgs[0]["id"]
-                patch_url = f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
-                self._client.patch(patch_url, headers=self._headers(), json={"isRead": True})
+            graph_id = self._resolve_graph_message_id(message_id)
+            if graph_id is None:
+                return
+            mailbox = self._settings.msgraph_mailbox
+            patch_url = f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            self._client.patch(patch_url, headers=self._headers(), json={"isRead": True})
         except Exception as exc:
             logger.warning("MSGraph mark_as_read failed for %s: %s", message_id, exc)
+
+    def fetch_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        attachment_id: str | None = None,
+        attachment_index: int | None = None,
+    ) -> tuple[bytes, str, str | None]:
+        """
+        Fetch a single attachment's binary content from MS Graph.
+
+        Prefers `attachment_id` (stored at poll time on new rows) for a direct
+        lookup. Falls back to `attachment_index` for legacy rows by listing
+        the message's attachments and picking the Nth non-inline one.
+
+        Raises:
+          - LookupError if the message itself can't be found in the mailbox
+            (deleted / moved by the user)
+          - IndexError if attachment_index is out of range for the message
+          - ValueError if neither identifier is provided
+        """
+        if attachment_id is None and attachment_index is None:
+            raise ValueError("Provide either attachment_id or attachment_index")
+
+        import base64
+        mailbox = self._settings.msgraph_mailbox
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            raise LookupError(
+                f"Message {internet_message_id!r} not found in mailbox — "
+                "may have been deleted or moved"
+            )
+
+        # Resolve attachment_id from index if needed (legacy path).
+        if attachment_id is None:
+            list_url = (
+                f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/attachments"
+                "?$select=id,name,contentType,isInline"
+            )
+            list_resp = self._client.get(list_url, headers=self._headers())
+            list_resp.raise_for_status()
+            atts = [
+                a for a in (list_resp.json().get("value") or [])
+                if not a.get("isInline")  # match the poll-time filter exactly
+            ]
+            if not 0 <= attachment_index < len(atts):
+                raise IndexError(
+                    f"Attachment index {attachment_index} out of range "
+                    f"(message has {len(atts)} non-inline attachments)"
+                )
+            attachment_id = atts[attachment_index]["id"]
+
+        # Fetch the full attachment object — `contentBytes` is a base64 string
+        # for the standard fileAttachment resource type. Use $value for a raw
+        # binary response if the type is itemAttachment (calendar invites etc.)
+        # but that's rare; defaulting to /$value works for fileAttachment too.
+        get_url = (
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            f"/attachments/{attachment_id}"
+        )
+        resp = self._client.get(get_url, headers=self._headers())
+        resp.raise_for_status()
+        att = resp.json()
+        content_b64 = att.get("contentBytes")
+        if not content_b64:
+            raise LookupError(
+                f"Attachment {attachment_id!r} has no contentBytes "
+                "(may be an itemAttachment / inaccessible reference)"
+            )
+        return (
+            base64.b64decode(content_b64),
+            att.get("name") or "attachment",
+            att.get("contentType"),
+        )
 
     def send_email(
         self,

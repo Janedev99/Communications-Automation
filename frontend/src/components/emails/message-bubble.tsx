@@ -1,10 +1,13 @@
 "use client";
 
-import { Bookmark, BookmarkCheck, Paperclip } from "lucide-react";
+import { useState } from "react";
+import { Bookmark, BookmarkCheck, Download, Loader2, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { unsaveMessage } from "@/hooks/use-emails";
+import { downloadBinary } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
 import type { AttachmentInfo, EmailMessage } from "@/lib/types";
+import { MessageBody } from "./message-body";
 
 interface MessageBubbleProps {
   message: EmailMessage;
@@ -21,24 +24,63 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Attachment with download. Clicking the badge streams the binary from the
+ * backend (which fetches it on-demand from MS Graph) and saves it via the
+ * browser's download path. Provider doesn't store binaries, so each click
+ * is one Graph round-trip — fine for tax-document workflows where downloads
+ * are infrequent and per-document deliberate.
+ */
 function AttachmentBadge({
   attachment,
+  attachmentIndex,
+  threadId,
+  messageId,
   variant,
 }: {
   attachment: AttachmentInfo;
+  attachmentIndex: number;
+  threadId: string;
+  messageId: string;
   variant: "inbound" | "outbound";
 }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await downloadBinary(
+        `/api/v1/emails/${threadId}/messages/${messageId}/attachments/${attachmentIndex}/download`,
+        attachment.filename,
+      );
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
-    <span
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={downloading}
+      title={`Download ${attachment.filename}${attachment.content_type ? ` (${attachment.content_type})` : ""}`}
+      aria-label={`Download ${attachment.filename}`}
       className={cn(
-        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1",
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 transition-colors",
+        "disabled:opacity-60 disabled:cursor-wait",
         variant === "inbound"
-          ? "bg-muted text-muted-foreground ring-border"
-          : "bg-white/15 text-white ring-white/20",
+          ? "bg-muted text-muted-foreground ring-border hover:bg-accent hover:text-foreground"
+          : "bg-white/15 text-white ring-white/20 hover:bg-white/25",
       )}
-      title={attachment.content_type ?? undefined}
     >
-      <Paperclip className="w-2.5 h-2.5 flex-shrink-0" aria-hidden="true" />
+      {downloading ? (
+        <Loader2 className="w-2.5 h-2.5 flex-shrink-0 animate-spin" aria-hidden="true" />
+      ) : (
+        <Paperclip className="w-2.5 h-2.5 flex-shrink-0" aria-hidden="true" />
+      )}
       <span className="truncate max-w-[140px]">{attachment.filename}</span>
       {attachment.size !== null && (
         <span
@@ -50,7 +92,14 @@ function AttachmentBadge({
           {formatBytes(attachment.size)}
         </span>
       )}
-    </span>
+      <Download
+        className={cn(
+          "w-2.5 h-2.5 flex-shrink-0",
+          variant === "inbound" ? "text-muted-foreground/70" : "text-white/70",
+        )}
+        aria-hidden="true"
+      />
+    </button>
   );
 }
 
@@ -141,13 +190,18 @@ export function MessageBubble({
           <p className="text-[11px] font-medium text-muted-foreground mb-1.5 truncate pr-8">
             {message.sender}
           </p>
-          <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words">
-            {message.body_text ?? "(no content)"}
-          </p>
+          <MessageBody text={message.body_text} variant="inbound" />
           {hasAttachments && (
             <div className="mt-2.5 flex flex-wrap gap-1.5">
               {message.attachments!.map((att, i) => (
-                <AttachmentBadge key={i} attachment={att} variant="inbound" />
+                <AttachmentBadge
+                  key={i}
+                  attachment={att}
+                  attachmentIndex={i}
+                  threadId={message.thread_id}
+                  messageId={message.id}
+                  variant="inbound"
+                />
               ))}
             </div>
           )}
@@ -176,13 +230,18 @@ export function MessageBubble({
         <p className="text-[11px] font-medium text-primary-foreground/70 mb-1.5 truncate pl-8">
           {message.sender}
         </p>
-        <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-          {message.body_text ?? "(no content)"}
-        </p>
+        <MessageBody text={message.body_text} variant="outbound" />
         {hasAttachments && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {message.attachments!.map((att, i) => (
-              <AttachmentBadge key={i} attachment={att} variant="outbound" />
+              <AttachmentBadge
+                key={i}
+                attachment={att}
+                attachmentIndex={i}
+                threadId={message.thread_id}
+                messageId={message.id}
+                variant="outbound"
+              />
             ))}
           </div>
         )}

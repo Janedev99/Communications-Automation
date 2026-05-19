@@ -5,6 +5,17 @@ Registers all routers, middleware, lifespan events, and exception handlers.
 """
 from __future__ import annotations
 
+# ── SSL trust store bridge (must run before any SSL-using import) ─────────────
+# truststore makes Python's `ssl` module use the OS's native cert store —
+# Windows on dev machines (picks up VPN / antivirus / corporate-proxy CAs),
+# /etc/ssl on Linux Railway containers (same source certifi already uses, so
+# effectively a no-op there). Without this, dev machines behind any kind of
+# TLS-inspecting middlebox fail SSL verification against api.anthropic.com,
+# graph.microsoft.com, and similar — silently degrading the categorizer to
+# rules_fallback and breaking M365 polling.
+import truststore
+truststore.inject_into_ssl()
+
 import asyncio
 import contextvars
 import json

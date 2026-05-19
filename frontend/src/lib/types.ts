@@ -58,6 +58,9 @@ export interface AttachmentInfo {
   filename: string;
   size: number | null;
   content_type: string | null;
+  /** MS Graph attachment id. May be null on legacy rows polled before this
+   *  field was added — the download endpoint falls back to index lookup. */
+  attachment_id?: string | null;
 }
 
 export interface EmailMessage {

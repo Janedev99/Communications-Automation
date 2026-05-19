@@ -21,6 +21,11 @@ class AttachmentInfo(BaseModel):
     filename: str
     size: int | None = None        # size in bytes; None if provider didn't report it
     content_type: str | None = None
+    # Provider-native attachment id (MS Graph attachment id). May be None on
+    # legacy rows polled before this field was added — the download endpoint
+    # falls back to "look up by index" against the live Graph response when
+    # this is missing.
+    attachment_id: str | None = None
 
 
 # ── Categorization result (from AI) ───────────────────────────────────────────

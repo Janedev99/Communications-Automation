@@ -257,9 +257,32 @@ def get_llm_client() -> LLMClient:
         )
         return _client
 
-    # Default: anthropic. Pull from llm_* first, fall back to legacy fields.
-    api_key = settings.llm_api_key or settings.anthropic_api_key
-    model = settings.llm_model or settings.claude_model
+    # Default: anthropic. Provider isolation — use ANTHROPIC_API_KEY +
+    # CLAUDE_MODEL directly. Previously this fell through LLM_API_KEY /
+    # LLM_MODEL first, which silently cross-pollinated RunPod / OpenAI-style
+    # credentials into Anthropic and produced 401 (wrong key) or 404 (wrong
+    # model) on every categorization call. Now mirrors the openai_compat
+    # path's explicit "do NOT fall back" pattern. Stale LLM_* env vars are
+    # surfaced as warnings so operators can clean them up rather than being
+    # silently ignored.
+    api_key = settings.anthropic_api_key
+    model = settings.claude_model
+
+    if settings.llm_api_key and not settings.llm_api_key.startswith("sk-ant-"):
+        logger.warning(
+            "LLM provider=anthropic but LLM_API_KEY is set to a non-Anthropic "
+            "value (%s...) — ignoring it. If you intended to use this key, "
+            "set LLM_PROVIDER=openai_compat instead.",
+            settings.llm_api_key[:6],
+        )
+    if settings.llm_model and "claude" not in settings.llm_model.lower():
+        logger.warning(
+            "LLM provider=anthropic but LLM_MODEL=%r is set (non-Anthropic) — "
+            "ignoring it. Using CLAUDE_MODEL=%s instead.",
+            settings.llm_model,
+            model,
+        )
+
     logger.info("LLM client initialised: provider=anthropic model=%s", model)
     _client = AnthropicLLMClient(
         api_key=api_key,
@@ -342,6 +365,8 @@ def is_llm_configured() -> bool:
     if settings.llm_provider == "openai_compat":
         return bool(settings.llm_api_key) and bool(settings.llm_base_url)
 
-    # anthropic
-    api_key = settings.llm_api_key or settings.anthropic_api_key
+    # anthropic — mirror the get_llm_client isolation: only ANTHROPIC_API_KEY
+    # counts as a configured Anthropic key. A stale LLM_API_KEY pointing at
+    # RunPod / OpenAI doesn't make this provider "configured."
+    api_key = settings.anthropic_api_key
     return bool(api_key) and not api_key.startswith("sk-ant-placeholder")

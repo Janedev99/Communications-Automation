@@ -132,6 +132,12 @@ def runpod_status(
     orchestrator = get_runpod_orchestrator()
     snap = orchestrator.status_snapshot(db)
     snap["sweep_in_flight"] = draft_catchup.is_sweep_in_flight()
+    # Expose the active LLM provider so the UI can show a clear "RunPod isn't
+    # the inference backend right now" banner when the system is on Anthropic.
+    # Otherwise users see this page with stale `last_known_state` / a stuck
+    # `start_in_flight` from a prior session and assume controls are broken.
+    from app.config import get_settings
+    snap["llm_provider"] = get_settings().llm_provider
     return snap
 
 

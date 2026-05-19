@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Info,
   Loader2,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
@@ -345,6 +346,11 @@ export default function RunPodPage() {
   const capReachedToday =
     (data.daily_cap_remaining_seconds ?? 0) <= 0 &&
     (data.daily_cap_seconds ?? 0) > 0;
+  // When LLM_PROVIDER=anthropic, RunPod isn't the inference backend.
+  // Stale state fields (last_known_state, start_in_flight) shouldn't drive
+  // misleading "start already in progress" messages — disable the controls
+  // explicitly and explain via a banner. Backend just started exposing this.
+  const onAnthropic = data.llm_provider === "anthropic";
   const uptimePct = data.daily_cap_seconds
     ? Math.min(100, ((data.uptime_today_seconds ?? 0) / data.daily_cap_seconds) * 100)
     : 0;
@@ -356,6 +362,28 @@ export default function RunPodPage() {
         title="RunPod"
         subtitle="GPU pod state, uptime, and controls. Auto-refreshes."
       />
+
+      {/* Provider banner — appears when the system isn't using RunPod for
+          inference. Keeps the controls visible (diagnostic value) but tells
+          the operator why they look inert. */}
+      {onAnthropic && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 dark:border-blue-900/40 dark:bg-blue-950/30 p-4 mb-6 flex items-start gap-3">
+          <Info className="w-5 h-5 mt-0.5 flex-shrink-0 text-blue-600 dark:text-blue-400" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              Currently using Anthropic for inference
+            </p>
+            <p className="text-xs text-blue-800/80 dark:text-blue-200/80 mt-1 leading-relaxed">
+              RunPod controls below are disabled because the active LLM provider
+              is Anthropic (per <code className="font-mono">LLM_PROVIDER</code> in
+              the backend config). State fields show the pod&rsquo;s last-known
+              status for reference. To use RunPod for inference instead, set
+              <code className="font-mono ml-1">LLM_PROVIDER=openai_compat</code> and
+              restart the backend.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* State banner */}
       <div
@@ -489,7 +517,7 @@ export default function RunPodPage() {
             <Button
               variant="destructive"
               onClick={() => setStopConfirm(true)}
-              disabled={!canStop || stopping || isStarting}
+              disabled={!canStop || stopping || isStarting || onAnthropic}
               className="w-full justify-start"
             >
               {stopping ? (
@@ -502,7 +530,7 @@ export default function RunPodPage() {
             <Button
               variant="outline"
               onClick={handleWake}
-              disabled={isRunning || waking || isStarting || capReachedToday}
+              disabled={isRunning || waking || isStarting || capReachedToday || onAnthropic}
               className="w-full justify-start"
             >
               {waking ? (
@@ -514,9 +542,11 @@ export default function RunPodPage() {
             </Button>
           </div>
 
-          {(isStarting || capReachedToday) && (
+          {(onAnthropic || isStarting || capReachedToday) && (
             <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
-              {capReachedToday
+              {onAnthropic
+                ? "Controls disabled — Anthropic is the active inference provider. See banner above."
+                : capReachedToday
                 ? "Wake disabled: daily cap reached."
                 : "Wake disabled: a start is already in progress."}
             </p>

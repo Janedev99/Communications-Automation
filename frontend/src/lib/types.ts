@@ -358,6 +358,10 @@ export interface RunPodStatus {
   sweep_in_flight?: boolean;
   cost_per_hour_usd?: number | null;
   cost_today_usd_estimate?: number | null;
+  /** Active LLM provider — "anthropic" means RunPod is NOT the inference
+   *  backend right now, so all the wake/stop controls on this page are
+   *  diagnostic-only. The UI surfaces this as an explanatory banner. */
+  llm_provider?: "anthropic" | "openai_compat";
 }
 
 export interface RunPodActionResponse {

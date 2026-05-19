@@ -39,6 +39,12 @@ Usage:
 """
 from __future__ import annotations
 
+# Bridge Python's ssl module to the OS native cert store BEFORE any SSL-using
+# import. Same rationale as app/main.py — dev machines behind TLS inspection
+# fail certifi verification against api.anthropic.com.
+import truststore
+truststore.inject_into_ssl()
+
 import argparse
 import os
 import sys
@@ -47,6 +53,15 @@ from pathlib import Path
 
 # Force Anthropic BEFORE any app imports — settings is lru_cache'd.
 os.environ["LLM_PROVIDER"] = "anthropic"
+# In .env, both LLM_API_KEY (RunPod rpa_*) and LLM_MODEL (Qwen/Qwen2.5-7B)
+# are set for the openai_compat path. llm_client.py:261-262 uses
+#   api_key = settings.llm_api_key or settings.anthropic_api_key
+#   model   = settings.llm_model   or settings.claude_model
+# even when provider=anthropic — so leaving these set sends the RunPod key
+# AND the RunPod model name to Anthropic, earning a 401 (wrong key) and a
+# 404 (no such model). Explicit empties force fallback to the legacy fields.
+os.environ["LLM_API_KEY"] = ""
+os.environ["LLM_MODEL"] = ""
 
 # Make `app.*` importable when running as a script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

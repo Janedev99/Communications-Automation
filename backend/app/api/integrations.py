@@ -189,19 +189,28 @@ def _probe_email_provider() -> dict[str, Any]:
     # Is it configured?
     is_configured: bool
     config: dict[str, Any] = {"provider": provider}
+    msgraph_staged = all([
+        settings.msgraph_client_id,
+        settings.msgraph_client_secret,
+        settings.msgraph_tenant_id,
+        settings.msgraph_mailbox,
+    ])
+
     if provider == "msgraph":
-        is_configured = all([
-            settings.msgraph_client_id,
-            settings.msgraph_client_secret,
-            settings.msgraph_tenant_id,
-            settings.msgraph_mailbox,
-        ])
+        is_configured = msgraph_staged
         config["mailbox"] = settings.msgraph_mailbox or "(not set)"
         config["tenant"] = "set" if settings.msgraph_tenant_id else "missing"
     else:  # imap
         is_configured = bool(settings.imap_host) and bool(settings.imap_username)
         config["host"] = settings.imap_host or "(not set)"
         config["username"] = settings.imap_username or "(not set)"
+        # Positive signal: when the active provider is NOT msgraph but
+        # M365 credentials are fully staged in env, surface that so admins
+        # don't think the integration is missing. Activation is a separate
+        # step (flip EMAIL_PROVIDER once admin consent is verified).
+        if msgraph_staged:
+            config["microsoft_graph"] = "integrated"
+            config["microsoft_graph_mailbox"] = settings.msgraph_mailbox
 
     age = _age_minutes(last_successful_poll_at)
     status: StatusLiteral
@@ -275,7 +284,16 @@ def list_integrations(
         _probe_postgres(db),
         _probe_llm(),
         _probe_email_provider(),
-        _probe_notifications(),
+        # Notifications card hidden 2026-05-18. The service emits events to
+        # stdout/logs regardless of config, so the probe was flagging
+        # "not_configured" whenever neither SLACK_WEBHOOK_URL nor
+        # NOTIFY_LOG_FILE was set — a misleading red signal for a service
+        # that's actually fine. Slack dispatch was never implemented
+        # (notification.py only writes JSON lines), so there's no
+        # actionable next step the card was driving toward. Reinstate by
+        # uncommenting the line below when an actual Slack integration
+        # ships, or when the probe is rewritten to report stdout-as-healthy.
+        # _probe_notifications(),
     ]
 
     # Overall status — worst-of

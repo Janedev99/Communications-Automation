@@ -1,0 +1,825 @@
+"""
+RunPod pod orchestrator.
+
+Replaces the manual `runpod_check.py --start` / `--stop` cycle with an
+in-process service that:
+
+  1. ensure_ready(db, *, wait_for_ready=True)
+       Bring the pod into RUNNING + vLLM-serving state.
+         - wait_for_ready=True (default): caller blocks until the pod is
+           ready or a failure is determined. Used by background work
+           (email_intake polling, login sweep) that can afford to wait.
+         - wait_for_ready=False: fast-fail. If the pod is not RUNNING +
+           healthy, schedule a background start and raise
+           RunPodUnavailableError immediately. Used by user-facing API
+           paths so Jane never blocks on a cold-start — her draft is
+           served by Claude in ~10s, and the pod warms up in background
+           for the next click.
+
+  2. mark_used(db)
+       Called after a successful LLM call. Bumps last_used_at so the
+       idle-stop deadline rolls forward.
+
+  3. stop_if_idle(db)
+       Watchdog hook (every N seconds). Stops the pod when it has been
+       idle longer than RUNPOD_IDLE_TIMEOUT_SECONDS.
+
+  4. wake_async(db)
+       Idempotent. Triggers a background start if pod is EXITED. Used
+       by POST /api/v1/runpod/wake (fired on dashboard mount) so the
+       pod is already booting while Jane reads her inbox.
+
+  5. stop_now(db)
+       Operator-initiated manual stop. Used by POST /api/v1/runpod/stop
+       from the admin UI. Reconciles with RunPod's view of the pod before
+       acting so cache drift can't inflate the daily uptime counter.
+
+  6. status_snapshot(db)
+       Read-only summary for diagnostics / admin UI.
+
+  7. history(db, days)
+       Returns the last N days of captured daily usage (runpod_daily_usage
+       rows). Used by the admin UI to render the day-by-day cost history.
+
+Concurrency model
+-----------------
+The slow path (start_pod -> wait_for_running -> probe_vllm, up to 3 min)
+always runs in a *daemon thread* outside the lock. This means:
+
+  - The watchdog can still tick during a cold start (it sees state is
+    STARTING, skips, no harm done).
+  - Concurrent ensure_ready calls don't block each other: the first
+    schedules the bg start, subsequent ones wait on the same Event.
+  - The lock only protects fast state I/O (DB row reads/writes).
+
+Two Events coordinate the start lifecycle:
+
+  _start_in_flight: set while a bg start thread is running.
+  _start_completed: set when a bg start finishes (success OR failure).
+                    Waited on by wait_for_ready=True callers.
+
+Failure mode contract
+---------------------
+Every failure that should trigger fallback raises RunPodUnavailableError.
+The draft generator catches it and switches to Claude (per the
+project's allow_claude_fallback override). The reason field on the
+exception distinguishes:
+
+  - "runpod_capacity_error"     : RunPod 5xx on start_pod
+  - "runpod_cold_start_in_progress" : fast-fail while bg start runs
+  - "runpod_call_failed"        : mid-call LLM error
+  - "runpod_unhealthy"          : pod RUNNING but vLLM dead
+  - "daily_cap_reached"         : circuit breaker
+  - "pod_missing"               : pod terminated externally
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from datetime import date, datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.models.runpod_daily_usage import RunPodDailyUsage
+from app.models.runpod_state import RunPodState
+from app.services import runpod_client
+
+logger = logging.getLogger(__name__)
+
+
+class RunPodUnavailableError(Exception):
+    """Raised when ensure_ready cannot bring the pod into a usable state.
+
+    Catch this in draft_generator and switch to the Claude fallback when
+    ALLOW_CLAUDE_FALLBACK=true; raise a clearer error to the caller when
+    fallback is disabled.
+
+    The .args[0] reason string is structured for audit log filtering:
+    see module docstring for the canonical reason values.
+    """
+
+
+# Module-level lock — protects fast state reads/writes only. Slow ops
+# (start_pod / wait_for_running / probe_vllm) run OUTSIDE the lock in
+# a daemon thread, coordinated via the two Events on the orchestrator.
+_lock = threading.RLock()
+
+
+# ── Time helpers (kept tiny + obvious so test mocks are straightforward) ─────
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _today_utc() -> date:
+    return _now().date()
+
+
+def _seconds_since(ts: datetime | None) -> float | None:
+    if ts is None:
+        return None
+    return (_now() - ts).total_seconds()
+
+
+# ── State row helpers ────────────────────────────────────────────────────────
+
+
+def _load_or_create_state(db: Session, pod_id: str) -> RunPodState:
+    """Get the singleton row for this pod, creating it with defaults if absent."""
+    row = db.execute(
+        select(RunPodState).where(RunPodState.pod_id == pod_id)
+    ).scalar_one_or_none()
+    if row is None:
+        row = RunPodState(
+            pod_id=pod_id,
+            uptime_today_seconds=0,
+            uptime_day_utc=_today_utc(),
+            updated_at=_now(),
+        )
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _maybe_reset_daily_counter(state: RunPodState, db: Session | None = None) -> None:
+    """Roll uptime_today_seconds back to 0 when the UTC date changes.
+
+    Before zeroing, persist the closing day's totals to runpod_daily_usage
+    so the admin UI can show a 30-day history. Capture is idempotent —
+    if a RunPodDailyUsage row already exists for (pod_id, prior_day) the
+    write is skipped, so re-running the rollover after a process restart
+    can't create duplicate rows. The SELECT-first approach is portable
+    across SQLite (test conftest) and Postgres (production); the
+    orchestrator holds _lock during the call path that reaches here, so
+    no in-process race.
+
+    db is optional so legacy in-test callers that pre-date the history
+    feature don't have to be updated all at once — when None, the
+    rollover happens without capture (the pre-existing behavior).
+    """
+    today = _today_utc()
+    if state.uptime_day_utc == today:
+        return
+
+    prior_day = state.uptime_day_utc
+    prior_seconds = state.uptime_today_seconds
+
+    # Capture if we have a db handle AND there's actually something to record.
+    # uptime_seconds == 0 days are skipped to keep the table tight; an absent
+    # row in the history table is meaningfully different from "0 hours used."
+    if db is not None and prior_day is not None and prior_seconds > 0:
+        rate = state.last_cost_per_hour_usd
+        cost: float | None = None
+        if rate is not None:
+            cost = round(rate * (prior_seconds / 3600.0), 4)
+        existing = db.execute(
+            select(RunPodDailyUsage).where(
+                RunPodDailyUsage.pod_id == state.pod_id,
+                RunPodDailyUsage.day_utc == prior_day,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                RunPodDailyUsage(
+                    pod_id=state.pod_id,
+                    day_utc=prior_day,
+                    uptime_seconds=prior_seconds,
+                    cost_per_hour_usd=rate,
+                    cost_usd=cost,
+                    created_at=_now(),
+                )
+            )
+            logger.info(
+                "runpod_orchestrator: captured daily usage %s = %ds (%.4f USD)",
+                prior_day, prior_seconds, cost if cost is not None else 0.0,
+            )
+
+    logger.info(
+        "runpod_orchestrator: daily counter rolled %s -> %s (was %ds)",
+        prior_day, today, prior_seconds,
+    )
+    state.uptime_today_seconds = 0
+    state.uptime_day_utc = today
+
+
+# ── Orchestrator ─────────────────────────────────────────────────────────────
+
+
+class RunPodOrchestrator:
+    """In-process pod lifecycle manager. Use via get_runpod_orchestrator()."""
+
+    def __init__(self) -> None:
+        settings = get_settings()
+        self._pod_id = settings.runpod_pod_id
+        self._api_key = settings.llm_api_key
+        self._base_url = settings.llm_base_url
+        self._model = settings.llm_model
+        self._idle_timeout_s = settings.runpod_idle_timeout_seconds
+        self._daily_cap_s = settings.runpod_daily_cap_hours * 3600
+        self._start_wait_s = settings.runpod_start_wait_timeout_seconds
+        self._health_probe_timeout_s = settings.runpod_health_probe_timeout_seconds
+
+        # Coordinate background-start lifecycle.
+        # _start_in_flight: SET while a bg thread is running.
+        # _start_completed: SET when the bg thread finishes (success OR failure).
+        #                   wait_for_ready=True callers .wait() on this.
+        # Initially: no start in flight, no pending result, so completed is "set"
+        # in the sense that wait() returns immediately if called before any start
+        # has been scheduled (we re-check state.last_known_state in that case).
+        self._start_in_flight = threading.Event()
+        self._start_completed = threading.Event()
+        self._start_completed.set()
+
+    @property
+    def enabled(self) -> bool:
+        """True when this orchestrator is configured to manage a pod."""
+        return bool(self._pod_id and self._api_key and self._base_url)
+
+    # ── Public API ───────────────────────────────────────────────────────────
+
+    def ensure_ready(self, db: Session, *, wait_for_ready: bool = True) -> str:
+        """Bring the pod into RUNNING + vLLM-serving state.
+
+        Two modes via `wait_for_ready`:
+
+          - True (default): used by background work (email polling,
+            login sweep). Blocks until the pod is ready or until a
+            terminal failure / timeout. Caller is happy to wait.
+
+          - False: used by user-facing API paths. If the pod is not
+            already RUNNING + healthy, schedule a background start and
+            raise RunPodUnavailableError("runpod_cold_start_in_progress")
+            immediately. The draft generator's existing Claude-fallback
+            handler catches and serves the draft via Claude. Subsequent
+            calls within the same boot cycle see the now-warm pod and
+            hit the fast path.
+
+        Idempotent fast-path: if the pod is already RUNNING + /v1/models
+        responds, this is one fetch_pod + one list_models + one DB write
+        and returns immediately. Same shape for both modes.
+
+        Raises RunPodUnavailableError on any failure (capacity error,
+        daily cap, vLLM permanently down, timeout, fast-fail). Caller
+        catches once and routes to Claude.
+        """
+        if not self.enabled:
+            return self._base_url
+
+        # ── Phase 1: fast checks under the lock ─────────────────────────────
+        # Quickly determine: is the pod ready right now? If not, do we need
+        # to schedule a background start?
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            _maybe_reset_daily_counter(state, db)
+
+            # Hard daily cap — refuse to even check pod state. This is the
+            # budget circuit breaker.
+            if state.uptime_today_seconds >= self._daily_cap_s:
+                hours_today = state.uptime_today_seconds / 3600
+                hours_cap = self._daily_cap_s / 3600
+                raise RunPodUnavailableError(
+                    f"daily_cap_reached: {hours_today:.1f}h of {hours_cap:.1f}h"
+                )
+
+            # Reconcile with RunPod's view of the world.
+            current = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if current is None:
+                state.last_known_state = "MISSING"
+                state.updated_at = _now()
+                db.flush()
+                raise RunPodUnavailableError(
+                    f"pod_missing: pod {self._pod_id} not found on RunPod"
+                )
+            current_status = current.get("desiredStatus")
+            state.last_known_state = current_status
+
+            # Hot path: pod RUNNING + vLLM healthy.
+            if current_status == "RUNNING" and self._healthy():
+                state.last_used_at = _now()
+                state.updated_at = _now()
+                db.flush()
+                return self._base_url
+
+            # RUNNING but vLLM dead — cycle stop+start. We do the stop here
+            # synchronously (it's fast), then fall through to schedule the
+            # bg start path.
+            if current_status == "RUNNING":
+                logger.warning(
+                    "runpod_orchestrator: pod %s RUNNING but vLLM unhealthy; "
+                    "cycling stop -> start",
+                    self._pod_id,
+                )
+                self._stop_and_account(db, state)
+
+            # Pod is EXITED, FAILED, just-cycled-by-us, or some other
+            # not-ready state. Schedule a background start if one isn't
+            # already in flight.
+            self._maybe_schedule_background_start_locked(db, state)
+
+        # ── Phase 2: lock released. Decide what to return. ──────────────────
+        if not wait_for_ready:
+            # Fast-fail path: caller will switch to Claude.
+            raise RunPodUnavailableError(
+                "runpod_cold_start_in_progress: pod is booting in background"
+            )
+
+        # wait_for_ready=True: block until the bg start finishes, then
+        # re-check the resulting state.
+        return self._wait_for_bg_start_to_complete(db)
+
+    def wake_async(self, db: Session) -> dict:
+        """Idempotent wake call — used by POST /api/v1/runpod/wake.
+
+        Returns a status dict (no exception path; the wake endpoint is a
+        hint, not a guarantee). The dashboard fires this on mount; if it
+        fails for any reason, drafts will still work via the orchestrator's
+        normal paths.
+
+        Status values:
+          - "disabled"            : orchestrator not configured
+          - "ready"               : pod already RUNNING + healthy
+          - "starting"            : we just spawned a background start
+          - "already_starting"    : a bg start was already in progress
+          - "capacity_exceeded"   : daily cap reached, no start scheduled
+          - "missing"             : pod not found on RunPod
+        """
+        if not self.enabled:
+            return {"status": "disabled"}
+
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            _maybe_reset_daily_counter(state, db)
+
+            if state.uptime_today_seconds >= self._daily_cap_s:
+                state.updated_at = _now()
+                db.flush()
+                return {
+                    "status": "capacity_exceeded",
+                    "pod_id": self._pod_id,
+                    "uptime_today_seconds": state.uptime_today_seconds,
+                    "daily_cap_seconds": self._daily_cap_s,
+                }
+
+            current = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if current is None:
+                state.last_known_state = "MISSING"
+                state.updated_at = _now()
+                db.flush()
+                return {"status": "missing", "pod_id": self._pod_id}
+
+            status = current.get("desiredStatus")
+            state.last_known_state = status
+
+            if status == "RUNNING" and self._healthy():
+                state.last_used_at = _now()
+                state.updated_at = _now()
+                db.flush()
+                return {"status": "ready", "pod_id": self._pod_id}
+
+            if self._start_in_flight.is_set():
+                return {"status": "already_starting", "pod_id": self._pod_id}
+
+            # Not ready, nothing in flight → schedule background start.
+            self._maybe_schedule_background_start_locked(db, state)
+            return {"status": "starting", "pod_id": self._pod_id}
+
+    def mark_used(self, db: Session) -> None:
+        """Push the idle-stop deadline forward by one full idle_timeout window."""
+        if not self.enabled:
+            return
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            state.last_used_at = _now()
+            state.updated_at = _now()
+            db.flush()
+
+    def stop_if_idle(self, db: Session) -> bool:
+        """Watchdog tick. Stop the pod when idle longer than the timeout."""
+        if not self.enabled:
+            return False
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            _maybe_reset_daily_counter(state, db)
+
+            # Only act on pods we believe to be RUNNING. STARTING/EXITED/etc
+            # are left alone — ensure_ready and the bg thread own those.
+            if state.last_known_state != "RUNNING":
+                return False
+            idle_s = _seconds_since(state.last_used_at)
+            if idle_s is None or idle_s < self._idle_timeout_s:
+                return False
+
+            logger.info(
+                "runpod_orchestrator: pod %s idle %.0fs (>= %ds) — stopping",
+                self._pod_id, idle_s, self._idle_timeout_s,
+            )
+            self._stop_and_account(db, state)
+            return True
+
+    def stop_now(self, db: Session) -> dict:
+        """Operator-initiated manual stop. Used by the admin UI.
+
+        Always reconciles with RunPod's view of the pod BEFORE touching
+        state, so a manual stop on an already-stopped pod doesn't add a
+        phantom session's uptime to the daily counter (which would happen
+        if we trusted our cache and called stop_pod blindly — RunPod
+        returns 2xx for "stop an already-stopped pod" so the cache-trust
+        path would silently inflate the counter).
+
+        Uptime accounting is shared with the idle-watchdog path
+        (_stop_and_account), so manual Stop counts toward the daily cap
+        — matching the design rule "one accounting path, no footgun."
+
+        Status values mirror wake_async for symmetry:
+          - "disabled"        : orchestrator not configured
+          - "already_stopped" : pod was already EXITED on RunPod — no-op
+          - "stopped"         : we issued + accepted a stop this call
+          - "stop_failed"     : RunPod refused the stop (rare; retry next tick)
+          - "missing"         : pod not found on RunPod (terminated externally)
+        """
+        if not self.enabled:
+            return {"status": "disabled"}
+
+        with _lock:
+            state = _load_or_create_state(db, self._pod_id)
+            _maybe_reset_daily_counter(state, db)
+
+            # Fetch RunPod's ground truth before deciding. Cheap — one GET.
+            current = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if current is None:
+                state.last_known_state = "MISSING"
+                state.updated_at = _now()
+                db.flush()
+                return {"status": "missing", "pod_id": self._pod_id}
+
+            current_status = current.get("desiredStatus")
+
+            # Already stopped on RunPod's side. Sync our cache, accept gracefully.
+            # We deliberately don't roll session uptime here: if the pod was
+            # stopped out-of-band (dashboard, CLI, another process), we don't
+            # know when it actually stopped, so adding `now - last_started_at`
+            # would over-count. The next ensure_ready / wake will repopulate
+            # last_started_at cleanly.
+            if current_status != "RUNNING":
+                state.last_known_state = current_status
+                state.last_started_at = None
+                state.updated_at = _now()
+                db.flush()
+                return {
+                    "status": "already_stopped",
+                    "pod_id": self._pod_id,
+                    "last_known_state": current_status,
+                }
+
+            # Pod is RUNNING per RunPod. Sync the cache and stop + account.
+            state.last_known_state = "RUNNING"
+            if self._stop_and_account(db, state):
+                return {
+                    "status": "stopped",
+                    "pod_id": self._pod_id,
+                    "uptime_today_seconds": state.uptime_today_seconds,
+                    "daily_cap_remaining_seconds": max(
+                        0, self._daily_cap_s - state.uptime_today_seconds
+                    ),
+                }
+            return {
+                "status": "stop_failed",
+                "pod_id": self._pod_id,
+                "reason": "runpod refused stop request — retry shortly",
+            }
+
+    def status_snapshot(self, db: Session) -> dict:
+        """Read-only state summary.
+
+        Pulls authoritative cost-per-hour from RunPod on every call so the
+        admin UI's "cost today" figure tracks RunPod's actual pricing
+        (rather than a hardcoded table that goes stale). One extra GET per
+        snapshot read is cheap relative to the orchestrator's other API
+        calls.
+
+        On any RunPod fetch failure (network, 5xx, pod terminated), cost
+        fields are returned as None — UI shows "—" for those, never a
+        misleading $0.00.
+        """
+        if not self.enabled:
+            return {"enabled": False}
+        state = _load_or_create_state(db, self._pod_id)
+        _maybe_reset_daily_counter(state, db)
+
+        # Pull live cost-per-hour AND authoritative state from RunPod.
+        # Fail soft on any error — cost goes null, display falls back to
+        # the cached state. This is also where we reconcile cache drift:
+        # status_snapshot is otherwise the only orchestrator path that
+        # doesn't sync with RunPod's view, so a fresh deploy (cache null)
+        # or out-of-band stop (cache says RUNNING, RunPod says EXITED)
+        # would display stale data without this sync.
+        cost_per_hour: float | None = None
+        display_state: str | None = state.last_known_state  # cache fallback
+        try:
+            pod = runpod_client.fetch_pod(self._api_key, self._pod_id)
+            if pod is None:
+                # 404 — pod terminated externally / never existed.
+                display_state = "MISSING"
+            else:
+                live_status = pod.get("desiredStatus")
+                if live_status:
+                    display_state = live_status
+                raw = pod.get("costPerHr")
+                if raw is not None:
+                    cost_per_hour = float(raw)
+                    # Opportunistically refresh the cached rate so the
+                    # daily-rollover write doesn't need its own API call
+                    # at midnight UTC. status_snapshot polls every 30s while
+                    # the admin UI is open, so this stays current as long
+                    # as anyone's looking at the page during the day.
+                    if state.last_cost_per_hour_usd != cost_per_hour:
+                        state.last_cost_per_hour_usd = cost_per_hour
+        except Exception:
+            logger.warning(
+                "status_snapshot: RunPod fetch failed for %s; "
+                "cost fields null and display falls back to cached state",
+                self._pod_id,
+                exc_info=True,
+            )
+
+        # uptime_today_seconds in the DB row reflects FULLY-ACCOUNTED sessions —
+        # the in-flight session's uptime is only rolled in at stop. For the
+        # admin UI to show a live, correct figure during a long RUNNING
+        # session, add the in-flight delta here. The DB row stays untouched
+        # (this is a read path) — accounting source of truth still lives in
+        # _stop_and_account.
+        # Gated on display_state (live RunPod view when available) rather
+        # than cached last_known_state, so a stale cache that disagrees with
+        # RunPod doesn't fabricate in-flight uptime for a pod that's
+        # actually stopped.
+        effective_uptime = state.uptime_today_seconds
+        if display_state == "RUNNING" and state.last_started_at is not None:
+            in_flight_seconds = (_now() - state.last_started_at).total_seconds()
+            if in_flight_seconds > 0:
+                effective_uptime = state.uptime_today_seconds + int(in_flight_seconds)
+
+        cost_today_estimate: float | None = None
+        if cost_per_hour is not None:
+            cost_today_estimate = round(
+                cost_per_hour * (effective_uptime / 3600.0), 4
+            )
+
+        return {
+            "enabled": True,
+            "pod_id": self._pod_id,
+            "inference_url": runpod_client.pod_inference_url(self._pod_id),
+            "last_known_state": display_state,
+            "last_used_at": state.last_used_at.isoformat() if state.last_used_at else None,
+            "last_started_at": state.last_started_at.isoformat() if state.last_started_at else None,
+            "last_stopped_at": state.last_stopped_at.isoformat() if state.last_stopped_at else None,
+            "uptime_today_seconds": effective_uptime,
+            "uptime_day_utc": state.uptime_day_utc.isoformat() if state.uptime_day_utc else None,
+            "daily_cap_seconds": self._daily_cap_s,
+            "daily_cap_remaining_seconds": max(
+                0, self._daily_cap_s - effective_uptime
+            ),
+            "idle_timeout_seconds": self._idle_timeout_s,
+            "start_in_flight": self._start_in_flight.is_set(),
+            "cost_per_hour_usd": cost_per_hour,
+            "cost_today_usd_estimate": cost_today_estimate,
+        }
+
+    def history(self, db: Session, *, days: int = 30) -> list[dict]:
+        """Return the last `days` of daily usage rows, newest first.
+
+        Each row has day_utc, uptime_seconds, cost_per_hour_usd, cost_usd.
+        Days where the pod wasn't used at all simply have no row (we don't
+        synthesize zero rows — the frontend gap-fills if it needs a
+        contiguous chart).
+
+        `days` is clamped to [1, 90] to keep response sizes bounded. The
+        90-cap matches the table's natural retention horizon — if we ever
+        need wider history, we'd add a retention policy and a separate
+        export endpoint rather than blow up the admin UI payload.
+        """
+        if not self.enabled:
+            return []
+        clamped = max(1, min(90, days))
+        rows = db.execute(
+            select(RunPodDailyUsage)
+            .where(RunPodDailyUsage.pod_id == self._pod_id)
+            .order_by(RunPodDailyUsage.day_utc.desc())
+            .limit(clamped)
+        ).scalars().all()
+        return [
+            {
+                "day_utc": r.day_utc.isoformat(),
+                "uptime_seconds": r.uptime_seconds,
+                "cost_per_hour_usd": r.cost_per_hour_usd,
+                "cost_usd": r.cost_usd,
+            }
+            for r in rows
+        ]
+
+    # ── Internals ────────────────────────────────────────────────────────────
+
+    def _healthy(self) -> bool:
+        """Cheap vLLM liveness check. True iff /v1/models responds + has our model."""
+        models = runpod_client.list_models(
+            self._base_url,
+            self._api_key,
+            timeout=self._health_probe_timeout_s,
+        )
+        if models is None:
+            return False
+        if not models:
+            logger.warning(
+                "runpod_orchestrator: pod %s /v1/models returned empty list",
+                self._pod_id,
+            )
+            return False
+        if self._model and self._model not in models:
+            logger.warning(
+                "runpod_orchestrator: requested model %r not in loaded set %r",
+                self._model, models,
+            )
+            return False
+        return True
+
+    def _maybe_schedule_background_start_locked(
+        self, db: Session, state: RunPodState
+    ) -> bool:
+        """Schedule a bg start thread if one isn't already in flight.
+
+        Caller must hold _lock. Returns True if a new thread was spawned.
+
+        Updates state to STARTING + last_started_at = now so concurrent
+        readers see "we're working on it" even before the bg thread runs.
+        """
+        if self._start_in_flight.is_set():
+            return False
+
+        # Mark "starting" + spawn. Set events BEFORE the thread starts so
+        # any caller polling immediately after sees the in-flight flag.
+        self._start_in_flight.set()
+        self._start_completed.clear()
+
+        state.last_known_state = "STARTING"
+        state.last_started_at = _now()
+        state.updated_at = _now()
+        db.flush()
+
+        thread = threading.Thread(
+            target=self._run_background_start,
+            daemon=True,
+            name=f"runpod-bg-start-{self._pod_id}",
+        )
+        thread.start()
+        logger.info(
+            "runpod_orchestrator: background start thread spawned for %s",
+            self._pod_id,
+        )
+        return True
+
+    def _run_background_start(self) -> None:
+        """Daemon thread body: start_pod -> wait_for_running -> probe_vllm.
+
+        Runs OUTSIDE _lock for the slow operations. Acquires the lock only
+        for the final state-update step. Always clears _start_in_flight
+        and sets _start_completed in the finally block so sync callers
+        unblock.
+
+        Uses its own DB session (SessionLocal) because session objects
+        aren't safe across threads.
+        """
+        from app.database import SessionLocal
+        terminal_state = "RUNNING"  # optimistic; flipped on any failure
+        try:
+            # Step 1: start_pod
+            if not runpod_client.start_pod(self._api_key, self._pod_id):
+                terminal_state = "START_FAILED"
+                return
+
+            # Step 2: wait_for_running
+            url = runpod_client.wait_for_running(
+                self._api_key,
+                self._pod_id,
+                timeout_s=self._start_wait_s,
+            )
+            if url is None:
+                terminal_state = "FAILED_START"
+                return
+
+            # Step 3: probe_vllm
+            if not runpod_client.probe_vllm(
+                self._base_url,
+                self._api_key,
+                self._model,
+            ):
+                terminal_state = "UNHEALTHY"
+                return
+
+            # All three steps passed — pod is genuinely RUNNING + serving.
+            logger.info(
+                "runpod_orchestrator: background start complete for %s",
+                self._pod_id,
+            )
+        except Exception:
+            logger.exception(
+                "runpod_orchestrator: background start crashed for %s",
+                self._pod_id,
+            )
+            terminal_state = "CRASHED"
+        finally:
+            # Persist the final state and signal completion. Use a fresh
+            # DB session — the original request's session is unsafe to
+            # share across threads.
+            try:
+                with SessionLocal() as db, _lock:
+                    state = _load_or_create_state(db, self._pod_id)
+                    state.last_known_state = terminal_state
+                    if terminal_state == "RUNNING":
+                        state.last_used_at = _now()
+                    state.updated_at = _now()
+                    db.commit()
+            except Exception:
+                logger.exception(
+                    "runpod_orchestrator: failed to record terminal state %s for %s",
+                    terminal_state, self._pod_id,
+                )
+            # Order matters: clear in_flight FIRST so any caller that races
+            # past completed.wait() and checks in_flight sees False.
+            self._start_in_flight.clear()
+            self._start_completed.set()
+
+    def _wait_for_bg_start_to_complete(self, db: Session) -> str:
+        """Block until the bg start finishes, then return URL or raise.
+
+        Used by wait_for_ready=True callers. Returns self._base_url if the
+        bg start completed successfully (state == RUNNING). Raises
+        RunPodUnavailableError on any non-success terminal state.
+
+        Timeout = start_wait_s + 60s buffer for probe_vllm's full budget.
+        """
+        timeout_s = self._start_wait_s + 60
+        if not self._start_completed.wait(timeout=timeout_s):
+            raise RunPodUnavailableError(
+                f"runpod_background_start_timeout: did not complete in {timeout_s}s"
+            )
+
+        # Bg thread finished. The bg thread used a different DB session
+        # to commit the terminal state; our session's identity map has the
+        # pre-update row cached. Expire it so the next read hits the DB
+        # and sees the fresh state.
+        with _lock:
+            db.expire_all()
+            state = _load_or_create_state(db, self._pod_id)
+            if state.last_known_state == "RUNNING":
+                state.last_used_at = _now()
+                state.updated_at = _now()
+                db.flush()
+                return self._base_url
+            raise RunPodUnavailableError(
+                f"runpod_background_start_failed: terminal_state={state.last_known_state}"
+            )
+
+    def _stop_and_account(self, db: Session, state: RunPodState) -> bool:
+        """Stop the pod and roll the session's uptime into the daily counter.
+
+        Caller must hold _lock. Returns True on stop accept.
+
+        Uptime accounting only on successful stop. A failed stop leaves
+        last_known_state as RUNNING so the next watchdog tick retries.
+        """
+        if not runpod_client.stop_pod(self._api_key, self._pod_id):
+            state.updated_at = _now()
+            db.flush()
+            return False
+
+        session_s = _seconds_since(state.last_started_at) or 0.0
+        state.uptime_today_seconds += int(session_s)
+        state.last_stopped_at = _now()
+        state.last_started_at = None
+        state.last_known_state = "EXITED"
+        state.updated_at = _now()
+        db.flush()
+        return True
+
+
+# ── Module singleton ─────────────────────────────────────────────────────────
+
+
+_orchestrator: RunPodOrchestrator | None = None
+
+
+def get_runpod_orchestrator() -> RunPodOrchestrator:
+    """Module-level singleton. Reads settings on first call, then caches."""
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = RunPodOrchestrator()
+    return _orchestrator
+
+
+def reset_runpod_orchestrator() -> None:
+    """Test hook — drops the singleton so the next call rebuilds with fresh settings."""
+    global _orchestrator
+    _orchestrator = None

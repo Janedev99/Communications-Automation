@@ -27,6 +27,8 @@ import {
 import { RejectionDialog } from "./rejection-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { TemplatePickerDialog } from "./template-picker-dialog";
+import { FeedbackIndicator } from "./feedback-indicator";
+import { FeedbackOnboarding } from "./feedback-onboarding";
 import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/types";
@@ -816,6 +818,13 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           </button>
         </div>
       )}
+
+      {/* FEAT/draft-feedback-loop — show what historical signals shaped the AI's output.
+          Renders nothing during bootstrap (no approvals / saves / rejections yet). */}
+      <div className="px-5 pt-3 pb-1 flex-shrink-0 space-y-2">
+        <FeedbackOnboarding />
+        <FeedbackIndicator category={thread.category} />
+      </div>
 
       {/* Tone selector (shown only when draft is pending/edited, not approved) */}
       {draft.status !== "approved" && (

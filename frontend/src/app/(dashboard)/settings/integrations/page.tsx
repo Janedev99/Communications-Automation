@@ -7,6 +7,7 @@ import {
   Activity,
   ArrowLeft,
   BookOpen,
+  ChevronRight,
   Clock,
   Database,
   Globe,
@@ -111,6 +112,8 @@ function CONFIG_LABELS(key: string): string {
     budget_pct_used: "Budget used",
     slack_webhook: "Slack webhook",
     log_file: "Log file",
+    microsoft_graph: "Microsoft Graph",
+    microsoft_graph_mailbox: "M365 mailbox",
   };
   return map[key] ?? key;
 }
@@ -192,7 +195,13 @@ function IntegrationCard({
                     "text-foreground font-mono tabular-nums truncate text-right",
                     typeof value === "string" &&
                       (value === "missing" || value === "(not set)") &&
-                      "text-muted-foreground"
+                      "text-muted-foreground",
+                    // Positive signal: M365 credentials staged-but-not-active
+                    // renders emerald so it reads as "we have this" rather
+                    // than getting lost in the other neutral config rows.
+                    key === "microsoft_graph" &&
+                      value === "integrated" &&
+                      "text-emerald-700 dark:text-emerald-400"
                   )}
                 >
                   {formatConfigKey(key, value)}
@@ -230,8 +239,36 @@ function IntegrationCard({
           </button>
         </div>
       )}
+
+      {/* RunPod-specific deep link.
+          The "llm" card is provider-agnostic — we only show the manage link
+          when the active provider routes through RunPod's proxy (openai_compat
+          base_url contains "runpod"). Otherwise the link wouldn't surface
+          anything useful (the orchestrator only manages RunPod pods). */}
+      {item.id === "llm" && isRunPodLLM(item.config) && (
+        <div className="mt-3">
+          <Link
+            href="/settings/runpod"
+            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          >
+            Manage RunPod
+            <ChevronRight className="w-3 h-3" />
+          </Link>
+        </div>
+      )}
     </div>
   );
+}
+
+// Detect whether the active LLM provider is RunPod. The integrations endpoint
+// flattens config to strings, so we check both common shapes: provider field
+// set to "runpod" explicitly, or an openai-compatible base URL containing
+// runpod's proxy host.
+function isRunPodLLM(config: Record<string, unknown>): boolean {
+  const provider = String(config?.provider ?? "").toLowerCase();
+  if (provider.includes("runpod")) return true;
+  const baseUrl = String(config?.base_url ?? "");
+  return baseUrl.includes("runpod.net") || baseUrl.includes("runpod.io");
 }
 
 function CardSkeleton() {

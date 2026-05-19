@@ -5,6 +5,17 @@ Registers all routers, middleware, lifespan events, and exception handlers.
 """
 from __future__ import annotations
 
+# ── SSL trust store bridge (must run before any SSL-using import) ─────────────
+# truststore makes Python's `ssl` module use the OS's native cert store —
+# Windows on dev machines (picks up VPN / antivirus / corporate-proxy CAs),
+# /etc/ssl on Linux Railway containers (same source certifi already uses, so
+# effectively a no-op there). Without this, dev machines behind any kind of
+# TLS-inspecting middlebox fail SSL verification against api.anthropic.com,
+# graph.microsoft.com, and similar — silently degrading the categorizer to
+# rules_fallback and breaking M365 polling.
+import truststore
+truststore.inject_into_ssl()
+
 import asyncio
 import contextvars
 import json
@@ -19,7 +30,7 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import audit_log, auth, dashboard, drafts, emails, escalations, integrations, knowledge, system_settings, tier_rules
+from app.api import audit_log, auth, dashboard, drafts, emails, escalations, feedback, integrations, knowledge, runpod, system_settings, tier_rules
 from app.config import get_settings
 
 settings = get_settings()
@@ -129,6 +140,7 @@ class RequestIdMiddleware:
 
 _polling_task: asyncio.Task | None = None
 _session_cleanup_task: asyncio.Task | None = None
+_runpod_watchdog_task: asyncio.Task | None = None
 
 
 def _sync_cleanup_sessions() -> int:
@@ -156,7 +168,7 @@ async def _session_cleanup_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start background tasks on startup, cancel them on shutdown."""
-    global _polling_task, _session_cleanup_task
+    global _polling_task, _session_cleanup_task, _runpod_watchdog_task
 
     logger.info("Starting Jane Communication Automation backend (env=%s)", settings.app_env)
 
@@ -169,10 +181,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _session_cleanup_task = asyncio.create_task(_session_cleanup_loop(), name="session-cleanup")
     logger.info("Session cleanup task started")
 
+    # Start RunPod idle-stop watchdog. No-ops itself when orchestration is
+    # disabled (no RUNPOD_POD_ID configured), so it's safe to start in every env.
+    from app.services.runpod_watchdog import start_watchdog_loop
+    _runpod_watchdog_task = asyncio.create_task(start_watchdog_loop(), name="runpod-watchdog")
+    logger.info("RunPod watchdog task started")
+
     yield  # Application is running
 
     # Shutdown
-    for task in (_polling_task, _session_cleanup_task):
+    for task in (_polling_task, _session_cleanup_task, _runpod_watchdog_task):
         if task and not task.done():
             task.cancel()
             try:
@@ -241,6 +259,8 @@ def create_app() -> FastAPI:
     app.include_router(audit_log.router, prefix="/api/v1")
     app.include_router(system_settings.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
+    app.include_router(runpod.router, prefix="/api/v1")
+    app.include_router(feedback.router, prefix="/api/v1")
 
     # ── Health check ───────────────────────────────────────────────────────────
     @app.get("/health", include_in_schema=False)

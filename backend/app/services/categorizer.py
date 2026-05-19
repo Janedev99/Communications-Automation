@@ -173,13 +173,40 @@ def _build_prompt(sender: str, subject: str, body: str) -> str:
     )
 
 
+def _strip_json_fences(content: str) -> str:
+    """
+    Remove markdown code-fence wrappers from an LLM JSON response.
+
+    Claude (and OpenAI-style providers) frequently return JSON wrapped in
+    ```json ... ``` or ``` ... ``` blocks. Stripping the fences before
+    json.loads avoids a parse failure on otherwise-valid responses, which
+    would silently demote the categorizer to rules_fallback for every
+    affected email.
+    """
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    # Drop the opening fence — handles ```json, ```JSON, and bare ```
+    first_newline = text.find("\n")
+    if first_newline != -1:
+        text = text[first_newline + 1:]
+    else:
+        # Single-line fence like ```{"x":1}``` — strip both ends
+        text = text[3:]
+    # Drop the closing fence
+    if text.rstrip().endswith("```"):
+        text = text.rstrip()[:-3].rstrip()
+    return text.strip()
+
+
 def _parse_response(content: str) -> CategorizationResult:
     """
     Parse and validate Claude's JSON response into a CategorizationResult.
     Uses Pydantic (_CategorizerResponse) for strict validation (T1.14).
     """
+    cleaned = _strip_json_fences(content)
     try:
-        raw: dict[str, Any] = json.loads(content.strip())
+        raw: dict[str, Any] = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         logger.error("Categorizer: failed to parse JSON: %r (error: %s)", content[:200], exc)
         return _fallback_result("Failed to parse AI response")

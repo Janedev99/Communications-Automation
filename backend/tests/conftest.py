@@ -35,6 +35,18 @@ os.environ["SMTP_USERNAME"] = "test@example.com"
 os.environ["DRAFT_AUTO_GENERATE"] = "false"
 os.environ["SHADOW_MODE"] = "false"
 
+# Disable the RunPod orchestrator in tests. Without these explicit empties,
+# pydantic-settings reads the project's real .env file (which it falls
+# through to when an env var isn't in os.environ) and the orchestrator
+# decides it should manage a real production pod — leading to real httpx
+# calls to RunPod from unit tests. Setting these to empty strings in
+# os.environ keeps the precedence: env > file, so the file's real values
+# are ignored.
+os.environ["RUNPOD_POD_ID"] = ""
+os.environ["LLM_BASE_URL"] = ""
+os.environ["LLM_API_KEY"] = ""
+os.environ["LLM_MODEL"] = ""
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from datetime import datetime, timezone

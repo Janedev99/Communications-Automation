@@ -58,6 +58,9 @@ export interface AttachmentInfo {
   filename: string;
   size: number | null;
   content_type: string | null;
+  /** MS Graph attachment id. May be null on legacy rows polled before this
+   *  field was added — the download endpoint falls back to index lookup. */
+  attachment_id?: string | null;
 }
 
 export interface EmailMessage {
@@ -333,6 +336,62 @@ export interface IntegrationsResponse {
   shadow_mode: boolean;
   checked_at: string;
   items: IntegrationItem[];
+}
+
+// ── RunPod orchestrator (admin) ───────────────────────────────────────────────
+// Disabled shape: { enabled: false }. Every other field is only populated when
+// enabled is true.
+export interface RunPodStatus {
+  enabled: boolean;
+  pod_id?: string;
+  inference_url?: string | null;
+  last_known_state?: string | null;
+  last_used_at?: string | null;
+  last_started_at?: string | null;
+  last_stopped_at?: string | null;
+  uptime_today_seconds?: number;
+  uptime_day_utc?: string | null;
+  daily_cap_seconds?: number;
+  daily_cap_remaining_seconds?: number;
+  idle_timeout_seconds?: number;
+  start_in_flight?: boolean;
+  sweep_in_flight?: boolean;
+  cost_per_hour_usd?: number | null;
+  cost_today_usd_estimate?: number | null;
+  /** Active LLM provider — "anthropic" means RunPod is NOT the inference
+   *  backend right now, so all the wake/stop controls on this page are
+   *  diagnostic-only. The UI surfaces this as an explanatory banner. */
+  llm_provider?: "anthropic" | "openai_compat";
+}
+
+export interface RunPodActionResponse {
+  status:
+    | "stopped"
+    | "already_stopped"
+    | "stop_failed"
+    | "missing"
+    | "disabled"
+    | "ready"
+    | "starting"
+    | "already_starting"
+    | "capacity_exceeded";
+  pod_id?: string;
+  last_known_state?: string | null;
+  uptime_today_seconds?: number;
+  daily_cap_remaining_seconds?: number;
+  reason?: string;
+}
+
+export interface RunPodDailyUsageRow {
+  day_utc: string;          // YYYY-MM-DD
+  uptime_seconds: number;
+  cost_per_hour_usd: number | null;
+  cost_usd: number | null;
+}
+
+export interface RunPodHistoryResponse {
+  days: number;             // the (clamped) days param the backend honoured
+  items: RunPodDailyUsageRow[];  // newest first; sparse — zero-uptime days are omitted
 }
 
 // ── System settings (admin) ───────────────────────────────────────────────────

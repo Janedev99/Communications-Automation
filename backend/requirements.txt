@@ -29,6 +29,17 @@ httpx==0.28.1
 # Email / IMAP
 # imaplib and smtplib are part of stdlib — no extra package needed
 
+# HTML → plain-text conversion for email bodies (MS Graph returns body as HTML
+# by default; we derive body_text from body_html for clean AI input + UI rendering)
+html2text==2024.2.26
+
+# SSL bridge: makes Python's ssl module use the OS native cert store. Required
+# on Windows dev machines that sit behind VPN / antivirus / corporate-proxy
+# TLS inspection — otherwise api.anthropic.com and graph.microsoft.com fail
+# SSL verification and the categorizer silently degrades to rules_fallback.
+# No-op on Linux production (already uses the system cert store).
+truststore>=0.10,<1.0
+
 # Environment
 python-dotenv==1.0.1
 

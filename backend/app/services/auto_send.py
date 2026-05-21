@@ -265,6 +265,18 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         },
     )
 
+    # Auto-file to a client-named folder. T1 auto-send is "we sent on
+    # Jane's behalf" — the same "I dealt with it" trigger she described
+    # in the 2026-05-21 meeting applies here too. actor_id=None because
+    # there's no human user driving this send.
+    from app.services.auto_folder import auto_save_to_client_folder
+    auto_save_to_client_folder(
+        db,
+        thread=thread,
+        actor_id=None,
+        request_ip=None,
+    )
+
     try:
         db.commit()
     except Exception as commit_exc:

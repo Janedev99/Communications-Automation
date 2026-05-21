@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { splitEmailSignature } from "@/lib/email/signature-detection";
+import { renderInline } from "@/lib/linkify";
 
 // Long-signature threshold (lines). At or below this, render inline + muted.
 // Above this, hide behind a "Show signature" toggle so signatures don't
@@ -112,18 +113,44 @@ function toParagraphs(lines: string[]): string[][] {
   return paragraphs;
 }
 
-/** Render a single paragraph — preserve intra-paragraph line breaks (<br>). */
-function Paragraph({ lines, muted = false }: { lines: string[]; muted?: boolean }) {
+/**
+ * Render a single paragraph — preserves intra-paragraph line breaks (<br>)
+ * and turns URLs into clickable links via `linkify`.
+ *
+ * Variant-aware text colour: the outer MessageBody wrapper sets
+ * `text-primary-foreground` for outbound, but Tailwind utility classes
+ * applied directly to `<p>` win specificity over inherited colour from
+ * the wrapper, so we have to set the right colour here too. Without this,
+ * outbound paragraphs rendered as near-black `text-foreground` on the blue
+ * primary background — readable but visually punishing.
+ */
+function Paragraph({
+  lines,
+  muted = false,
+  variant = "inbound",
+}: {
+  lines: string[];
+  muted?: boolean;
+  variant?: "inbound" | "outbound";
+}) {
+  const outbound = variant === "outbound";
+  const colorClass = outbound
+    ? muted
+      ? "text-primary-foreground/70"
+      : "text-primary-foreground"
+    : muted
+    ? "text-foreground/70"
+    : "text-foreground";
   return (
     <p
       className={cn(
         "text-sm leading-relaxed break-words",
-        muted ? "text-foreground/70" : "text-foreground",
+        colorClass,
       )}
     >
       {lines.map((line, i) => (
         <span key={i}>
-          {line}
+          {renderInline(line)}
           {i < lines.length - 1 && <br />}
         </span>
       ))}
@@ -178,7 +205,7 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
   return (
     <div className={cn("flex flex-col gap-2", outbound && "text-primary-foreground")}>
       {currentParagraphs.map((para, i) => (
-        <Paragraph key={`cur-${i}`} lines={para} />
+        <Paragraph key={`cur-${i}`} lines={para} variant={variant} />
       ))}
 
       {hasSignature && (
@@ -251,7 +278,7 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
               )}
             >
               {quotedParagraphs.map((para, i) => (
-                <Paragraph key={`q-${i}`} lines={para} muted />
+                <Paragraph key={`q-${i}`} lines={para} muted variant={variant} />
               ))}
             </div>
           )}
@@ -261,7 +288,15 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
   );
 }
 
-/** Visual treatment for the signature block: smaller, italic, slightly muted. */
+/**
+ * Visual treatment for the signature block: smaller, italic, slightly muted.
+ *
+ * Uses `linkify` so URLs in the signature (firm website, scheduling links,
+ * social handles in `[text](url)` form from the html2text pass) are
+ * clickable. `whitespace-pre-line` keeps the source line breaks visible —
+ * linkify returns mixed text/link nodes that flow within that whitespace
+ * rule the same way the raw string did.
+ */
 function SignatureBlock({
   signature,
   outbound,
@@ -276,7 +311,7 @@ function SignatureBlock({
         outbound ? "text-primary-foreground/70" : "text-muted-foreground",
       )}
     >
-      {signature}
+      {renderInline(signature)}
     </div>
   );
 }

@@ -210,6 +210,71 @@ def test_positive_examples_respects_limit(db_session: Session):
     assert len(results) == 2
 
 
+def test_positive_examples_includes_sent_drafts(db_session: Session):
+    """
+    Regression guard: in the normal flow staff approve → send within
+    seconds, so the `approved` state is ephemeral. An approved-only filter
+    surfaces zero examples for any staff member who routinely sends what
+    they approve. Both `approved` and `sent` must qualify as positive
+    examples or the feedback loop accumulates nothing over time.
+    """
+    # `clarification` only carries EmailMessage seeds in other tests
+    # (curated-inbound paths) — no drafts, so seeding 2 here doesn't
+    # contaminate any sibling test's `len(results) == N` assertion.
+    cat = EmailCategory.clarification
+    now = datetime.now(timezone.utc)
+    thread_a = _make_thread(db_session, category=cat)
+    thread_s = _make_thread(db_session, category=cat)
+    _make_draft(
+        db_session, thread=thread_a, status=DraftStatus.approved,
+        body="APPROVED body", reviewed_at=now - timedelta(minutes=10),
+    )
+    _make_draft(
+        db_session, thread=thread_s, status=DraftStatus.sent,
+        body="SENT body", reviewed_at=now - timedelta(minutes=1),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value, limit=5)
+    bodies = [r.body for r in results]
+
+    assert "APPROVED body" in bodies, (
+        "Approved drafts must remain positive examples"
+    )
+    assert "SENT body" in bodies, (
+        "Sent drafts must surface as positive examples — the approve→send "
+        "transition happens in seconds and an approved-only filter loses "
+        "every example as soon as it ships"
+    )
+    # Recency order: SENT was reviewed more recently
+    assert bodies.index("SENT body") < bodies.index("APPROVED body")
+
+
+def test_positive_examples_excludes_send_failed(db_session: Session):
+    """
+    `send_failed` bodies are approved-but-never-delivered. Treating them as
+    positive examples would train the prompt on text the recipient never
+    saw — and the body is commonly stale (Jane edits before retrying). Pin
+    the exclusion so a future "include every status that was once approved"
+    refactor doesn't accidentally pull these in.
+    """
+    # `clarification` only carries EmailMessage seeds in other tests
+    # (curated-inbound-filter path) — no draft pollution.
+    cat = EmailCategory.clarification
+    thread = _make_thread(db_session, category=cat)
+    _make_draft(
+        db_session, thread=thread, status=DraftStatus.send_failed,
+        body="STALE FAILED BODY",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+
+    svc = FeedbackRetrievalService()
+    results = svc.get_positive_examples(db_session, category=cat.value)
+    bodies = [r.body for r in results]
+
+    assert "STALE FAILED BODY" not in bodies
+
+
 # =============================================================================
 # Curated examples — outbound saved messages only
 # =============================================================================

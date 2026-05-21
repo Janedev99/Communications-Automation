@@ -138,20 +138,33 @@ class FeedbackRetrievalService:
         limit: int = 3,
     ) -> list[FeedbackExample]:
         """
-        Return the most recent approved drafts in the given category.
+        Return the most recent approved-or-sent drafts in the given category.
 
-        Strictly DraftStatus.approved (not "edited" or "sent" — sent drafts
-        were once approved, but we use ``approved`` as the cleanest snapshot
-        of "draft a human signed off on without further edits needed"). The
-        ``sent`` status is a later transition driven by the send pipeline,
-        not an additional signal of quality.
+        Status filter is ``approved`` OR ``sent``. Both states represent a
+        human sign-off — ``approved`` is the click before send, ``sent`` is
+        the post-send terminal state. In the normal flow, drafts spend
+        seconds in ``approved`` before transitioning to ``sent``, so an
+        approved-only filter would surface zero examples for any staff
+        member who routinely sends what they approve (i.e. all of them).
+        Including ``sent`` lets the implicit "approve+send" workflow actually
+        accumulate positive examples over time.
+
+        Excluded states and why:
+          - ``send_failed`` — body was approved, but the email never reached
+            the recipient. Treating the body as a positive example would
+            train the model on text that was never validated by the
+            recipient's reaction. Also commonly stale (Jane edits before retry).
+          - ``edited`` / ``pending`` — never reached sign-off.
+          - ``rejected`` — handled by ``get_negative_patterns``.
         """
         stmt = (
             select(DraftResponse, EmailThread, User)
             .join(EmailThread, DraftResponse.thread_id == EmailThread.id)
             .outerjoin(User, DraftResponse.reviewed_by_id == User.id)
             .where(
-                DraftResponse.status == DraftStatus.approved,
+                DraftResponse.status.in_(
+                    [DraftStatus.approved, DraftStatus.sent]
+                ),
                 EmailThread.category == category,
                 ~_pii_thread_subquery(EmailThread.id),
             )

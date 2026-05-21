@@ -25,6 +25,8 @@ export const STATUS_LABELS: Record<EmailStatus, string> = {
   sent: "Sent",
   escalated: "Escalated",
   closed: "Closed",
+  deleted: "Deleted",
+  spam: "Spam",
 };
 
 export const STATUS_BADGE_CLASSES: Record<EmailStatus, string> = {
@@ -35,6 +37,11 @@ export const STATUS_BADGE_CLASSES: Record<EmailStatus, string> = {
   sent:           "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30",
   escalated:      "bg-red-50     text-red-700     ring-1 ring-inset ring-red-200     dark:bg-red-500/15     dark:text-red-300     dark:ring-red-500/30",
   closed:         "bg-muted text-muted-foreground ring-1 ring-inset ring-border",
+  // Terminal trash-management states share the muted/destructive palette —
+  // softer red for deleted (matches the Delete button hover), amber for
+  // spam (matches the Spam button hover).
+  deleted:        "bg-red-50/60  text-red-600/80  ring-1 ring-inset ring-red-200/60  dark:bg-red-500/10     dark:text-red-300/80  dark:ring-red-500/20",
+  spam:           "bg-amber-50/60 text-amber-700/80 ring-1 ring-inset ring-amber-200/60 dark:bg-amber-500/10 dark:text-amber-300/80 dark:ring-amber-500/20",
 };
 
 // ── Email Category ─────────────────────────────────────────────────────────────

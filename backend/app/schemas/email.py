@@ -280,6 +280,32 @@ class SaveThreadRequest(BaseModel):
     )
 
 
+class AddThreadToKnowledgeBaseRequest(BaseModel):
+    """
+    Body for POST /emails/{thread_id}/add-to-knowledge-base.
+
+    All fields optional — the endpoint produces sensible defaults from the
+    thread itself when nothing is supplied. UI may pass overrides when the
+    user wants a different title, category, or tags than the auto-derived
+    values (e.g. cleaning up an awkward subject line before persisting).
+    """
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        description="Override the auto-derived title (default: thread subject with Re:/Fwd: stripped).",
+    )
+    category: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Override the auto-derived category (default: thread.category value).",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Additional tags. Default tags are ['from_email'] + thread.category.",
+    )
+
+
 class SavedFolder(BaseModel):
     """Entry returned by GET /emails/saved/folders."""
     name: str | None = Field(

@@ -134,6 +134,38 @@ export function markThreadSpam(threadId: string): Promise<EmailThread> {
   return api.post<EmailThread>(`/api/v1/emails/${threadId}/spam`, {});
 }
 
+export interface AddThreadToKbBody {
+  /** Optional title override (default: thread subject with Re:/Fwd: stripped). */
+  title?: string;
+  /** Optional category override (default: thread.category value). */
+  category?: string;
+  /** Optional tags override (default: ["from_email", "<thread category>"]). */
+  tags?: string[];
+}
+
+export interface KnowledgeEntryRef {
+  id: string;
+  title: string;
+  category: string | null;
+}
+
+/**
+ * Create a KnowledgeEntry from this thread's latest Q&A exchange. The
+ * server derives sensible defaults (title from subject, content from
+ * latest inbound + outbound bodies, category from thread.category); the
+ * UI can override any of those via the body. Returns the new entry so
+ * the caller can deep-link to it.
+ */
+export function addThreadToKnowledgeBase(
+  threadId: string,
+  body: AddThreadToKbBody = {},
+): Promise<KnowledgeEntryRef> {
+  return api.post<KnowledgeEntryRef>(
+    `/api/v1/emails/${threadId}/add-to-knowledge-base`,
+    body,
+  );
+}
+
 export function bulkAction(body: BulkActionRequest): Promise<BulkActionResponse> {
   return api.post<BulkActionResponse>("/api/v1/emails/bulk", body);
 }

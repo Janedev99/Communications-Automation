@@ -73,8 +73,17 @@ function FeedbackDetails({
 }: {
   preview: NonNullable<ReturnType<typeof useFeedbackPreview>["preview"]>;
 }) {
+  // Cap the expanded panel at ~24rem and scroll internally when the
+  // example count overflows. Without this, a category with the full
+  // 3 curated + 3 positive + 3 negative (each possibly with multi-line
+  // bodies) renders a wall of text taller than the draft card itself,
+  // pushing the Approve/Reject buttons offscreen on smaller viewports.
+  // The internal scroll keeps the panel discoverable without hijacking
+  // page-level scroll. `overscroll-contain` stops scroll-chain so a
+  // wheel scroll inside the panel doesn't bleed up to the parent
+  // ScrollArea once we've hit the end.
   return (
-    <div className="border-t border-foreground/5 px-3 py-3 space-y-4">
+    <div className="border-t border-foreground/5 px-3 py-3 space-y-4 max-h-96 overflow-y-auto overscroll-contain">
       {(preview.curated.length > 0 || preview.positive.length > 0) && (
         <Section title="Past examples">
           <p className="text-[11px] text-muted-foreground mb-2">

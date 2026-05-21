@@ -179,6 +179,34 @@ class EmailProvider(ABC):
             f"{type(self).__name__} does not support on-demand attachment fetch"
         )
 
+    def move_message(
+        self,
+        *,
+        internet_message_id: str,
+        destination: str,
+    ) -> None:
+        """
+        Move an already-polled message to a different folder in the remote
+        mailbox.
+
+        ``destination`` is a provider-agnostic logical name — implementations
+        translate it. The supported values are:
+
+          - ``"deleted_items"`` — Outlook Deleted Items / IMAP Trash
+          - ``"junk_email"``   — Outlook Junk Email / IMAP Spam
+
+        Used by the trash-management endpoints in ``api/emails.py`` so
+        when staff delete or mark-as-spam a thread, the change propagates
+        to Outlook (Jane's authoritative inbox). The propagation guarantee
+        is what Gus called out in the 2026-05-21 meeting: deleting in our
+        UI must also remove the email from Outlook.
+
+        Default implementation raises — providers must opt in by overriding.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support move_message"
+        )
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -421,6 +449,68 @@ class MSGraphProvider(EmailProvider):
             att.get("name") or "attachment",
             att.get("contentType"),
         )
+
+    # Logical → Graph well-known folder ID mapping. Graph accepts these
+    # string aliases anywhere a folder ID is required, so we don't have to
+    # resolve them via /mailFolders lookups. Other destinations (drafts,
+    # sentitems, archive) aren't exposed because the trash UI only needs
+    # these two — keep the surface tight.
+    _DESTINATION_FOLDER_IDS = {
+        "deleted_items": "deleteditems",
+        "junk_email": "junkemail",
+    }
+
+    def move_message(
+        self,
+        *,
+        internet_message_id: str,
+        destination: str,
+    ) -> None:
+        """
+        Move a single message into one of the trash-management folders.
+
+        Resolves the stored internetMessageId to the Graph-native id first
+        (using the same helper that mark_as_read / fetch_attachment use),
+        then POSTs to /messages/{id}/move with the well-known folder id.
+
+        Silently returns if the message can't be found in the mailbox — it
+        may have already been moved or deleted out-of-band. The thread-level
+        endpoint that calls us iterates many messages and one missing
+        message shouldn't block the rest of the move.
+        """
+        folder_id = self._DESTINATION_FOLDER_IDS.get(destination)
+        if folder_id is None:
+            raise ValueError(
+                f"Unknown destination {destination!r}; expected one of "
+                f"{sorted(self._DESTINATION_FOLDER_IDS)}"
+            )
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            logger.info(
+                "MSGraph move_message: message %s not found in mailbox — "
+                "treating as already-moved",
+                internet_message_id,
+            )
+            return
+        mailbox = self._settings.msgraph_mailbox
+        url = f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/move"
+        try:
+            resp = self._client.post(
+                url,
+                headers=self._headers(),
+                json={"destinationId": folder_id},
+            )
+            resp.raise_for_status()
+            logger.info(
+                "MSGraph: moved message %s to %s",
+                internet_message_id, destination,
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "MSGraph move_message failed for %s → %s: %s | response_body=%s",
+                internet_message_id, destination, exc, exc.response.text[:500],
+            )
+            raise
 
     def send_email(
         self,

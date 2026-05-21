@@ -35,6 +35,13 @@ class EmailStatus(str, enum.Enum):
     sent = "sent"                   # Response sent
     escalated = "escalated"         # Sent to Jane for review
     closed = "closed"               # Thread resolved
+    # Trash-management terminal states (2026-05-21 client meeting). Both
+    # are terminal from the app's perspective AND propagate to Outlook:
+    # the inbound messages are moved out of the Inbox folder via Graph's
+    # /move endpoint. We keep the row in our DB for audit; the inbox view
+    # filters these out by default.
+    deleted = "deleted"             # Moved to Outlook Deleted Items
+    spam = "spam"                   # Moved to Outlook Junk Email
 
 
 class EmailCategory(str, enum.Enum):

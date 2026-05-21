@@ -9,6 +9,8 @@ import {
   BookmarkCheck,
   CheckCircle,
   ShieldAlert,
+  ShieldX,
+  Trash2,
   UserCircle2,
   XCircle,
 } from "lucide-react";
@@ -19,10 +21,13 @@ import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { MessageBubble } from "./message-bubble";
 import { SaveThreadDialog } from "./save-thread-dialog";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { SEVERITY_BADGE_CLASSES, SEVERITY_LABELS } from "@/lib/constants";
 import {
   assignThread,
   changeThreadStatus,
+  markThreadSpam,
+  trashThread,
   unsaveThread,
 } from "@/hooks/use-emails";
 import { useUser } from "@/hooks/use-user";
@@ -52,6 +57,13 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   // When set, the dialog targets a single message rather than the whole thread.
   const [saveMessageId, setSaveMessageId] = useState<string | null>(null);
+  // Trash / spam confirm dialogs — Gus's explicit ask (2026-05-21): "a
+  // pop up that says — also in your Outlook. Are you sure?" The two states
+  // are mutually exclusive in the UI (only one button can be in flight at
+  // a time), so a single discriminated state would also work, but two
+  // booleans read more clearly at the JSX call sites.
+  const [showTrashConfirm, setShowTrashConfirm] = useState(false);
+  const [showSpamConfirm, setShowSpamConfirm] = useState(false);
 
   const openSaveForThread = () => {
     setSaveMessageId(null);
@@ -109,6 +121,42 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
     try {
       await changeThreadStatus(thread.id, "categorized");
       onThreadChange?.();
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleTrash = async () => {
+    if (actionLoading) return;
+    setActionLoading("trash");
+    try {
+      await trashThread(thread.id);
+      onThreadChange?.();
+      setShowTrashConfirm(false);
+      // Navigate back to the inbox — the trashed thread has dropped out
+      // of the default list view, so staying on its detail page leaves
+      // the user on a "dead" route. Bouncing to /emails matches what
+      // Outlook does after a delete.
+      toast.success("Moved to Deleted Items in Outlook.");
+      router.push("/emails");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not delete.");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSpam = async () => {
+    if (actionLoading) return;
+    setActionLoading("spam");
+    try {
+      await markThreadSpam(thread.id);
+      onThreadChange?.();
+      setShowSpamConfirm(false);
+      toast.success("Moved to Junk Email in Outlook.");
+      router.push("/emails");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not mark as spam.");
     } finally {
       setActionLoading(null);
     }
@@ -228,6 +276,35 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
               </Button>
             )}
 
+            {/* Trash + spam: hidden when the thread is already closed
+                (closed threads should be reopened first, not trashed,
+                so the audit trail preserves intent). */}
+            {!isClosed && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowSpamConfirm(true)}
+                  disabled={!!actionLoading}
+                  className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-500/10"
+                  title="Mark as spam — moves to Junk Email in Outlook and trains the junk filter"
+                >
+                  <ShieldX className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                  Spam
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowTrashConfirm(true)}
+                  disabled={!!actionLoading}
+                  className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                  title="Delete — moves to Deleted Items in Outlook"
+                >
+                  <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                  Delete
+                </Button>
+              </>
+            )}
             {isClosed ? (
               <Button
                 variant="outline"
@@ -392,6 +469,35 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
             : { kind: "thread" }
         }
         onSaved={() => onThreadChange?.()}
+      />
+
+      <ConfirmDialog
+        open={showTrashConfirm}
+        onOpenChange={setShowTrashConfirm}
+        title="Delete this conversation?"
+        description={
+          "This moves every incoming message in this thread to the Deleted Items folder in Outlook. " +
+          "Sent replies are not affected. You can restore from Outlook's Deleted Items if needed."
+        }
+        confirmLabel="Delete"
+        confirmVariant="destructive"
+        loading={actionLoading === "trash"}
+        onConfirm={handleTrash}
+      />
+
+      <ConfirmDialog
+        open={showSpamConfirm}
+        onOpenChange={setShowSpamConfirm}
+        title="Mark as spam?"
+        description={
+          "This moves every incoming message in this thread to the Junk Email folder in Outlook " +
+          "and trains Outlook's junk filter on the sender. Future emails from this sender may be " +
+          "auto-routed to junk and won't reach this inbox."
+        }
+        confirmLabel="Mark as spam"
+        confirmVariant="destructive"
+        loading={actionLoading === "spam"}
+        onConfirm={handleSpam}
       />
     </div>
   );

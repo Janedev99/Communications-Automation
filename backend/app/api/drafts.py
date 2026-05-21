@@ -626,6 +626,18 @@ def send_draft(
         },
     )
 
+    # Auto-file to a client-named folder per the 2026-05-21 meeting decision.
+    # Idempotent over thread.is_saved — won't override a user-chosen folder.
+    # Logs its own audit row; swallows internal errors so a save-side
+    # hiccup never undoes the successful send.
+    from app.services.auto_folder import auto_save_to_client_folder
+    auto_save_to_client_folder(
+        db,
+        thread=thread,
+        actor_id=current_user.id,
+        request_ip=get_client_ip(request),
+    )
+
     return DraftResponseResponse.model_validate(draft)
 
 

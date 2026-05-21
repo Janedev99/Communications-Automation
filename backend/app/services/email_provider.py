@@ -433,13 +433,35 @@ class MSGraphProvider(EmailProvider):
         references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
+        """
+        Send via Graph's /sendMail action.
+
+        Note on threading headers: Microsoft Graph rejects any
+        ``internetMessageHeaders`` entry whose name does not start with ``x-``
+        / ``X-``. ``Message-ID``, ``In-Reply-To``, and ``References`` are
+        reserved transport headers that Exchange generates itself — attempting
+        to set them via Graph returns HTTP 400 ``ErrorInvalidInternetMessageHeader``
+        ("The internet message header name should start with 'x-' or 'X-'").
+        This is *the* reason every /sendMail call after the M365 cutover
+        failed: the IMAP/SMTP path could author these headers, the Graph path
+        cannot. The ``reply_to_message_id`` / ``references_header`` /
+        ``message_id`` arguments are kept in the signature for interface parity
+        with ``IMAPProvider`` but are not transmitted on the Graph path. Thread
+        continuity for replies routes through Exchange's own ``conversationId``
+        rather than RFC5322 headers; a follow-up that switches replies to
+        ``POST /messages/{parent}/createReply`` will restore client-side
+        threading in Outlook/Gmail. See FIX/msgraph-invalid-headers.
+        """
         import uuid as _uuid
         mailbox = self._settings.msgraph_mailbox
         url = f"{self.GRAPH_BASE}/users/{mailbox}/sendMail"
         content_type = "html" if body_html else "text"
         content = body_html or body_text
 
-        # Generate a Message-ID we control so we can track thread continuity
+        # Generated id is returned to the caller for DB tracking. Graph will
+        # assign its own Message-ID at the Exchange transport layer and we
+        # cannot influence it from /sendMail — the returned value is a local
+        # correlation id only, not the on-wire Message-ID.
         if not message_id:
             domain = mailbox.split("@")[-1] if "@" in mailbox else "localhost"
             message_id = f"<{_uuid.uuid4()}@{domain}>"
@@ -449,22 +471,9 @@ class MSGraphProvider(EmailProvider):
                 "subject": subject,
                 "body": {"contentType": content_type, "content": content},
                 "toRecipients": [{"emailAddress": {"address": to}}],
-                "internetMessageHeaders": [
-                    {"name": "Message-ID", "value": message_id},
-                ],
             },
             "saveToSentItems": True,
         }
-        if reply_to_message_id:
-            payload["message"]["internetMessageHeaders"].append(
-                {"name": "In-Reply-To", "value": reply_to_message_id}
-            )
-        # T2.1: Set full References chain for proper email thread display
-        ref_value = references_header or reply_to_message_id
-        if ref_value:
-            payload["message"]["internetMessageHeaders"].append(
-                {"name": "References", "value": ref_value}
-            )
 
         try:
             resp = self._client.post(url, headers=self._headers(), json=payload)
@@ -472,7 +481,10 @@ class MSGraphProvider(EmailProvider):
             logger.info("MSGraph: sent email to %s subject=%r", to, subject)
             return message_id
         except httpx.HTTPStatusError as exc:
-            logger.error("MSGraph send_email failed: %s", exc)
+            logger.error(
+                "MSGraph send_email failed: %s | response_body=%s",
+                exc, exc.response.text[:500],
+            )
             raise
 
     def disconnect(self) -> None:

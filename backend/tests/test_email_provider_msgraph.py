@@ -288,3 +288,115 @@ class TestMsgraphBodyExtraction:
 
         assert results[0].body_text is None
         assert results[0].body_html is None
+
+
+# ── MSGraphProvider send_email payload shape ──────────────────────────────────
+
+class TestMsgraphSendPayload:
+    """
+    Regression guard for the M365 cutover send-path bug.
+
+    Graph's /sendMail rejects any internetMessageHeaders entry whose name does
+    not start with 'x-' / 'X-'. The original code shipped with three reserved
+    headers — Message-ID, In-Reply-To, References — which caused every send
+    after the cutover to fail with HTTP 400 ErrorInvalidInternetMessageHeader.
+    These tests assert the on-wire payload no longer contains them.
+    """
+
+    def _post_response(self) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        return resp
+
+    def test_payload_omits_internet_message_headers(self):
+        # The single most important assertion: the field that broke production
+        # must not be present at all. Even an empty list is fine to remove —
+        # Graph doesn't require it.
+        provider = _make_provider()
+        provider._client.post.return_value = self._post_response()
+
+        provider.send_email(
+            to="client@example.com",
+            subject="Re: Q3 statements",
+            body_text="Sending those over now.",
+        )
+
+        sent_payload = provider._client.post.call_args.kwargs["json"]
+        assert "internetMessageHeaders" not in sent_payload["message"], (
+            "internetMessageHeaders must not be sent to Graph — Exchange "
+            "rejects any reserved-name header (Message-ID, In-Reply-To, "
+            "References) and the entire send fails. If you need to set "
+            "custom headers later, ALL names must start with 'x-' or 'X-'."
+        )
+
+    def test_reply_args_do_not_leak_reserved_headers(self):
+        # Even when the caller supplies reply_to_message_id / references_header
+        # (the IMAP-path threading args), those values must not surface as
+        # Graph-banned headers. They're accepted for interface parity with
+        # IMAPProvider but dropped on the wire — threading on the Graph path
+        # is meant to route through Exchange's conversationId.
+        provider = _make_provider()
+        provider._client.post.return_value = self._post_response()
+
+        provider.send_email(
+            to="client@example.com",
+            subject="Re: Q3 statements",
+            body_text="Sending those over now.",
+            reply_to_message_id="<parent-1@example.com>",
+            references_header="<root@example.com> <parent-1@example.com>",
+            message_id="<draft-42@example.com>",
+        )
+
+        sent_payload = provider._client.post.call_args.kwargs["json"]
+        message = sent_payload["message"]
+        # Belt-and-suspenders: the whole field is gone (preferred) OR if a
+        # future change reintroduces it, no banned name may appear.
+        headers = message.get("internetMessageHeaders", [])
+        banned = {"Message-ID", "In-Reply-To", "References"}
+        offenders = [h for h in headers if h.get("name") in banned]
+        assert not offenders, (
+            f"Graph-banned headers leaked into payload: "
+            f"{[h['name'] for h in offenders]}. Exchange returns "
+            f"ErrorInvalidInternetMessageHeader for any of these."
+        )
+
+    def test_payload_contains_required_fields(self):
+        # Positive assertion: the minimum Graph /sendMail contract.
+        provider = _make_provider()
+        provider._client.post.return_value = self._post_response()
+
+        provider.send_email(
+            to="client@example.com",
+            subject="Re: Q3 statements",
+            body_text="Sending those over now.",
+        )
+
+        url = provider._client.post.call_args.args[0]
+        sent_payload = provider._client.post.call_args.kwargs["json"]
+        message = sent_payload["message"]
+
+        assert "/sendMail" in url
+        assert message["subject"] == "Re: Q3 statements"
+        assert message["body"]["content"] == "Sending those over now."
+        assert message["body"]["contentType"] == "text"
+        assert message["toRecipients"] == [
+            {"emailAddress": {"address": "client@example.com"}}
+        ]
+        assert sent_payload["saveToSentItems"] is True
+
+    def test_returns_message_id_for_caller_tracking(self):
+        # The return value is the local correlation id that the caller persists
+        # on EmailMessage.message_id_header — Graph assigns its own id at the
+        # Exchange layer that we don't see; this is documented in the method
+        # docstring. Test asserts the return contract.
+        provider = _make_provider()
+        provider._client.post.return_value = self._post_response()
+
+        returned = provider.send_email(
+            to="client@example.com",
+            subject="hi",
+            body_text="hi",
+            message_id="<draft-99@example.com>",
+        )
+
+        assert returned == "<draft-99@example.com>"

@@ -111,6 +111,29 @@ export function changeThreadStatus(threadId: string, newStatus: string): Promise
   return api.put<EmailThread>(`/api/v1/emails/${threadId}/status`, { status: newStatus });
 }
 
+/**
+ * Move every inbound message in the thread to Outlook's Deleted Items
+ * folder via Microsoft Graph, and park the local thread in
+ * `EmailStatus.deleted`. Outbound (sent) messages are NOT moved.
+ *
+ * Recoverable: the messages stay in Deleted Items until Outlook itself
+ * purges them. Idempotent — calling on an already-deleted thread is a
+ * no-op (server returns the thread as-is).
+ */
+export function trashThread(threadId: string): Promise<EmailThread> {
+  return api.post<EmailThread>(`/api/v1/emails/${threadId}/trash`, {});
+}
+
+/**
+ * Move every inbound message to Outlook's Junk Email folder and park the
+ * thread in `EmailStatus.spam`. Outlook's junk filter learns from this,
+ * so future emails from the same sender are auto-routed to junk and
+ * never reach this app's poller.
+ */
+export function markThreadSpam(threadId: string): Promise<EmailThread> {
+  return api.post<EmailThread>(`/api/v1/emails/${threadId}/spam`, {});
+}
+
 export function bulkAction(body: BulkActionRequest): Promise<BulkActionResponse> {
   return api.post<BulkActionResponse>("/api/v1/emails/bulk", body);
 }

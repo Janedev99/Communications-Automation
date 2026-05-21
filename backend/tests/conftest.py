@@ -281,8 +281,10 @@ class RecordingEmailProvider:
 
     def __init__(self):
         self.sent_emails: list[dict] = []
+        self.moved_messages: list[dict] = []  # trash/spam routing log
         self.connect_calls: int = 0
         self.raise_on_send: Exception | None = None
+        self.raise_on_move: Exception | None = None
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -316,6 +318,19 @@ class RecordingEmailProvider:
         }
         self.sent_emails.append(record)
         return message_id or f"<mock-{len(self.sent_emails)}@test.local>"
+
+    def move_message(
+        self,
+        *,
+        internet_message_id: str,
+        destination: str,
+    ) -> None:
+        if self.raise_on_move:
+            raise self.raise_on_move
+        self.moved_messages.append({
+            "internet_message_id": internet_message_id,
+            "destination": destination,
+        })
 
     def disconnect(self) -> None:
         pass

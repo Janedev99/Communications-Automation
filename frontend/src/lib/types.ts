@@ -6,7 +6,9 @@ export type EmailStatus =
   | "pending_review"
   | "sent"
   | "escalated"
-  | "closed";
+  | "closed"
+  | "deleted"  // Moved to Outlook Deleted Items (trash-management terminal)
+  | "spam";    // Moved to Outlook Junk Email (trash-management terminal)
 
 export type EmailCategory =
   | "status_update"

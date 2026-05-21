@@ -50,6 +50,7 @@ from app.models.email import (
     EmailMessage,
     EmailStatus,
     EmailThread,
+    MessageDirection,
     ThreadTier,
 )
 from app.services.tier_engine import decide_tier
@@ -470,6 +471,15 @@ def list_threads(
 
     if thread_status is not None:
         query = query.where(EmailThread.status == thread_status)
+    else:
+        # Default view hides the trash-management terminal states. A user
+        # who wants to browse Deleted / Spam can do so by passing
+        # `?status=deleted` or `?status=spam` explicitly, but the inbox
+        # tab should never surface them by default — that's the whole
+        # point of "trash" as a UX category.
+        query = query.where(
+            EmailThread.status.notin_([EmailStatus.deleted, EmailStatus.spam])
+        )
     if category is not None:
         query = query.where(EmailThread.category == category)
     if saved is True:
@@ -1358,6 +1368,177 @@ def change_thread_status(
 
     db.refresh(thread)
     return EmailThreadResponse.from_thread(thread)
+
+
+# ── Trash management (delete / spam) ──────────────────────────────────────────
+#
+# Two terminal-status endpoints that BOTH (a) move every inbound message in
+# the thread to a designated folder in Outlook via Graph and (b) park the
+# local thread row in a terminal EmailStatus so the inbox view filters it
+# out. Outbound (sent) messages stay in Sent Items — we never touch those.
+#
+# Idempotent by design: clicking trash/spam on an already-terminal thread
+# returns the current state without re-issuing Graph moves. Failure mid-move
+# leaves the DB untouched (transaction never commits) so retries pick up
+# where the failure happened — Graph's /move is itself idempotent for
+# already-moved messages, so retry is safe.
+#
+# Authority: Jane explicitly granted Outlook-side deletion authority in
+# the 2026-05-21 meeting ("I give authority to be able to delete… we're
+# good"). The UI must still show a confirm dialog per Gus's request, but
+# the API does not require an extra "confirmed=true" flag — the dialog
+# lives entirely client-side.
+
+
+def _trash_or_spam_thread(
+    *,
+    request: Request,
+    thread_id: uuid.UUID,
+    target_status: EmailStatus,
+    destination: str,
+    audit_action: str,
+    current_user: User,
+    db: Session,
+) -> EmailThreadResponse:
+    """
+    Shared implementation for the trash + spam endpoints.
+
+    Steps:
+      1. Lookup thread; 404 if missing.
+      2. Idempotent fast-path: if already in target_status, return as-is.
+      3. Refuse if already in the OTHER terminal trash state (deleted vs
+         spam) — they're not interchangeable and the user should have to
+         un-trash before re-classifying. This is a 409 Conflict.
+      4. Move every inbound message via the provider. Outbound messages
+         stay put. Exceptions propagate uncaught — DB is not yet touched.
+      5. Update thread.status, audit log, commit.
+    """
+    thread = db.execute(
+        select(EmailThread)
+        .options(selectinload(EmailThread.messages), selectinload(EmailThread.assigned_to))
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    # Idempotent — already in target. Return current state without doing
+    # anything. Lets the UI tolerate double-clicks and stale tab refreshes.
+    if thread.status == target_status:
+        return EmailThreadResponse.from_thread(thread)
+
+    # Cross-terminal — refuse. Trashing a spam thread (or vice versa) is
+    # almost certainly user confusion and silently doing it would lose the
+    # distinction between "this was junk mail" and "I'm done with this".
+    other_terminal = EmailStatus.spam if target_status == EmailStatus.deleted else EmailStatus.deleted
+    if thread.status == other_terminal:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Thread is currently in '{thread.status.value}'. Restore it "
+                f"to an active status before marking it as '{target_status.value}'."
+            ),
+        )
+
+    inbound_messages = [
+        m for m in thread.messages
+        if m.direction == MessageDirection.inbound
+    ]
+
+    from app.services.email_provider import get_email_provider
+    provider = get_email_provider()
+    provider.connect()
+
+    moved_count = 0
+    for msg in inbound_messages:
+        # message_id_header is the stored internetMessageId — the same
+        # value mark_as_read and fetch_attachment use as input.
+        if not msg.message_id_header:
+            # Defensively skip — a message without an internetMessageId
+            # has no resolvable Graph identifier. Logged at the move
+            # implementation; here we just don't count it as moved.
+            continue
+        provider.move_message(
+            internet_message_id=msg.message_id_header,
+            destination=destination,
+        )
+        moved_count += 1
+
+    previous_status = thread.status
+    thread.status = target_status
+    thread.updated_at = datetime.now(timezone.utc)
+    db.flush()
+
+    log_action(
+        db,
+        action=audit_action,
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "previous_status": previous_status.value,
+            "destination": destination,
+            "messages_moved": moved_count,
+            "inbound_total": len(inbound_messages),
+        },
+    )
+
+    db.refresh(thread)
+    return EmailThreadResponse.from_thread(thread)
+
+
+@router.post("/{thread_id}/trash", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def trash_thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Move all inbound messages in the thread to Outlook's Deleted Items
+    folder and park the thread in EmailStatus.deleted.
+
+    Recoverable: messages remain in Outlook's Deleted Items until Outlook
+    itself purges them per its retention policy. Restore from Outlook if
+    needed. The local thread row stays in our DB for audit.
+    """
+    return _trash_or_spam_thread(
+        request=request,
+        thread_id=thread_id,
+        target_status=EmailStatus.deleted,
+        destination="deleted_items",
+        audit_action="thread.deleted",
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post("/{thread_id}/spam", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
+def mark_thread_spam(
+    request: Request,
+    thread_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """
+    Move all inbound messages in the thread to Outlook's Junk Email folder
+    and park the thread in EmailStatus.spam.
+
+    Marking as junk also trains Outlook's junk filter on the sender — so
+    future emails from the same source are auto-routed to junk and never
+    reach this app's poller. That's the long-term value of the spam button
+    beyond just trash management.
+    """
+    return _trash_or_spam_thread(
+        request=request,
+        thread_id=thread_id,
+        target_status=EmailStatus.spam,
+        destination="junk_email",
+        audit_action="thread.marked_spam",
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.get("/{thread_id}/drafts", response_model=list[DraftResponseResponse])

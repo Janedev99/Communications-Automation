@@ -14,6 +14,7 @@ PUT  /emails/{thread_id}/drafts/{draft_id} — update a draft (review/edit)
 from __future__ import annotations
 
 import json
+import re
 import threading
 import uuid
 from collections import defaultdict
@@ -57,6 +58,7 @@ from app.services.tier_engine import decide_tier
 from app.models.escalation import Escalation, EscalationStatus
 from app.models.user import User
 from app.schemas.email import (
+    AddThreadToKnowledgeBaseRequest,
     AssignRequest,
     BulkActionRequest,
     BulkActionResponse,
@@ -71,6 +73,8 @@ from app.schemas.email import (
     StatusChangeRequest,
     UpdateDraftRequest,
 )
+from app.models.email import KnowledgeEntry
+from app.schemas.knowledge import KnowledgeEntryResponse
 from app.schemas.escalation import EscalationResponse
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
@@ -1539,6 +1543,161 @@ def mark_thread_spam(
         current_user=current_user,
         db=db,
     )
+
+
+# ── Add thread to knowledge base ──────────────────────────────────────────────
+#
+# From the 2026-05-21 client meeting — Jane asked to be able to put a
+# substantial reply she wrote into the knowledge base so future AI drafts
+# could pull from it as context. The feedback loop already learns from
+# every approved/sent draft implicitly (see services/draft_feedback.py),
+# but explicit KB entries are higher-signal: they're authored content
+# Jane has consciously labelled "this is the kind of answer we want."
+
+
+# Subject prefixes that accumulate on reply / forward chains. Stripping
+# them at KB-creation time makes the resulting entries easier to skim and
+# search ("Q3 audit findings" rather than "Re: Re: FW: Q3 audit findings").
+_SUBJECT_PREFIX_RE = re.compile(r"^\s*(re|fwd?|fw):\s*", re.IGNORECASE)
+
+
+def _clean_subject_for_kb(subject: str) -> str:
+    """Strip iterating Re:/Fwd:/FW: prefixes off a subject. Returns the
+    original subject if cleaning would yield an empty string (e.g. a
+    subject that was literally just 'Re:')."""
+    cleaned = subject
+    while True:
+        match = _SUBJECT_PREFIX_RE.match(cleaned)
+        if not match:
+            break
+        cleaned = cleaned[match.end():]
+    cleaned = cleaned.strip()
+    return cleaned or subject
+
+
+def _build_kb_content_from_thread(thread: EmailThread) -> str:
+    """
+    Build a KB-entry body from the thread's latest Q&A exchange.
+
+    Format:
+
+        Question (from <sender>):
+        <latest inbound body>
+
+        Our response:
+        <latest outbound body>
+
+    This shape teaches the AI drafter what a known-good answer to this
+    type of question looks like — paired with the original question for
+    grounded retrieval. If the thread has no outbound message yet, we
+    surface just the question so the entry is still a useful "this is
+    the kind of question we see" reference.
+    """
+    inbound = sorted(
+        [m for m in thread.messages if m.direction == MessageDirection.inbound],
+        key=lambda m: m.received_at,
+    )
+    outbound = sorted(
+        [m for m in thread.messages if m.direction == MessageDirection.outbound],
+        key=lambda m: m.received_at,
+    )
+
+    parts: list[str] = []
+    if inbound:
+        latest_in = inbound[-1]
+        sender = latest_in.sender or "client"
+        body = (latest_in.body_text or latest_in.body_html or "").strip()
+        if body:
+            parts.append(f"Question (from {sender}):\n{body}")
+    if outbound:
+        latest_out = outbound[-1]
+        body = (latest_out.body_text or latest_out.body_html or "").strip()
+        if body:
+            parts.append(f"Our response:\n{body}")
+
+    if not parts:
+        # Pathological — a thread with messages whose bodies are all
+        # blank. Surface the subject as a minimal placeholder so the
+        # KB row isn't an empty string (NOT NULL on content).
+        return f"(Thread: {thread.subject})"
+    return "\n\n".join(parts)
+
+
+@router.post(
+    "/{thread_id}/add-to-knowledge-base",
+    response_model=KnowledgeEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+def add_thread_to_knowledge_base(
+    request: Request,
+    thread_id: uuid.UUID,
+    body: AddThreadToKnowledgeBaseRequest = AddThreadToKnowledgeBaseRequest(),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> KnowledgeEntryResponse:
+    """
+    Create a KnowledgeEntry from this thread's latest Q&A.
+
+    Default title: thread subject (Re:/Fwd: stripped).
+    Default category: thread.category value.
+    Default tags: ['from_email', '<category>'].
+    Default content: latest inbound question + latest outbound response,
+    formatted as a Q&A block.
+
+    Each field can be overridden via the request body. The endpoint
+    audits as `knowledge.created_from_thread` (separate from the regular
+    `knowledge.created` so admin reports can distinguish hand-authored
+    KB entries from thread-derived ones).
+    """
+    thread = db.execute(
+        select(EmailThread)
+        .options(selectinload(EmailThread.messages))
+        .where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    # Resolve defaults with overrides.
+    title = (body.title or "").strip() or _clean_subject_for_kb(thread.subject)
+    category = body.category if body.category is not None else thread.category.value
+    if body.tags is not None:
+        tags = body.tags
+    else:
+        tags = ["from_email", thread.category.value]
+
+    content = _build_kb_content_from_thread(thread)
+
+    entry = KnowledgeEntry(
+        title=title,
+        content=content,
+        category=category,
+        tags=tags or None,  # ARRAY(String) — empty list as NULL keeps the index lean
+        entry_type="snippet",
+        is_active=True,
+        created_by_id=current_user.id,
+    )
+    db.add(entry)
+    db.flush()
+
+    log_action(
+        db,
+        action="knowledge.created_from_thread",
+        entity_type="knowledge_entry",
+        entity_id=str(entry.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "thread_id": str(thread.id),
+            "thread_subject": thread.subject,
+            "category": category,
+            "title": title,
+            "title_was_overridden": body.title is not None,
+            "category_was_overridden": body.category is not None,
+        },
+    )
+
+    return KnowledgeEntryResponse.model_validate(entry)
 
 
 @router.get("/{thread_id}/drafts", response_model=list[DraftResponseResponse])

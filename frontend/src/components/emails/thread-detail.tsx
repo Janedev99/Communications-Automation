@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Bookmark,
   BookmarkCheck,
+  BookPlus,
   CheckCircle,
   ShieldAlert,
   ShieldX,
@@ -24,6 +25,7 @@ import { SaveThreadDialog } from "./save-thread-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { SEVERITY_BADGE_CLASSES, SEVERITY_LABELS } from "@/lib/constants";
 import {
+  addThreadToKnowledgeBase,
   assignThread,
   changeThreadStatus,
   markThreadSpam,
@@ -64,6 +66,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
   // booleans read more clearly at the JSX call sites.
   const [showTrashConfirm, setShowTrashConfirm] = useState(false);
   const [showSpamConfirm, setShowSpamConfirm] = useState(false);
+  const [showAddToKbConfirm, setShowAddToKbConfirm] = useState(false);
 
   const openSaveForThread = () => {
     setSaveMessageId(null);
@@ -157,6 +160,29 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
       router.push("/emails");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Could not mark as spam.");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleAddToKb = async () => {
+    if (actionLoading) return;
+    setActionLoading("kb");
+    try {
+      const entry = await addThreadToKnowledgeBase(thread.id);
+      setShowAddToKbConfirm(false);
+      // Toast with a deep-link so Jane can jump straight to the new
+      // entry if she wants to edit the auto-derived title/content.
+      // sonner's `action` slot renders a button on the right side of
+      // the toast — perfect affordance for "saved → edit now?"
+      toast.success("Added to knowledge base.", {
+        action: {
+          label: "Open",
+          onClick: () => router.push(`/knowledge/${entry.id}`),
+        },
+      });
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not save to knowledge base.");
     } finally {
       setActionLoading(null);
     }
@@ -275,6 +301,21 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 Unassign
               </Button>
             )}
+
+            {/* Add to Knowledge Base — always available, even on closed
+                threads (a resolved thread is often exactly the kind of
+                "settled answer" worth promoting to the KB). */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAddToKbConfirm(true)}
+              disabled={!!actionLoading}
+              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              title="Add this conversation to the knowledge base — future AI drafts can pull from it as context"
+            >
+              <BookPlus className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Add to KB
+            </Button>
 
             {/* Trash + spam: hidden when the thread is already closed
                 (closed threads should be reopened first, not trashed,
@@ -498,6 +539,22 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
         confirmVariant="destructive"
         loading={actionLoading === "spam"}
         onConfirm={handleSpam}
+      />
+
+      <ConfirmDialog
+        open={showAddToKbConfirm}
+        onOpenChange={setShowAddToKbConfirm}
+        title="Add to knowledge base?"
+        description={
+          "Creates a knowledge base entry from this thread's most recent question and " +
+          "response. Future AI drafts can pull from it as context. The default title comes " +
+          "from the subject line and the category from this thread — you can edit either " +
+          "afterwards from the Knowledge Base page."
+        }
+        confirmLabel="Add to KB"
+        confirmVariant="default"
+        loading={actionLoading === "kb"}
+        onConfirm={handleAddToKb}
       />
     </div>
   );

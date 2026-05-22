@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -49,18 +50,23 @@ export default function LoginPage() {
       />
 
       <div className="relative w-full max-w-sm">
-        {/* Brand mark — floats above the card */}
+        {/* Brand mark — Point Profit logo (white-bg JPG; wrapper keeps it on
+            white in both light and dark mode for a consistent presentation) */}
         <div className="flex flex-col items-center mb-6">
-          <div className="w-12 h-12 rounded-xl bg-primary text-primary-foreground font-semibold text-xl flex items-center justify-center shadow-sm ring-1 ring-primary/20">
-            S
+          <div className="bg-white rounded-lg px-4 py-3 shadow-sm ring-1 ring-black/5 dark:ring-white/10">
+            <Image
+              src="/pointprofit-logo.jpg"
+              alt="Point Profit"
+              width={280}
+              height={70}
+              priority
+              className="h-auto w-[240px]"
+            />
           </div>
           <div className="flex items-center gap-2 mt-4">
-            <h1 className="text-2xl font-semibold text-foreground tracking-tight">
-              Schiller CPA
-            </h1>
+            <p className="text-sm text-muted-foreground">Staff Portal</p>
             <AlphaBadge />
           </div>
-          <p className="text-sm text-muted-foreground mt-1">Staff Portal</p>
         </div>
 
         <div className="bg-card rounded-xl border border-border shadow-sm p-7">
@@ -132,7 +138,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-xs text-muted-foreground text-center mt-6">
-          Internal use only · {new Date().getFullYear()} Schiller CPA
+          Internal use only · {new Date().getFullYear()} Point Profit
         </p>
       </div>
     </div>

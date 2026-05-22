@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AlphaBadge } from "@/components/ui/alpha-badge";
 import { api, setCsrfToken } from "@/lib/api";
 import type { LoginResponse } from "@/lib/types";
 
@@ -53,9 +54,12 @@ export default function LoginPage() {
           <div className="w-12 h-12 rounded-xl bg-primary text-primary-foreground font-semibold text-xl flex items-center justify-center shadow-sm ring-1 ring-primary/20">
             S
           </div>
-          <h1 className="text-2xl font-semibold text-foreground tracking-tight mt-4">
-            Schiller CPA
-          </h1>
+          <div className="flex items-center gap-2 mt-4">
+            <h1 className="text-2xl font-semibold text-foreground tracking-tight">
+              Schiller CPA
+            </h1>
+            <AlphaBadge />
+          </div>
           <p className="text-sm text-muted-foreground mt-1">Staff Portal</p>
         </div>
 

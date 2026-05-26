@@ -14,6 +14,7 @@ PUT  /emails/{thread_id}/drafts/{draft_id} — update a draft (review/edit)
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import uuid
@@ -21,12 +22,15 @@ from collections import defaultdict
 from datetime import datetime, date, timezone
 from typing import AsyncGenerator, DefaultDict, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_iso_utc(s: str) -> datetime:
@@ -657,7 +661,7 @@ def download_attachment(
     provider = get_email_provider()
     try:
         provider.connect()
-        content_bytes, filename, content_type = provider.fetch_attachment(
+        content_iter, filename, content_type = provider.fetch_attachment(
             internet_message_id=msg.message_id_header,
             attachment_id=persisted_id,
             attachment_index=None if persisted_id else attachment_index,
@@ -679,6 +683,36 @@ def download_attachment(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         )
+    except httpx.HTTPStatusError as exc:
+        # Graph (or any other upstream provider) returned a non-2xx that the
+        # provider's raise_for_status() bubbled up. Without this handler the
+        # error fell through as a generic FastAPI 500 — but the failure isn't
+        # in our service, it's upstream. 502 Bad Gateway is the honest
+        # status: "I'm a gateway and the inbound server gave me garbage."
+        # Log the upstream details for diagnostics; surface a generic message
+        # to the client so we don't leak Graph internals.
+        upstream_status = exc.response.status_code
+        logger.warning(
+            "Attachment download upstream failure: HTTP %d for message_id=%s "
+            "attachment=%s response_body=%s",
+            upstream_status,
+            msg.message_id_header,
+            persisted_id or f"index:{attachment_index}",
+            exc.response.text[:500],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Failed to fetch attachment from the email provider "
+                f"(upstream returned HTTP {upstream_status}). Try again shortly."
+            ),
+        )
+
+    # Stored size comes from the poll-time metadata so we don't need to
+    # buffer the whole binary to know it. Falls back to None on legacy rows
+    # that didn't persist size at poll time — in that case Content-Length is
+    # omitted and the response uses chunked transfer encoding.
+    stored_size = stored.get("size") if isinstance(stored, dict) else None
 
     # Audit-log the download — sensitive tax docs flow through this path.
     log_action(
@@ -689,7 +723,7 @@ def download_attachment(
         details={
             "thread_id": str(thread_id),
             "filename": filename,
-            "size": len(content_bytes),
+            "size": stored_size,
             "content_type": content_type,
             "attachment_index": attachment_index,
         },
@@ -709,11 +743,15 @@ def download_attachment(
             f'attachment; filename="{safe_ascii}"; '
             f"filename*=UTF-8''{quoted_utf8}"
         ),
-        "Content-Length": str(len(content_bytes)),
     }
-    import io
+    if stored_size is not None:
+        headers["Content-Length"] = str(stored_size)
+
+    # content_iter streams chunks directly from the upstream provider — no
+    # BytesIO wrap, no full-file buffer in memory. A 50MB attachment now
+    # peaks at ~64KB resident (chunk size) instead of 50MB.
     return StreamingResponse(
-        io.BytesIO(content_bytes),
+        content_iter,
         media_type=content_type or "application/octet-stream",
         headers=headers,
     )

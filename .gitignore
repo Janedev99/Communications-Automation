@@ -79,6 +79,9 @@ frontend/out/
 # Backend virtual env
 backend/venv/
 
+# Build-time release metadata (abandoned pattern — release notes draft from GitHub API at runtime)
+release-meta.json
+
 # Claude Code local agent state (not part of the product)
 .claude/
 

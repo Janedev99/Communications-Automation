@@ -86,7 +86,10 @@ def test_download_with_persisted_attachment_id(logged_in_staff, db_session):
         attachments=[{"filename": "tax-doc.pdf", "size": 1234, "content_type": "application/pdf", "attachment_id": "att-graph-id-1"}],
     )
 
-    payload = (b"fake pdf binary content for test", "tax-doc.pdf", "application/pdf")
+    # fetch_attachment now returns (chunk_iterator, filename, content_type)
+    # — wrap the bytes in iter() to simulate the streaming contract.
+    body = b"fake pdf binary content for test"
+    payload = (iter([body]), "tax-doc.pdf", "application/pdf")
     with patch("app.services.email_provider.get_email_provider") as get_prov:
         prov = MagicMock()
         prov.fetch_attachment.return_value = payload
@@ -122,7 +125,7 @@ def test_download_falls_back_to_index_for_legacy_rows(logged_in_staff, db_sessio
 
     with patch("app.services.email_provider.get_email_provider") as get_prov:
         prov = MagicMock()
-        prov.fetch_attachment.return_value = (b"legacy content", "legacy.pdf", "application/pdf")
+        prov.fetch_attachment.return_value = (iter([b"legacy content"]), "legacy.pdf", "application/pdf")
         get_prov.return_value = prov
 
         resp = logged_in_staff.get(
@@ -249,7 +252,7 @@ def test_download_writes_audit_log_entry(logged_in_staff, db_session):
     )
     with patch("app.services.email_provider.get_email_provider") as get_prov:
         prov = MagicMock()
-        prov.fetch_attachment.return_value = (b"x" * 2048, "K-1.pdf", "application/pdf")
+        prov.fetch_attachment.return_value = (iter([b"x" * 2048]), "K-1.pdf", "application/pdf")
         get_prov.return_value = prov
 
         resp = logged_in_staff.get(
@@ -281,7 +284,7 @@ def test_download_handles_non_ascii_filename(logged_in_staff, db_session):
     )
     with patch("app.services.email_provider.get_email_provider") as get_prov:
         prov = MagicMock()
-        prov.fetch_attachment.return_value = (b"content", "déclaration_fiscale_2025.pdf", "application/pdf")
+        prov.fetch_attachment.return_value = (iter([b"content"]), "déclaration_fiscale_2025.pdf", "application/pdf")
         get_prov.return_value = prov
 
         resp = logged_in_staff.get(

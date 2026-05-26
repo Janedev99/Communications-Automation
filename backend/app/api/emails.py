@@ -14,6 +14,7 @@ PUT  /emails/{thread_id}/drafts/{draft_id} — update a draft (review/edit)
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import uuid
@@ -21,12 +22,15 @@ from collections import defaultdict
 from datetime import datetime, date, timezone
 from typing import AsyncGenerator, DefaultDict, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_iso_utc(s: str) -> datetime:
@@ -678,6 +682,30 @@ def download_attachment(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
+        )
+    except httpx.HTTPStatusError as exc:
+        # Graph (or any other upstream provider) returned a non-2xx that the
+        # provider's raise_for_status() bubbled up. Without this handler the
+        # error fell through as a generic FastAPI 500 — but the failure isn't
+        # in our service, it's upstream. 502 Bad Gateway is the honest
+        # status: "I'm a gateway and the inbound server gave me garbage."
+        # Log the upstream details for diagnostics; surface a generic message
+        # to the client so we don't leak Graph internals.
+        upstream_status = exc.response.status_code
+        logger.warning(
+            "Attachment download upstream failure: HTTP %d for message_id=%s "
+            "attachment=%s response_body=%s",
+            upstream_status,
+            msg.message_id_header,
+            persisted_id or f"index:{attachment_index}",
+            exc.response.text[:500],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Failed to fetch attachment from the email provider "
+                f"(upstream returned HTTP {upstream_status}). Try again shortly."
+            ),
         )
 
     # Audit-log the download — sensitive tax docs flow through this path.

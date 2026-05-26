@@ -186,6 +186,41 @@ def test_download_404_when_provider_message_not_found(logged_in_staff, db_sessio
     assert "not found" in resp.json()["detail"].lower()
 
 
+# ── 6b. Upstream Graph 5xx maps to 502 Bad Gateway ────────────────────────────
+
+def test_download_502_when_upstream_graph_returns_5xx(logged_in_staff, db_session):
+    """When Graph returns a 5xx and the provider's raise_for_status() bubbles
+    it up as httpx.HTTPStatusError, the route should surface 502 Bad Gateway
+    (not a generic 500). The failure is upstream, not in our service."""
+    import httpx
+
+    thread, msg = _make_thread_with_message(
+        db_session,
+        attachments=[{"filename": "doc.pdf", "size": 100, "content_type": "application/pdf", "attachment_id": "att-1"}],
+    )
+
+    # Build a realistic httpx.HTTPStatusError with a 503 response
+    fake_request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/users/x/messages/y/attachments/z")
+    fake_response = httpx.Response(503, request=fake_request, text="ServiceUnavailable")
+    err = httpx.HTTPStatusError("503 from Graph", request=fake_request, response=fake_response)
+
+    with patch("app.services.email_provider.get_email_provider") as get_prov:
+        prov = MagicMock()
+        prov.fetch_attachment.side_effect = err
+        get_prov.return_value = prov
+
+        resp = logged_in_staff.get(
+            f"/api/v1/emails/{thread.id}/messages/{msg.id}/attachments/0/download"
+        )
+
+    assert resp.status_code == 502
+    # The client message should mention the upstream status so callers can
+    # retry intelligently, but not leak Graph internals like response_body.
+    detail = resp.json()["detail"]
+    assert "503" in detail
+    assert "ServiceUnavailable" not in detail  # no upstream body bleed-through
+
+
 # ── 7. Provider doesn't support download (e.g. IMAP) ──────────────────────────
 
 def test_download_501_when_provider_doesnt_support(logged_in_staff, db_session):

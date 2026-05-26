@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { splitEmailSignature } from "@/lib/email/signature-detection";
@@ -167,6 +167,10 @@ interface MessageBodyProps {
 export function MessageBody({ text, variant }: MessageBodyProps) {
   const [showQuoted, setShowQuoted] = useState(false);
   const [showSignature, setShowSignature] = useState(false);
+  // Per-instance DOM id so multiple <MessageBody> elements on the same
+  // page (e.g. a 5-message thread) don't all reuse aria-controls="quoted-content"
+  // and break screen-reader association.
+  const quotedRegionId = `${useId()}-quoted`;
 
   if (!text) {
     return (
@@ -257,7 +261,7 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
                 : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground ring-1 ring-border",
             )}
             aria-expanded={showQuoted}
-            aria-controls="quoted-content"
+            aria-controls={quotedRegionId}
           >
             {showQuoted ? (
               <ChevronDown className="w-3 h-3" />
@@ -271,7 +275,7 @@ export function MessageBody({ text, variant }: MessageBodyProps) {
 
           {showQuoted && (
             <div
-              id="quoted-content"
+              id={quotedRegionId}
               className={cn(
                 "mt-2 pl-3 border-l-2 flex flex-col gap-2",
                 outbound ? "border-white/25" : "border-border",

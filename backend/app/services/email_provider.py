@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any
+from typing import Any, Iterator
 
 import re
 
@@ -161,10 +161,16 @@ class EmailProvider(ABC):
         internet_message_id: str,
         attachment_id: str | None = None,
         attachment_index: int | None = None,
-    ) -> tuple[bytes, str, str | None]:
+    ) -> tuple[Iterator[bytes], str, str | None]:
         """
         Fetch a specific attachment's binary content for an already-polled
-        message. Returns (content_bytes, filename, content_type).
+        message. Returns ``(chunk_iterator, filename, content_type)``.
+
+        The iterator yields binary chunks streamed directly from the upstream
+        provider. Callers (e.g. ``StreamingResponse``) iterate without
+        buffering the full content in memory. The underlying upstream
+        response is held open by the iterator and released when iteration
+        completes or the consumer disconnects.
 
         Caller provides either:
           - attachment_id (preferred — direct lookup, single API call), or
@@ -382,13 +388,19 @@ class MSGraphProvider(EmailProvider):
         internet_message_id: str,
         attachment_id: str | None = None,
         attachment_index: int | None = None,
-    ) -> tuple[bytes, str, str | None]:
+    ) -> tuple[Iterator[bytes], str, str | None]:
         """
-        Fetch a single attachment's binary content from MS Graph.
+        Stream a single attachment's binary content from MS Graph.
 
-        Prefers `attachment_id` (stored at poll time on new rows) for a direct
-        lookup. Falls back to `attachment_index` for legacy rows by listing
-        the message's attachments and picking the Nth non-inline one.
+        Two-call pattern: a small JSON ``?$select=name,contentType`` lookup
+        for the metadata, then ``/$value`` opened with ``httpx.stream()`` for
+        the binary body. The binary is yielded chunk-by-chunk so the route
+        never has the full file resident in memory — 50MB attachments
+        download with ~64KB peak memory instead of 50MB peak.
+
+        Prefers ``attachment_id`` (stored at poll time on new rows) for a
+        direct lookup. Falls back to ``attachment_index`` for legacy rows by
+        listing the message's attachments and picking the Nth non-inline one.
 
         Raises:
           - LookupError if the message itself can't be found in the mailbox
@@ -399,7 +411,6 @@ class MSGraphProvider(EmailProvider):
         if attachment_id is None and attachment_index is None:
             raise ValueError("Provide either attachment_id or attachment_index")
 
-        import base64
         mailbox = self._settings.msgraph_mailbox
         graph_id = self._resolve_graph_message_id(internet_message_id)
         if graph_id is None:
@@ -425,30 +436,37 @@ class MSGraphProvider(EmailProvider):
                     f"Attachment index {attachment_index} out of range "
                     f"(message has {len(atts)} non-inline attachments)"
                 )
+                # NOTE: in the legacy path we already have name + contentType
+                # from the list response (atts[attachment_index]); we still
+                # do the explicit metadata fetch below to keep both paths
+                # using the same shape. The extra call is tiny relative to
+                # the streamed binary.
             attachment_id = atts[attachment_index]["id"]
 
-        # Fetch the full attachment object — `contentBytes` is a base64 string
-        # for the standard fileAttachment resource type. Use $value for a raw
-        # binary response if the type is itemAttachment (calendar invites etc.)
-        # but that's rare; defaulting to /$value works for fileAttachment too.
-        get_url = (
+        attachment_base = (
             f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
             f"/attachments/{attachment_id}"
         )
-        resp = self._client.get(get_url, headers=self._headers())
-        resp.raise_for_status()
-        att = resp.json()
-        content_b64 = att.get("contentBytes")
-        if not content_b64:
-            raise LookupError(
-                f"Attachment {attachment_id!r} has no contentBytes "
-                "(may be an itemAttachment / inaccessible reference)"
-            )
-        return (
-            base64.b64decode(content_b64),
-            att.get("name") or "attachment",
-            att.get("contentType"),
-        )
+
+        # 1. Metadata first — small JSON, ~1KB. Selects only name + contentType
+        # so contentBytes (the base64 payload that used to drive the in-memory
+        # spike) is never sent over the wire.
+        meta_url = f"{attachment_base}?$select=name,contentType"
+        meta_resp = self._client.get(meta_url, headers=self._headers())
+        meta_resp.raise_for_status()
+        meta = meta_resp.json()
+        filename = meta.get("name") or "attachment"
+        content_type = meta.get("contentType")
+
+        # 2. Binary stream — open the upstream response inside a generator so
+        # the connection stays alive while StreamingResponse consumes chunks
+        # and closes cleanly on completion or client disconnect.
+        def _chunks() -> Iterator[bytes]:
+            with self._client.stream("GET", f"{attachment_base}/$value", headers=self._headers()) as resp:
+                resp.raise_for_status()
+                yield from resp.iter_bytes(chunk_size=64 * 1024)
+
+        return (_chunks(), filename, content_type)
 
     # Logical → Graph well-known folder ID mapping. Graph accepts these
     # string aliases anywhere a folder ID is required, so we don't have to

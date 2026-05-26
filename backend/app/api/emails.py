@@ -657,7 +657,7 @@ def download_attachment(
     provider = get_email_provider()
     try:
         provider.connect()
-        content_bytes, filename, content_type = provider.fetch_attachment(
+        content_iter, filename, content_type = provider.fetch_attachment(
             internet_message_id=msg.message_id_header,
             attachment_id=persisted_id,
             attachment_index=None if persisted_id else attachment_index,
@@ -680,6 +680,12 @@ def download_attachment(
             detail=str(exc),
         )
 
+    # Stored size comes from the poll-time metadata so we don't need to
+    # buffer the whole binary to know it. Falls back to None on legacy rows
+    # that didn't persist size at poll time — in that case Content-Length is
+    # omitted and the response uses chunked transfer encoding.
+    stored_size = stored.get("size") if isinstance(stored, dict) else None
+
     # Audit-log the download — sensitive tax docs flow through this path.
     log_action(
         db,
@@ -689,7 +695,7 @@ def download_attachment(
         details={
             "thread_id": str(thread_id),
             "filename": filename,
-            "size": len(content_bytes),
+            "size": stored_size,
             "content_type": content_type,
             "attachment_index": attachment_index,
         },
@@ -709,11 +715,15 @@ def download_attachment(
             f'attachment; filename="{safe_ascii}"; '
             f"filename*=UTF-8''{quoted_utf8}"
         ),
-        "Content-Length": str(len(content_bytes)),
     }
-    import io
+    if stored_size is not None:
+        headers["Content-Length"] = str(stored_size)
+
+    # content_iter streams chunks directly from the upstream provider — no
+    # BytesIO wrap, no full-file buffer in memory. A 50MB attachment now
+    # peaks at ~64KB resident (chunk size) instead of 50MB.
     return StreamingResponse(
-        io.BytesIO(content_bytes),
+        content_iter,
         media_type=content_type or "application/octet-stream",
         headers=headers,
     )

@@ -23,6 +23,7 @@ const ENDPOINT = "/api/v1/tier-rules";
 const T1_LOCKED_CATEGORIES: ReadonlySet<EmailCategory> = new Set<EmailCategory>([
   "complaint",
   "urgent",
+  "promotional",
   "uncategorized",
 ]);
 
@@ -34,6 +35,7 @@ const CATEGORY_LABELS: Record<EmailCategory, string> = {
   general_inquiry: "General inquiry",
   complaint: "Complaint",
   urgent: "Urgent",
+  promotional: "Promotional",
   uncategorized: "Uncategorized",
 };
 
@@ -45,6 +47,7 @@ const CATEGORY_DESCRIPTIONS: Record<EmailCategory, string> = {
   general_inquiry: "General questions about services, pricing, or processes.",
   complaint: "Client expressing dissatisfaction. Always requires staff review.",
   urgent: "Time-sensitive matter (deadlines, audit notices). Always staff-reviewed.",
+  promotional: "Automated / no-reply mail (newsletters, notifications, marketing). No draft is generated.",
   uncategorized: "Cannot be classified by the AI. Always staff-reviewed.",
 };
 

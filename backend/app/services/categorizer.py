@@ -60,7 +60,47 @@ CATEGORY_DESCRIPTIONS = {
     EmailCategory.general_inquiry: "General questions about services, pricing, or processes",
     EmailCategory.complaint: "Client expressing dissatisfaction, frustration, or making a formal complaint",
     EmailCategory.urgent: "Time-sensitive matter requiring immediate attention (imminent IRS deadline, audit notice with short response window, etc.)",
+    EmailCategory.promotional: "Automated, bulk, or no-reply mail that needs no human response — marketing/promotions, newsletters, social or app notifications (e.g. LinkedIn, Pinterest), brand subscriptions, and automated receipts or confirmations",
 }
+
+
+# Sender local-parts that are near-universally automated, no-reply bulk mail.
+# Conservative on purpose — a real client almost never emails from these. Used
+# as a pre-LLM fast path so obvious promotional mail is classified without an
+# AI call (saves credits). Content-based promo (e.g. recommendations@…) still
+# falls through to the LLM, which has the `promotional` category available.
+_AUTOMATED_LOCALPART_RE = re.compile(
+    r"(?:^|[._+-])(?:"
+    r"no-?reply|no_reply|do-?not-?reply|donotreply|"
+    r"notifications?|newsletters?|mailer(?:-daemon)?|mailout|bounce|"
+    r"marketing|promo(?:tions?)?"
+    r")(?:[._+-]|$)",
+    re.IGNORECASE,
+)
+
+_SENDER_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+")
+
+
+def _automated_sender_result(sender: str) -> "CategorizationResult | None":
+    """Classify obvious automated / no-reply senders as promotional so the
+    categorizer can skip the LLM entirely for them. Matches the email's LOCAL
+    part against a conservative set of bulk-mail tokens; returns None when the
+    sender doesn't clearly look automated (those go to the LLM)."""
+    match = _SENDER_EMAIL_RE.search(sender or "")
+    if match is None:
+        return None
+    local = match.group(0).split("@", 1)[0]
+    if not _AUTOMATED_LOCALPART_RE.search(local):
+        return None
+    return CategorizationResult(
+        category=EmailCategory.promotional,
+        confidence=0.95,
+        escalation_needed=False,
+        escalation_reasons=[],
+        summary="Automated / no-reply mail — no response needed.",
+        suggested_reply_tone="professional",
+        source=CategorizationSource.rules_fallback,
+    )
 
 ESCALATION_TRIGGERS = [
     "Client complaints — dissatisfaction, formal complaints",
@@ -316,6 +356,17 @@ class CategorizerService:
         Never raises — on any error, returns a safe fallback result with
         escalation_needed=True.
         """
+        # Fast path: obvious automated / no-reply senders are promotional and
+        # need no reply — classify deterministically and skip the LLM entirely
+        # to save AI credits (content-based promo still falls through to the LLM).
+        auto = _automated_sender_result(sender)
+        if auto is not None:
+            logger.info(
+                "Categorizer: %r matched automated-sender heuristic → promotional (no LLM call)",
+                sender,
+            )
+            return auto
+
         # T2.3: Budget check (BudgetExceededError → fallback)
         try:
             from app.services.ai_budget import check_budget, record_usage

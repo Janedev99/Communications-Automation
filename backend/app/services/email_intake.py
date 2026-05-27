@@ -205,6 +205,32 @@ def _store_message(db: Session, thread: EmailThread, raw: RawEmail) -> EmailMess
     return message
 
 
+def _should_generate_draft(
+    *,
+    escalated: bool,
+    tier: ThreadTier,
+    category: EmailCategory,
+    draft_auto_generate: bool,
+) -> bool:
+    """Whether to auto-generate an AI draft for a newly-processed thread.
+
+    - Escalated or T3 → no (a human handles these).
+    - Promotional / automated mail → no (no reply needed; saves AI credits).
+    - Otherwise gated only by ``draft_auto_generate``.
+
+    Note: shadow_mode does NOT appear here. Drafts are generated even in shadow
+    mode — shadow_mode gates only auto-SEND (see auto_send.maybe_auto_send), so a
+    T1 thread gets a draft for review when auto-send is off and is auto-sent only
+    when auto-send is enabled.
+    """
+    return (
+        not escalated
+        and tier != ThreadTier.t3_escalate
+        and category != EmailCategory.promotional
+        and draft_auto_generate
+    )
+
+
 def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
     """
     Process one raw email: store it, categorize, check escalation.
@@ -314,11 +340,11 @@ def process_single_email(db: Session, raw: RawEmail) -> uuid.UUID | None:
     # T1.8: Return thread_id for deferred draft generation only if appropriate.
     # T3 (escalated) skips draft generation. T1 + T2 both get drafts; T1 may
     # additionally trigger auto-send in a future enhancement (currently shadow-only).
-    should_generate_draft = (
-        not escalation
-        and tier_decision.tier != ThreadTier.t3_escalate
-        and settings.draft_auto_generate
-        and not settings.shadow_mode  # T2.4: Shadow mode disables auto-draft
+    should_generate_draft = _should_generate_draft(
+        escalated=escalation is not None,
+        tier=tier_decision.tier,
+        category=result.category,
+        draft_auto_generate=settings.draft_auto_generate,
     )
     return thread.id if should_generate_draft else None
 

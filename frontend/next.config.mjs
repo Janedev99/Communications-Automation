@@ -13,7 +13,13 @@ const nextConfig = {
     const csp = [
       "default-src 'self'",
       `connect-src 'self' ${apiBaseUrl}`,
-      "img-src 'self' data: blob:",
+      // Images: own origin + data/blob, the API origin (inline cid: images are
+      // streamed from there cross-origin), and any https host. The broad
+      // `https:` is required so opt-in remote email images can load — the
+      // tracking-pixel risk is gated in the app (remote images are blocked by
+      // default behind a "Show images" toggle), not at the CSP layer. Images
+      // are passive content (no script execution), so this stays low-risk.
+      `img-src 'self' data: blob: https: ${apiBaseUrl}`,
       "style-src 'self' 'unsafe-inline'",
       // 'unsafe-eval' required by Next.js dev mode; acceptable for SPA apps
       "script-src 'self' 'unsafe-eval' 'unsafe-inline'",

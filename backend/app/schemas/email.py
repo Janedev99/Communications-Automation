@@ -54,6 +54,9 @@ class EmailMessageResponse(BaseModel):
     sender: str
     recipient: str | None
     body_text: str | None
+    # Raw HTML body (sanitized client-side before render). Powers inline-image
+    # display; the UI falls back to body_text when this is null.
+    body_html: str | None = None
     received_at: datetime
     direction: MessageDirection
     is_processed: bool

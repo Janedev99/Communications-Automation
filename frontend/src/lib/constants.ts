@@ -54,6 +54,7 @@ export const CATEGORY_LABELS: Record<EmailCategory, string> = {
   general_inquiry: "General Inquiry",
   complaint: "Complaint",
   urgent: "Urgent",
+  promotional: "Promotional",
   uncategorized: "Uncategorized",
 };
 
@@ -65,6 +66,7 @@ export const CATEGORY_BADGE_CLASSES: Record<EmailCategory, string> = {
   general_inquiry:  "bg-muted text-muted-foreground ring-1 ring-inset ring-border",
   complaint:        "bg-orange-50  text-orange-700  ring-1 ring-inset ring-orange-200  dark:bg-orange-500/15  dark:text-orange-300  dark:ring-orange-500/30",
   urgent:           "bg-red-50     text-red-700     ring-1 ring-inset ring-red-200     dark:bg-red-500/15     dark:text-red-300     dark:ring-red-500/30",
+  promotional:      "bg-pink-50    text-pink-700    ring-1 ring-inset ring-pink-200    dark:bg-pink-500/15    dark:text-pink-300    dark:ring-pink-500/30",
   uncategorized:    "bg-muted text-muted-foreground ring-1 ring-inset ring-border",
 };
 

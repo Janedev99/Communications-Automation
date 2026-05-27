@@ -18,6 +18,7 @@ export type EmailCategory =
   | "general_inquiry"
   | "complaint"
   | "urgent"
+  | "promotional"
   | "uncategorized";
 
 export type DraftStatus = "pending" | "edited" | "approved" | "rejected" | "sent" | "send_failed";

@@ -28,9 +28,12 @@ from app.utils.audit import log_action
 # - complaint  : an angry client should never get an auto-reply.
 # - urgent     : high-stakes by definition; needs human eyes.
 # - uncategorized : we don't even know what it is — defer to staff.
+# - promotional : automated/no-reply mail gets no draft at all, so T1 auto-send
+#                 is nonsensical for it.
 T1_LOCKED_CATEGORIES: frozenset[EmailCategory] = frozenset({
     EmailCategory.complaint,
     EmailCategory.urgent,
+    EmailCategory.promotional,
     EmailCategory.uncategorized,
 })
 

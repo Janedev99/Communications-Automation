@@ -14,6 +14,7 @@ import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ExportDialog } from "@/components/emails/export-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { BulkSaveDialog } from "@/components/emails/bulk-save-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
@@ -47,9 +48,13 @@ export default function EmailsPage() {
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkLoading, setBulkLoading] = useState(false);
+  // Which bulk action is in flight (null = idle). Tracking the specific action,
+  // not a bare boolean, lets each control show its own busy state instead of
+  // the spinner always landing on the "Resolve" button.
+  const [bulkPending, setBulkPending] = useState<BulkActionRequest["action"] | null>(null);
   const [showBulkSpam, setShowBulkSpam] = useState(false);
   const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [showBulkSave, setShowBulkSave] = useState(false);
 
   // Re-apply URL params if they change (e.g. navigating from thread detail)
   useEffect(() => {
@@ -157,8 +162,8 @@ export default function EmailsPage() {
     action: BulkActionRequest["action"],
     params?: BulkActionRequest["params"],
   ) => {
-    if (selectedIds.size === 0 || bulkLoading) return;
-    setBulkLoading(true);
+    if (selectedIds.size === 0 || bulkPending !== null) return;
+    setBulkPending(action);
     try {
       const res = await bulkAction({
         thread_ids: Array.from(selectedIds),
@@ -183,9 +188,10 @@ export default function EmailsPage() {
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Bulk action failed.");
     } finally {
-      setBulkLoading(false);
+      setBulkPending(null);
       setShowBulkSpam(false);
       setShowBulkDelete(false);
+      setShowBulkSave(false);
     }
   };
 
@@ -280,16 +286,16 @@ export default function EmailsPage() {
               variant="outline"
               size="sm"
               onClick={() => runBulkAction("close")}
-              disabled={bulkLoading}
+              disabled={bulkPending !== null}
               className="h-7 text-xs"
             >
-              {bulkLoading ? "Working…" : "Resolve"}
+              {bulkPending === "close" ? "Working…" : "Resolve"}
             </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => runBulkAction("save")}
-              disabled={bulkLoading}
+              onClick={() => setShowBulkSave(true)}
+              disabled={bulkPending !== null}
               className="h-7 text-xs gap-1.5"
             >
               <Bookmark className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
@@ -299,7 +305,7 @@ export default function EmailsPage() {
               variant="outline"
               size="sm"
               onClick={() => setShowBulkSpam(true)}
-              disabled={bulkLoading}
+              disabled={bulkPending !== null}
               className="h-7 text-xs gap-1.5 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
             >
               <ShieldX className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
@@ -309,7 +315,7 @@ export default function EmailsPage() {
               variant="outline"
               size="sm"
               onClick={() => setShowBulkDelete(true)}
-              disabled={bulkLoading}
+              disabled={bulkPending !== null}
               className="h-7 text-xs gap-1.5 text-destructive hover:bg-destructive/10"
             >
               <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
@@ -365,7 +371,7 @@ export default function EmailsPage() {
         }
         confirmLabel="Mark as spam"
         confirmVariant="destructive"
-        loading={bulkLoading}
+        loading={bulkPending === "spam"}
         onConfirm={() => runBulkAction("spam")}
       />
 
@@ -379,8 +385,16 @@ export default function EmailsPage() {
         }
         confirmLabel="Delete"
         confirmVariant="destructive"
-        loading={bulkLoading}
+        loading={bulkPending === "delete"}
         onConfirm={() => runBulkAction("delete")}
+      />
+
+      <BulkSaveDialog
+        open={showBulkSave}
+        onOpenChange={setShowBulkSave}
+        count={selectedIds.size}
+        loading={bulkPending === "save"}
+        onConfirm={(folder) => runBulkAction("save", { folder })}
       />
     </div>
   );

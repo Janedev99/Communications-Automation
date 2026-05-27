@@ -41,6 +41,7 @@ def test_rendered_system_prompt_uses_real_owner_name_not_the_bug():
         knowledge_context="(none)",
         feedback_examples="",
         feedback_negatives="",
+        closing_rule="(closing rule injected at runtime)",
     )
     assert "Jane Schilmoeller" in rendered
     # "Jane Schiller" was the firm-derived hallucination we fixed.

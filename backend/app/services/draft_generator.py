@@ -73,14 +73,7 @@ reached the wrong place:
 - Schilmoeller & Schoenfield, PC (schilcpa.com)
 - Point Profit (pointprofit.com)
 
-SIGN-OFF / BRANDING (decide from the conversation content):
-- If this conversation clearly concerns Point Profit (the sender references Point Profit, \
-writes from or to a pointprofit.com address, or the subject matter is Point Profit's work), \
-sign off under Point Profit.
-- If it clearly concerns Schilmoeller & Schoenfield (references the firm / schilcpa.com or \
-its work), sign off under Schilmoeller & Schoenfield, PC.
-- If neither brand is clearly indicated, sign off simply as {firm_owner_name} — do not \
-name or guess a brand.
+{closing_rule}
 
 RULES:
 - Be professional, warm, and concise
@@ -117,6 +110,38 @@ Summary: {ai_summary}
 Write a complete email reply. Do not include a subject line — only the body.
 {signoff_instruction}\
 """
+
+# Closing rule injected into the system prompt. Two mutually-exclusive variants:
+#
+# _CLOSING_RULE_WITH_SIGNATURE — used when Jane has configured a signature. The
+# model must NOT invent its own closing/brand sign-off; we append the configured
+# signature verbatim in code after generation. Suppressing the branding rule here
+# is the fix for drafts that "didn't use the signature": previously the system
+# prompt's branding rule competed with (and sometimes won over) the configured
+# signature instruction in the user prompt.
+#
+# _CLOSING_RULE_BRANDING — used when NO signature is configured. Content-driven
+# brand sign-off, the original behavior.
+#
+# Both carry a `{firm_owner_name}` field and must be .format()-ed BEFORE being
+# substituted into the system template (str.format does a single pass, so a
+# placeholder left inside an injected value would not be re-expanded).
+_CLOSING_RULE_WITH_SIGNATURE = """\
+CLOSING:
+- Do NOT write any closing line, salutation, sign-off, name, title, or signature \
+of your own (no "Best regards", "Thanks", "Sincerely", a name, etc.).
+- End your reply with its final substantive sentence. {firm_owner_name}'s signature \
+is appended automatically after your text."""
+
+_CLOSING_RULE_BRANDING = """\
+SIGN-OFF / BRANDING (decide from the conversation content):
+- If this conversation clearly concerns Point Profit (the sender references Point Profit, \
+writes from or to a pointprofit.com address, or the subject matter is Point Profit's work), \
+sign off under Point Profit.
+- If it clearly concerns Schilmoeller & Schoenfield (references the firm / schilcpa.com or \
+its work), sign off under Schilmoeller & Schoenfield, PC.
+- If neither brand is clearly indicated, sign off simply as {firm_owner_name} — do not \
+name or guess a brand."""
 
 # How many characters of thread history to send (guards against token overflow)
 _THREAD_CHAR_LIMIT = 6000
@@ -289,6 +314,17 @@ class DraftGeneratorService:
         # Build prompts — tone_override takes precedence over the thread's suggested tone
         suggested_tone = tone_override or thread.suggested_reply_tone or "professional"
 
+        # Read Jane's configured signature once, up front — it drives BOTH the
+        # system-prompt closing rule and the deterministic append after the LLM
+        # returns. When set, the model is told to write no closing of its own and
+        # we append the signature verbatim in code (reliable, byte-exact). When
+        # unset, fall back to the content-driven brand sign-off.
+        from app.services import system_settings as _ss
+        configured_signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
+        closing_rule = (
+            _CLOSING_RULE_WITH_SIGNATURE if configured_signature else _CLOSING_RULE_BRANDING
+        ).format(firm_owner_name=self._firm_owner_name)
+
         system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             firm_name=self._firm_name,
             firm_owner_name=self._firm_owner_name,
@@ -297,6 +333,7 @@ class DraftGeneratorService:
             knowledge_context=knowledge_context,
             feedback_examples=feedback_examples_block,
             feedback_negatives=feedback_negatives_block,
+            closing_rule=closing_rule,
         )
 
         # Brand-context hint — which of Jane's addresses the sender wrote to,
@@ -314,16 +351,14 @@ class DraftGeneratorService:
                     "(brand-context hint — the conversation content takes precedence)\n"
                 )
 
-        # Sign-off: if Jane has configured a signature, the AI must end with it
-        # verbatim (overriding the branding rule). Otherwise fall back to the
-        # content-driven SIGN-OFF rule from the system prompt.
-        from app.services import system_settings as _ss
-        configured_signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
+        # User-prompt closing reminder, consistent with the system-prompt
+        # closing_rule above. With a signature configured the model writes NO
+        # closing of its own (we append the signature in code after generation);
+        # otherwise it applies the content-driven brand sign-off.
         if configured_signature:
             signoff_instruction = (
-                "End the reply with EXACTLY this signature block, verbatim — do not "
-                "write any other closing, sign-off, or signature of your own:\n\n"
-                f"{configured_signature}"
+                "Do not add any closing, sign-off, name, or signature — end with your "
+                "final substantive sentence. The signature is appended automatically."
             )
         else:
             signoff_instruction = (
@@ -506,6 +541,15 @@ class DraftGeneratorService:
 
         if not draft_body:
             raise ValueError("LLM returned an empty draft body.")
+
+        # Deterministically guarantee Jane's configured signature is present and
+        # byte-exact. The model was instructed to write no closing of its own, so
+        # we simply append; the `not in` guard prevents a double signature if the
+        # model echoed it anyway. This is the reliability fix for drafts that
+        # previously "didn't use the signature" — the model would write its own
+        # brand sign-off instead. Code, not the prompt, owns the closing now.
+        if configured_signature and configured_signature not in draft_body:
+            draft_body = f"{draft_body.rstrip()}\n\n{configured_signature}"
 
         logger.info(
             "DraftGenerator: draft generated for thread=%s prompt_tokens=%s completion_tokens=%s",

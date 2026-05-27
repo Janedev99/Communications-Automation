@@ -514,9 +514,14 @@ class MSGraphProvider(EmailProvider):
             )
 
         wanted = content_id.strip().strip("<>").lower()
+        # `contentId` is a property of the fileAttachment DERIVED type, not the
+        # base `attachment` resource the collection returns — selecting it bare
+        # ("...,contentId") makes Graph 400. The OData type-cast
+        # `microsoft.graph.fileAttachment/contentId` selects it correctly
+        # (returns null for non-file attachments, which we skip anyway).
         list_url = (
             f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/attachments"
-            "?$select=id,name,contentType,isInline,contentId"
+            "?$select=id,name,contentType,isInline,microsoft.graph.fileAttachment/contentId"
         )
         list_resp = self._client.get(list_url, headers=self._headers())
         list_resp.raise_for_status()

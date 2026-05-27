@@ -226,7 +226,7 @@ export default function EmailsPage() {
             disabled={bulkLoading}
             className="h-7 text-xs"
           >
-            {bulkLoading ? "Closing..." : "Close selected"}
+            {bulkLoading ? "Resolving..." : "Resolve selected"}
           </Button>
           <button
             onClick={() => setSelectedIds(new Set())}

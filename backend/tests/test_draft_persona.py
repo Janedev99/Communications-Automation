@@ -27,9 +27,7 @@ def test_system_prompt_has_content_driven_branding_rule():
     t = _SYSTEM_PROMPT_TEMPLATE
     # Both brands are named with their domains so the model can match content.
     assert "Point Profit" in t and "pointprofit.com" in t
-    assert "Schiller CPA" in t and "schilcpa.com" in t
-    # Fallback: pure Jane when neither brand is clearly indicated.
-    assert "sign off simply as {firm_owner_name}" in t
+    assert "Schilmoeller & Schoenfield" in t and "schilcpa.com" in t
     # Never split Jane across firms / redirect a sender elsewhere.
     assert "reached the wrong place" in t
 
@@ -49,9 +47,12 @@ def test_rendered_system_prompt_uses_real_owner_name_not_the_bug():
     assert "Jane Schiller" not in rendered
 
 
-def test_user_prompt_no_longer_signs_off_as_firm_team():
+def test_user_prompt_uses_injected_signoff_instruction():
+    # The sign-off is now an injected instruction (signature override or the
+    # branding rule), not a hard-coded firm-team line.
     assert "{firm_name} team" not in _USER_PROMPT_TEMPLATE
     assert "{brand_hint}" in _USER_PROMPT_TEMPLATE
+    assert "{signoff_instruction}" in _USER_PROMPT_TEMPLATE
     # Renders cleanly with an empty hint (the common case — single mailbox).
     rendered = _USER_PROMPT_TEMPLATE.format(
         subject="Q3 question",
@@ -61,8 +62,8 @@ def test_user_prompt_no_longer_signs_off_as_firm_team():
         category="general_inquiry",
         ai_summary="A general question.",
         formatted_messages="[CLIENT — ...]",
-        firm_owner_name="Jane Schilmoeller",
+        signoff_instruction="End with this signature: Jane",
     )
-    assert "Jane Schilmoeller" in rendered
+    assert "End with this signature: Jane" in rendered
     assert "Client: Sara" not in rendered  # old label replaced by "From:"
     assert "From: Sara" in rendered

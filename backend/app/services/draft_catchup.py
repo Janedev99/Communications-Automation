@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.models.email import (
     DraftResponse,
+    EmailCategory,
     EmailStatus,
     EmailThread,
     ThreadTier,
@@ -84,6 +85,10 @@ def find_threads_needing_drafts(
                         EmailStatus.escalated,
                     ]
                 ),
+                # Promotional / automated mail never gets a draft — match the
+                # intake rule (email_intake._should_generate_draft) so the
+                # catch-up sweep can't quietly re-draft what intake skipped.
+                EmailThread.category != EmailCategory.promotional,
                 EmailThread.draft_generation_failed.is_(False),
                 ~exists().where(DraftResponse.thread_id == EmailThread.id),
             )

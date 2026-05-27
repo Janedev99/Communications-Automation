@@ -111,7 +111,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   return (
     <aside
       className={cn(
-        "flex flex-col bg-card border-r border-border transition-all duration-200 ease-in-out flex-shrink-0",
+        "flex flex-col bg-background border-r border-border transition-all duration-200 ease-in-out flex-shrink-0",
         collapsed ? "w-16" : "w-56"
       )}
     >
@@ -119,18 +119,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div className={cn("px-4 py-5 flex items-center", collapsed && "justify-center px-0")}>
         {collapsed ? (
           <div className="relative w-8 h-8 rounded-lg bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center flex-shrink-0 ring-1 ring-primary/20 shadow-sm">
-            P
+            S
             <AlphaBadge variant="dot" />
           </div>
         ) : (
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center flex-shrink-0 ring-1 ring-primary/20 shadow-sm">
-              P
+              S
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <div className="min-w-0 text-sm font-semibold text-foreground leading-tight tracking-tight truncate">
-                  Point Profit
+                  Schiller CPA
                 </div>
                 <AlphaBadge className="flex-shrink-0" />
               </div>
@@ -154,8 +154,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
                 active
-                  ? "text-primary bg-accent font-semibold"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}
             >
               <span className="relative flex-shrink-0">
@@ -211,8 +211,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
                 isActive("/audit-log")
-                  ? "text-primary bg-accent font-semibold"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}
             >
               <History className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
@@ -225,8 +225,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
                 isActive("/settings")
-                  ? "text-primary bg-accent font-semibold"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                  ? "text-primary bg-card shadow-sm ring-1 ring-border/60 font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
               )}
             >
               <Settings className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />

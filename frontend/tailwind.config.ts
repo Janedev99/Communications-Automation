@@ -10,10 +10,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        // Point Profit brand font, wired via next/font (--font-raleway is set
-        // on <html> in layout.tsx). Fallbacks cover the brief moment before
-        // the variable resolves and any environments where next/font is unset.
-        sans: ["var(--font-raleway)", "Inter", "system-ui", "-apple-system", "sans-serif"],
+        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
       },
       colors: {
         background: "hsl(var(--background))",
@@ -50,18 +47,16 @@ const config: Config = {
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
         brand: {
-          // Point Profit palette: navy (#193046) anchors the dark end,
-          // accent sky (#2E91FC) sits at 500 for visible accent text/icons.
-          50:  "#EFF6FF",
-          100: "#DBEAFE",
-          200: "#BFDBFE",
-          300: "#93C5FD",
-          400: "#60A5FA",
-          500: "#2E91FC", // Point Profit accent — text-brand-500 link/icon
-          600: "#1E6FD9",
-          700: "#1A4D9E",
-          800: "#193046", // Point Profit primary navy
-          900: "#0F1F2E",
+          50:  "#EFF4FF",
+          100: "#DBE4FE",
+          200: "#BFCFFE",
+          300: "#93B4FD",
+          400: "#6B92F5",
+          500: "#3B6FF0",
+          600: "#2F5AD4",
+          700: "#2347B0",
+          800: "#1D3A8F",
+          900: "#1A2E6B",
         },
         gray: {
           50:  "#F8F8FA",

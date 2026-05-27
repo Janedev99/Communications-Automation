@@ -26,7 +26,13 @@ interface EmailFiltersProps {
   onClear: () => void;
 }
 
-const STATUS_OPTIONS = Object.entries(STATUS_LABELS) as [EmailStatus, string][];
+// Deleted + spam are intentionally excluded — they live in their own folder
+// views (FolderTabsNav), not as inbox status filters. Keeping them here would
+// pull terminal-status threads back into the working table the user just asked
+// to keep them out of.
+const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [EmailStatus, string][]).filter(
+  ([value]) => value !== "deleted" && value !== "spam",
+);
 const CATEGORY_OPTIONS = Object.entries(CATEGORY_LABELS) as [EmailCategory, string][];
 
 export function EmailFilters({

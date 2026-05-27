@@ -10,7 +10,11 @@ Covers:
     auto-send); escalated / T3 / auto-generate-off → no draft.
 """
 from app.models.email import CategorizationSource, EmailCategory, ThreadTier
-from app.services.categorizer import CATEGORY_DESCRIPTIONS, _automated_sender_result
+from app.services.categorizer import (
+    CATEGORY_DESCRIPTIONS,
+    _automated_sender_result,
+    _calendar_invite_result,
+)
 from app.services.email_intake import _should_generate_draft
 
 
@@ -46,6 +50,55 @@ def test_normal_senders_fall_through_to_llm():
 
 def test_promotional_is_a_prompt_category():
     assert EmailCategory.promotional in CATEGORY_DESCRIPTIONS
+
+
+# ── calendar-invite heuristic (false-positive fix) ────────────────────────────
+
+def test_calendar_invites_classified_appointment_without_llm():
+    for subject in [
+        "Invitation: Coaching Group Call @ Tue Jun 3",
+        "Updated invitation: [Prime Inner Circle] Coaching",
+        "Canceled event: Quarterly review",
+        "Accepted: Tax planning call",
+        "Re: Updated invitation: Strategy session",
+    ]:
+        res = _calendar_invite_result(subject)
+        assert res is not None, f"expected appointment for {subject!r}"
+        assert res.category == EmailCategory.appointment
+        assert res.escalation_needed is False
+        assert res.source == CategorizationSource.rules_fallback
+
+
+def test_non_invites_fall_through_calendar_heuristic():
+    for subject in [
+        "Account Renewal Confirmation",
+        "Schilmoeller & Schoenfield, PC - Renewal Proposal",
+        "Quick question about my return",
+        "Your invoice is ready",  # not an invitation despite 'invo...'
+    ]:
+        assert _calendar_invite_result(subject) is None, f"{subject!r} should fall through"
+
+
+def test_calendar_invite_routes_to_appointment_before_promotional(mock_anthropic):
+    """An invite from a notification address must become appointment (not
+    promotional via the automated-sender heuristic) and must not hit the LLM."""
+    from app.services.categorizer import get_categorizer
+
+    svc = get_categorizer()
+    result = svc.categorize(
+        sender="calendar-notification@google.com",
+        subject="Updated invitation: Coaching Group Call @ Tue",
+        body="This event has been updated.",
+    )
+    assert result.category == EmailCategory.appointment
+    mock_anthropic.messages.create.assert_not_called()
+
+
+def test_promotional_description_has_carveouts():
+    desc = CATEGORY_DESCRIPTIONS[EmailCategory.promotional]
+    # Calendar invitations and named-human proposals are explicitly NOT promotional.
+    assert "calendar" in desc.lower() and "appointment" in desc.lower()
+    assert "proposal" in desc.lower()
 
 
 # ── draft gating ──────────────────────────────────────────────────────────────

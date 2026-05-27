@@ -60,7 +60,7 @@ CATEGORY_DESCRIPTIONS = {
     EmailCategory.general_inquiry: "General questions about services, pricing, or processes",
     EmailCategory.complaint: "Client expressing dissatisfaction, frustration, or making a formal complaint",
     EmailCategory.urgent: "Time-sensitive matter requiring immediate attention (imminent IRS deadline, audit notice with short response window, etc.)",
-    EmailCategory.promotional: "Automated, bulk, or no-reply mail that needs no human response — marketing/promotions, newsletters, social or app notifications (e.g. LinkedIn, Pinterest), brand subscriptions, and automated receipts or confirmations",
+    EmailCategory.promotional: "ONLY machine-generated, automated, or bulk mail where no human is awaiting a reply: marketing/promotions, newsletters, social or app notifications (e.g. LinkedIn, Pinterest), brand subscriptions, automated receipts/confirmations, and system notices (voicemail/quarantine/delivery reports). NEVER use this for an email written by a real person — even if it is off-topic, internal/colleague correspondence, or unrelated to tax/accounting; a real person's message goes to general_inquiry or the best-fitting category, not promotional",
 }
 
 

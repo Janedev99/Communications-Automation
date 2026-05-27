@@ -128,13 +128,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               S
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <div className="min-w-0 text-sm font-semibold text-foreground leading-tight tracking-tight truncate">
-                  Schilmoeller & Schoenfield
-                </div>
+              <div className="text-sm font-semibold text-foreground leading-tight tracking-tight">
+                Schilmoeller & Schoenfield
+              </div>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[10px] text-muted-foreground leading-tight">Staff Portal</span>
                 <AlphaBadge className="flex-shrink-0" />
               </div>
-              <div className="text-[10px] text-muted-foreground leading-tight">Staff Portal</div>
             </div>
           </div>
         )}

@@ -54,13 +54,13 @@ export default function LoginPage() {
           <div className="w-12 h-12 rounded-xl bg-primary text-primary-foreground font-semibold text-xl flex items-center justify-center shadow-sm ring-1 ring-primary/20">
             S
           </div>
-          <div className="flex items-center gap-2 mt-4">
-            <h1 className="text-2xl font-semibold text-foreground tracking-tight">
-              Schilmoeller & Schoenfield
-            </h1>
+          <h1 className="text-2xl font-semibold text-foreground tracking-tight mt-4 text-center">
+            Schilmoeller & Schoenfield
+          </h1>
+          <div className="flex items-center gap-2 mt-1">
+            <p className="text-sm text-muted-foreground">Staff Portal</p>
             <AlphaBadge />
           </div>
-          <p className="text-sm text-muted-foreground mt-1">Staff Portal</p>
         </div>
 
         <div className="bg-card rounded-xl border border-border shadow-sm p-7">

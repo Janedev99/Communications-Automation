@@ -8,6 +8,7 @@ import { downloadBinary } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
 import type { AttachmentInfo, EmailMessage } from "@/lib/types";
 import { MessageBody } from "./message-body";
+import { MessageHtmlBody } from "./message-html-body";
 
 interface MessageBubbleProps {
   message: EmailMessage;
@@ -190,7 +191,15 @@ export function MessageBubble({
           <p className="text-[11px] font-medium text-muted-foreground mb-1.5 truncate pr-8">
             {message.sender}
           </p>
-          <MessageBody text={message.body_text} variant="inbound" />
+          {message.body_html ? (
+            <MessageHtmlBody
+              html={message.body_html}
+              threadId={message.thread_id}
+              messageId={message.id}
+            />
+          ) : (
+            <MessageBody text={message.body_text} variant="inbound" />
+          )}
           {hasAttachments && (
             <div className="mt-2.5 flex flex-wrap gap-1.5">
               {message.attachments!.map((att, i) => (

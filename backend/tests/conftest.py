@@ -285,6 +285,8 @@ class RecordingEmailProvider:
         self.connect_calls: int = 0
         self.raise_on_send: Exception | None = None
         self.raise_on_move: Exception | None = None
+        self.raise_on_inline: Exception | None = None
+        self.inline_fetches: list[dict] = []  # inline-image fetch log
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -331,6 +333,14 @@ class RecordingEmailProvider:
             "internet_message_id": internet_message_id,
             "destination": destination,
         })
+
+    def fetch_inline_attachment(self, *, internet_message_id: str, content_id: str):
+        if self.raise_on_inline:
+            raise self.raise_on_inline
+        self.inline_fetches.append(
+            {"internet_message_id": internet_message_id, "content_id": content_id}
+        )
+        return (iter([b"\x89PNG\r\n\x1a\n", b"fake-image-bytes"]), "image/png")
 
     def disconnect(self) -> None:
         pass

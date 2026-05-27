@@ -185,6 +185,25 @@ class EmailProvider(ABC):
             f"{type(self).__name__} does not support on-demand attachment fetch"
         )
 
+    def fetch_inline_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        content_id: str,
+    ) -> tuple[Iterator[bytes], str | None]:
+        """
+        Fetch an inline (embedded) image's binary by its Content-ID — the value
+        an HTML body references via ``<img src="cid:...">``. Returns
+        ``(chunk_iterator, content_type)``.
+
+        Fetched on demand at render time (same philosophy as ``fetch_attachment``)
+        so it works for already-polled messages without storing inline binaries.
+        Default raises — providers without inline support degrade clearly.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support inline image fetch"
+        )
+
     def move_message(
         self,
         *,
@@ -467,6 +486,72 @@ class MSGraphProvider(EmailProvider):
                 yield from resp.iter_bytes(chunk_size=64 * 1024)
 
         return (_chunks(), filename, content_type)
+
+    def fetch_inline_attachment(
+        self,
+        *,
+        internet_message_id: str,
+        content_id: str,
+    ) -> tuple[Iterator[bytes], str | None]:
+        """
+        Stream an inline image (referenced by ``<img src="cid:...">`` in the
+        HTML body) from MS Graph, matched by its Content-ID.
+
+        Lists the message's inline attachments, matches contentId to the
+        requested cid (angle brackets stripped, case-insensitive), then streams
+        that attachment's ``/$value`` — same chunked pattern as
+        ``fetch_attachment`` so the binary never fully buffers in memory.
+
+        Raises:
+          - LookupError if the message or a matching inline image isn't found.
+        """
+        mailbox = self._settings.msgraph_mailbox
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            raise LookupError(
+                f"Message {internet_message_id!r} not found in mailbox — "
+                "may have been deleted or moved"
+            )
+
+        wanted = content_id.strip().strip("<>").lower()
+        # `contentId` is a property of the fileAttachment DERIVED type, not the
+        # base `attachment` resource the collection returns — selecting it bare
+        # ("...,contentId") makes Graph 400. The OData type-cast
+        # `microsoft.graph.fileAttachment/contentId` selects it correctly
+        # (returns null for non-file attachments, which we skip anyway).
+        list_url = (
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/attachments"
+            "?$select=id,name,contentType,isInline,microsoft.graph.fileAttachment/contentId"
+        )
+        list_resp = self._client.get(list_url, headers=self._headers())
+        list_resp.raise_for_status()
+        match: dict | None = None
+        for a in list_resp.json().get("value") or []:
+            if not a.get("isInline"):
+                continue
+            cid = (a.get("contentId") or "").strip().strip("<>").lower()
+            if cid == wanted:
+                match = a
+                break
+        if match is None:
+            raise LookupError(
+                f"Inline image with content-id {content_id!r} not found in message"
+            )
+
+        attachment_base = (
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            f"/attachments/{match['id']}"
+        )
+        content_type = match.get("contentType")
+
+        def _chunks() -> Iterator[bytes]:
+            with self._client.stream(
+                "GET", f"{attachment_base}/$value", headers=self._headers()
+            ) as resp:
+                resp.raise_for_status()
+                yield from resp.iter_bytes(chunk_size=64 * 1024)
+
+        return (_chunks(), content_type)
 
     # Logical → Graph well-known folder ID mapping. Graph accepts these
     # string aliases anywhere a folder ID is required, so we don't have to

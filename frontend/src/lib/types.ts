@@ -195,11 +195,12 @@ export interface TierRuleUpdate {
 
 export interface BulkActionParams {
   user_id?: string | null;
+  folder?: string | null;
 }
 
 export interface BulkActionRequest {
   thread_ids: string[];
-  action: "close" | "assign" | "recategorize";
+  action: "close" | "assign" | "recategorize" | "delete" | "spam" | "save";
   params?: BulkActionParams;
 }
 

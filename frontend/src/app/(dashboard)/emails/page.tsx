@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Download, Search, X } from "lucide-react";
+import { Bookmark, Download, Search, ShieldX, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { EmailFilters } from "@/components/emails/email-filters";
 import { EmailList } from "@/components/emails/email-list";
@@ -12,6 +13,8 @@ import { Pagination } from "@/components/shared/pagination";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ExportDialog } from "@/components/emails/export-dialog";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { BulkSaveDialog } from "@/components/emails/bulk-save-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
@@ -45,7 +48,13 @@ export default function EmailsPage() {
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkLoading, setBulkLoading] = useState(false);
+  // Which bulk action is in flight (null = idle). Tracking the specific action,
+  // not a bare boolean, lets each control show its own busy state instead of
+  // the spinner always landing on the "Resolve" button.
+  const [bulkPending, setBulkPending] = useState<BulkActionRequest["action"] | null>(null);
+  const [showBulkSpam, setShowBulkSpam] = useState(false);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [showBulkSave, setShowBulkSave] = useState(false);
 
   // Re-apply URL params if they change (e.g. navigating from thread detail)
   useEffect(() => {
@@ -149,19 +158,40 @@ export default function EmailsPage() {
     }
   }, [selectedIds.size, threads]);
 
-  const handleBulkClose = async () => {
-    if (selectedIds.size === 0 || bulkLoading) return;
-    setBulkLoading(true);
+  const runBulkAction = async (
+    action: BulkActionRequest["action"],
+    params?: BulkActionRequest["params"],
+  ) => {
+    if (selectedIds.size === 0 || bulkPending !== null) return;
+    setBulkPending(action);
     try {
-      const req: BulkActionRequest = {
+      const res = await bulkAction({
         thread_ids: Array.from(selectedIds),
-        action: "close",
-      };
-      await bulkAction(req);
+        action,
+        params,
+      });
       setSelectedIds(new Set());
       mutate();
+      const verb: Record<string, string> = {
+        close: "Resolved",
+        delete: "Deleted",
+        spam: "Marked as spam",
+        save: "Saved",
+      };
+      const n = res.succeeded;
+      toast.success(`${verb[action] ?? "Updated"} ${n} thread${n === 1 ? "" : "s"}.`);
+      if (res.failed > 0) {
+        toast.error(
+          `${res.failed} thread${res.failed === 1 ? "" : "s"} could not be processed.`,
+        );
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Bulk action failed.");
     } finally {
-      setBulkLoading(false);
+      setBulkPending(null);
+      setShowBulkSpam(false);
+      setShowBulkDelete(false);
+      setShowBulkSave(false);
     }
   };
 
@@ -251,15 +281,47 @@ export default function EmailsPage() {
             <span className="tabular-nums">{selectedIds.size}</span> thread
             {selectedIds.size !== 1 ? "s" : ""} selected
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleBulkClose}
-            disabled={bulkLoading}
-            className="h-7 text-xs"
-          >
-            {bulkLoading ? "Resolving..." : "Resolve selected"}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => runBulkAction("close")}
+              disabled={bulkPending !== null}
+              className="h-7 text-xs"
+            >
+              {bulkPending === "close" ? "Working…" : "Resolve"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowBulkSave(true)}
+              disabled={bulkPending !== null}
+              className="h-7 text-xs gap-1.5"
+            >
+              <Bookmark className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Save
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowBulkSpam(true)}
+              disabled={bulkPending !== null}
+              className="h-7 text-xs gap-1.5 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+            >
+              <ShieldX className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Spam
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowBulkDelete(true)}
+              disabled={bulkPending !== null}
+              className="h-7 text-xs gap-1.5 text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Delete
+            </Button>
+          </div>
           <button
             onClick={() => setSelectedIds(new Set())}
             className="ml-auto text-xs font-medium text-primary hover:underline transition-colors"
@@ -297,6 +359,43 @@ export default function EmailsPage() {
       {isAdmin && (
         <ExportDialog open={showExport} onOpenChange={setShowExport} />
       )}
+
+      <ConfirmDialog
+        open={showBulkSpam}
+        onOpenChange={setShowBulkSpam}
+        title={`Mark ${selectedIds.size} thread${selectedIds.size === 1 ? "" : "s"} as spam?`}
+        description={
+          "This moves every incoming message in the selected threads to the Junk Email " +
+          "folder in Outlook and trains the junk filter on those senders. Sent replies are " +
+          "not affected."
+        }
+        confirmLabel="Mark as spam"
+        confirmVariant="destructive"
+        loading={bulkPending === "spam"}
+        onConfirm={() => runBulkAction("spam")}
+      />
+
+      <ConfirmDialog
+        open={showBulkDelete}
+        onOpenChange={setShowBulkDelete}
+        title={`Delete ${selectedIds.size} thread${selectedIds.size === 1 ? "" : "s"}?`}
+        description={
+          "This moves every incoming message in the selected threads to Outlook's Deleted " +
+          "Items. Sent replies are not affected. You can restore from Outlook if needed."
+        }
+        confirmLabel="Delete"
+        confirmVariant="destructive"
+        loading={bulkPending === "delete"}
+        onConfirm={() => runBulkAction("delete")}
+      />
+
+      <BulkSaveDialog
+        open={showBulkSave}
+        onOpenChange={setShowBulkSave}
+        count={selectedIds.size}
+        loading={bulkPending === "save"}
+        onConfirm={(folder) => runBulkAction("save", { folder })}
+      />
     </div>
   );
 }

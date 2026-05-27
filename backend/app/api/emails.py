@@ -187,6 +187,9 @@ def bulk_action(
     succeeded = 0
     failed = 0
     errors: list[str] = []
+    # Connected lazily on the first delete/spam thread and reused across the
+    # batch so we don't reconnect to Graph per thread.
+    _bulk_provider = None
 
     for thread_id in body.thread_ids:
         try:
@@ -292,6 +295,66 @@ def bulk_action(
                         },
                         "confidence": result.confidence,
                     },
+                )
+
+            elif body.action in ("delete", "spam"):
+                # Mirror the single-thread trash/spam endpoints: move every
+                # inbound message to Outlook's Deleted Items / Junk Email and
+                # park the thread in the matching terminal status.
+                if body.action == "delete":
+                    target_status = EmailStatus.deleted
+                    destination = "deleted_items"
+                    audit_action = "thread.deleted"
+                    other_terminal = EmailStatus.spam
+                else:
+                    target_status = EmailStatus.spam
+                    destination = "junk_email"
+                    audit_action = "thread.marked_spam"
+                    other_terminal = EmailStatus.deleted
+
+                if thread.status == target_status:
+                    # Already there — idempotent no-op success, no Graph call.
+                    succeeded += 1
+                    continue
+                if thread.status == other_terminal:
+                    # Cross-terminal (deleted<->spam) — refuse per-thread, same
+                    # rule as the single endpoint's 409. Restore first.
+                    failed += 1
+                    errors.append(
+                        f"{thread_id}: in '{thread.status.value}' — restore before re-classifying"
+                    )
+                    continue
+
+                if _bulk_provider is None:
+                    from app.services.email_provider import get_email_provider
+                    _bulk_provider = get_email_provider()
+                    _bulk_provider.connect()
+                _perform_terminal_move(
+                    db=db,
+                    request=request,
+                    thread=thread,
+                    target_status=target_status,
+                    destination=destination,
+                    audit_action=audit_action,
+                    provider=_bulk_provider,
+                    current_user=current_user,
+                )
+
+            elif body.action == "save":
+                was_saved = thread.is_saved
+                thread.is_saved = True
+                thread.saved_folder = body.params.folder or None
+                thread.saved_at = datetime.now(timezone.utc)
+                thread.saved_by_id = current_user.id
+                thread.updated_at = datetime.now(timezone.utc)
+                log_action(
+                    db,
+                    action="email.bulk_saved" if not was_saved else "email.bulk_save_updated",
+                    entity_type="email_thread",
+                    entity_id=str(thread.id),
+                    user_id=current_user.id,
+                    ip_address=get_client_ip(request),
+                    details={"folder": body.params.folder or None},
                 )
 
             db.flush()
@@ -1432,6 +1495,65 @@ def change_thread_status(
 # lives entirely client-side.
 
 
+def _perform_terminal_move(
+    *,
+    db: Session,
+    request: Request,
+    thread: EmailThread,
+    target_status: EmailStatus,
+    destination: str,
+    audit_action: str,
+    provider,
+    current_user: User,
+) -> int:
+    """
+    Move a thread's inbound messages to `destination` via an already-connected
+    `provider`, set thread.status = target_status, and write the audit row.
+    Returns the count of messages moved.
+
+    Shared by the single-thread trash/spam endpoints and the bulk endpoint.
+    The caller owns the lookup + idempotent/cross-terminal guards and the
+    provider connection; this function is purely the move + state change +
+    audit. Provider errors propagate to the caller (the single endpoint lets
+    them 500/bubble; the bulk loop catches them per-thread).
+    """
+    inbound_messages = [
+        m for m in thread.messages if m.direction == MessageDirection.inbound
+    ]
+    moved_count = 0
+    for msg in inbound_messages:
+        # message_id_header is the stored internetMessageId. A message without
+        # one has no resolvable Graph identifier — skip without counting.
+        if not msg.message_id_header:
+            continue
+        provider.move_message(
+            internet_message_id=msg.message_id_header,
+            destination=destination,
+        )
+        moved_count += 1
+
+    previous_status = thread.status
+    thread.status = target_status
+    thread.updated_at = datetime.now(timezone.utc)
+    db.flush()
+
+    log_action(
+        db,
+        action=audit_action,
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "previous_status": previous_status.value,
+            "destination": destination,
+            "messages_moved": moved_count,
+            "inbound_total": len(inbound_messages),
+        },
+    )
+    return moved_count
+
+
 def _trash_or_spam_thread(
     *,
     request: Request,
@@ -1482,48 +1604,19 @@ def _trash_or_spam_thread(
             ),
         )
 
-    inbound_messages = [
-        m for m in thread.messages
-        if m.direction == MessageDirection.inbound
-    ]
-
     from app.services.email_provider import get_email_provider
     provider = get_email_provider()
     provider.connect()
 
-    moved_count = 0
-    for msg in inbound_messages:
-        # message_id_header is the stored internetMessageId — the same
-        # value mark_as_read and fetch_attachment use as input.
-        if not msg.message_id_header:
-            # Defensively skip — a message without an internetMessageId
-            # has no resolvable Graph identifier. Logged at the move
-            # implementation; here we just don't count it as moved.
-            continue
-        provider.move_message(
-            internet_message_id=msg.message_id_header,
-            destination=destination,
-        )
-        moved_count += 1
-
-    previous_status = thread.status
-    thread.status = target_status
-    thread.updated_at = datetime.now(timezone.utc)
-    db.flush()
-
-    log_action(
-        db,
-        action=audit_action,
-        entity_type="email_thread",
-        entity_id=str(thread.id),
-        user_id=current_user.id,
-        ip_address=get_client_ip(request),
-        details={
-            "previous_status": previous_status.value,
-            "destination": destination,
-            "messages_moved": moved_count,
-            "inbound_total": len(inbound_messages),
-        },
+    _perform_terminal_move(
+        db=db,
+        request=request,
+        thread=thread,
+        target_status=target_status,
+        destination=destination,
+        audit_action=audit_action,
+        provider=provider,
+        current_user=current_user,
     )
 
     db.refresh(thread)

@@ -348,16 +348,17 @@ class SavedMessageItem(BaseModel):
 # ── Bulk action request schema ────────────────────────────────────────────────
 
 class BulkActionParams(BaseModel):
-    """Optional parameters for bulk actions (e.g. user_id for assign)."""
+    """Optional parameters for bulk actions (user_id for assign, folder for save)."""
     user_id: uuid.UUID | None = None
+    folder: str | None = None
 
 
 class BulkActionRequest(BaseModel):
     """Body for POST /emails/bulk."""
     thread_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
     action: str = Field(
-        description="One of: close, assign, recategorize",
-        pattern="^(close|assign|recategorize)$",
+        description="One of: close, assign, recategorize, delete, spam, save",
+        pattern="^(close|assign|recategorize|delete|spam|save)$",
     )
     params: BulkActionParams = Field(default_factory=BulkActionParams)
 

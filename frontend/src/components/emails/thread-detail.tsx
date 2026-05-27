@@ -9,6 +9,7 @@ import {
   BookmarkCheck,
   BookPlus,
   CheckCircle,
+  RotateCcw,
   ShieldAlert,
   ShieldX,
   Trash2,
@@ -207,7 +208,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
     // page.tsx, and grid items default to min-height: auto (content size).
     // Without min-h-0 the messages list can grow unbounded and the
     // <ScrollArea/> below has no bounded height to scroll within.
-    <div className="flex flex-col h-full min-h-0 bg-card">
+    <div className="flex flex-col h-full min-h-0 min-w-0 bg-card">
       {/* Thread metadata header */}
       <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
         <div className="flex items-start justify-between gap-4">
@@ -237,21 +238,35 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
           {/* Action buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {thread.is_saved ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => openSaveForThread()}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-amber-700 dark:text-amber-300 border-amber-500/40 hover:bg-amber-500/10"
-                title={
-                  thread.saved_folder
-                    ? `Saved in "${thread.saved_folder}" — click to edit`
-                    : "Saved — click to edit"
-                }
-              >
-                <BookmarkCheck className="w-3.5 h-3.5 fill-current" strokeWidth={1.75} aria-hidden="true" />
-                {thread.saved_folder ?? "Saved"}
-              </Button>
+              // Segmented control: the folder label and the remove (✕) action
+              // share one bordered pill with a divider, so the ✕ reads as part
+              // of the same "saved" object instead of floating beside it.
+              <div className="inline-flex items-center h-8 rounded-lg ring-1 ring-amber-500/40 overflow-hidden text-amber-700 dark:text-amber-300">
+                <button
+                  type="button"
+                  onClick={() => openSaveForThread()}
+                  disabled={!!actionLoading}
+                  className="inline-flex items-center gap-1.5 h-full px-2.5 text-xs font-medium hover:bg-amber-500/10 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  title={
+                    thread.saved_folder
+                      ? `Saved in "${thread.saved_folder}" — click to edit`
+                      : "Saved — click to edit"
+                  }
+                >
+                  <BookmarkCheck className="w-3.5 h-3.5 fill-current" strokeWidth={1.75} aria-hidden="true" />
+                  {thread.saved_folder ?? "Saved"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUnsave}
+                  disabled={!!actionLoading}
+                  className="inline-flex items-center h-full px-1.5 border-l border-amber-500/30 hover:bg-amber-500/10 hover:text-destructive transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  title="Remove from saved"
+                  aria-label="Remove from saved"
+                >
+                  <XCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                </button>
+              </div>
             ) : (
               <Button
                 variant="ghost"
@@ -263,19 +278,6 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
               >
                 <Bookmark className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Save
-              </Button>
-            )}
-            {thread.is_saved && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleUnsave}
-                disabled={!!actionLoading}
-                className="h-8 px-2 text-xs text-muted-foreground hover:text-destructive"
-                title="Remove from saved"
-                aria-label="Remove from saved"
-              >
-                <XCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
               </Button>
             )}
             {!isAssignedToMe ? (
@@ -354,7 +356,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 disabled={!!actionLoading}
                 className="h-8 text-xs gap-1.5 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
               >
-                <CheckCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Reopen
               </Button>
             ) : (
@@ -363,10 +365,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
                 size="sm"
                 onClick={handleClose}
                 disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-destructive"
+                className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-emerald-500/10"
+                title="Mark this thread resolved (it moves out of the active inbox)"
               >
-                <XCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Close
+                <CheckCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                Resolve
               </Button>
             )}
           </div>
@@ -484,7 +487,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
 
       {/* Messages area */}
       <ScrollArea className="flex-1">
-        <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50">
+        <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50 min-w-0">
           {thread.messages.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>
           ) : (

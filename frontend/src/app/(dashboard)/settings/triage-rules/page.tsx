@@ -179,7 +179,14 @@ function RuleCard({ rule, onUpdate }: RuleCardProps) {
                 handleThresholdCommit();
               }
             }}
-            className="mt-2 w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary disabled:opacity-50"
+            // `accent-color` does nothing on an `appearance-none` range input —
+            // native rendering is stripped — so the track was just showing the
+            // gray `bg-muted`. Paint it ourselves: a gradient fill (brand up to
+            // the current value, muted after) plus an explicit brand thumb.
+            style={{
+              background: `linear-gradient(to right, hsl(var(--primary)) ${((Math.round(draftThreshold * 100) - 50) / 49) * 100}%, hsl(var(--muted)) ${((Math.round(draftThreshold * 100) - 50) / 49) * 100}%)`,
+            }}
+            className="mt-2 w-full h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-50 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:cursor-pointer"
             disabled={pending !== null}
             aria-valuenow={Math.round(draftThreshold * 100)}
             aria-valuemin={50}

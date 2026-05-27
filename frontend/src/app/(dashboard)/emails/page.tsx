@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { EmailFilters } from "@/components/emails/email-filters";
 import { EmailList } from "@/components/emails/email-list";
 import { TierLanesNav, type TierFilter } from "@/components/emails/tier-lanes-nav";
+import { FolderTabsNav, type MailFolder } from "@/components/emails/folder-tabs-nav";
 import { Pagination } from "@/components/shared/pagination";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
@@ -34,6 +35,7 @@ export default function EmailsPage() {
   const [clientEmail, setClientEmail] = useState(searchParams.get("client_email") ?? "");
   const [assignedTo, setAssignedTo] = useState("");
   const [page, setPage] = useState(1);
+  const [folder, setFolder] = useState<MailFolder>("inbox");
   const [showExport, setShowExport] = useState(false);
 
   // Search state: local (immediate) and debounced (sent to API)
@@ -51,18 +53,23 @@ export default function EmailsPage() {
     setStatus(searchParams.get("status") ?? "");
     setCategory(searchParams.get("category") ?? "");
     setTier(parseTierParam(searchParams.get("tier")));
+    setFolder("inbox");
     setPage(1);
   }, [searchParams]);
 
   const isSearchActive = !!searchTerm;
+  const isInbox = folder === "inbox";
 
   const { threads, total, isLoading, isError, mutate } = useEmails({
-    status: isSearchActive ? undefined : (status || undefined),
-    category: isSearchActive ? undefined : (category || undefined),
-    tier: isSearchActive || tier === "all" ? undefined : (tier as ThreadTier),
-    client_email: isSearchActive ? undefined : (clientEmail || undefined),
-    assigned_to: isSearchActive ? undefined : (assignedTo || undefined),
-    search: searchTerm || undefined,
+    // Spam / Deleted folders map straight to the status query. The inbox uses
+    // the status dropdown (which no longer offers deleted/spam) and relies on
+    // the backend's default exclusion of those terminal states.
+    status: isInbox ? (isSearchActive ? undefined : status || undefined) : folder,
+    category: !isInbox || isSearchActive ? undefined : category || undefined,
+    tier: !isInbox || isSearchActive || tier === "all" ? undefined : (tier as ThreadTier),
+    client_email: !isInbox || isSearchActive ? undefined : clientEmail || undefined,
+    assigned_to: !isInbox || isSearchActive ? undefined : assignedTo || undefined,
+    search: isInbox ? searchTerm || undefined : undefined,
     page,
     page_size: 25,
   });
@@ -91,6 +98,16 @@ export default function EmailsPage() {
 
   const handleTierChange = (next: TierFilter) => {
     setTier(next);
+    setPage(1);
+  };
+
+  const handleFolderChange = (next: MailFolder) => {
+    setFolder(next);
+    setSelectedIds(new Set());
+    // Search is an inbox-only tool; leaving the Inbox clears it so a Spam /
+    // Deleted view isn't silently still filtered by a stale search term.
+    setSearchInput("");
+    setSearchTerm("");
     setPage(1);
   };
 
@@ -167,8 +184,20 @@ export default function EmailsPage() {
         }
       />
 
-      {/* Tier lanes — hidden during search so search results aren't tier-filtered */}
-      {!isSearchActive && (
+      {/* Mail folders — Inbox (working view) vs Spam / Deleted read views */}
+      <FolderTabsNav active={folder} onChange={handleFolderChange} />
+
+      {/* Context note for the terminal-status folders */}
+      {!isInbox && (
+        <p className="text-xs text-muted-foreground mb-3 -mt-1">
+          {folder === "spam"
+            ? "Junk mail — hidden from your inbox. Restore from Outlook's Junk Email folder if needed."
+            : "Deleted threads — hidden from your inbox. Restore from Outlook's Deleted Items folder if needed."}
+        </p>
+      )}
+
+      {/* Tier lanes — inbox only, and hidden during search */}
+      {isInbox && !isSearchActive && (
         <TierLanesNav
           active={tier}
           counts={tierCounts}
@@ -177,28 +206,31 @@ export default function EmailsPage() {
         />
       )}
 
-      {/* Global search bar */}
-      <div className="relative mb-3">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-        <Input
-          value={searchInput}
-          onChange={(e) => handleSearchInput(e.target.value)}
-          placeholder="Search by subject, client, summary, or message content..."
-          className="pl-9 h-9 text-sm"
-        />
-        {searchInput && (
-          <button
-            onClick={handleClearSearch}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
-            aria-label="Clear search"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
+      {/* Global search bar — inbox only (search spans all threads regardless
+          of folder, so it would be misleading inside Spam / Deleted views) */}
+      {isInbox && (
+        <div className="relative mb-3">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+          <Input
+            value={searchInput}
+            onChange={(e) => handleSearchInput(e.target.value)}
+            placeholder="Search by subject, client, summary, or message content..."
+            className="pl-9 h-9 text-sm"
+          />
+          {searchInput && (
+            <button
+              onClick={handleClearSearch}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
+              aria-label="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
-      {/* Column filters — hidden during active search to avoid conflicting signals */}
-      {!isSearchActive && (
+      {/* Column filters — inbox only, hidden during active search */}
+      {isInbox && !isSearchActive && (
         <EmailFilters
           status={status}
           category={category}
@@ -212,8 +244,8 @@ export default function EmailsPage() {
         />
       )}
 
-      {/* Bulk action bar */}
-      {selectedIds.size > 0 && (
+      {/* Bulk action bar — inbox only */}
+      {isInbox && selectedIds.size > 0 && (
         <div className="flex items-center gap-3 mb-3 px-3.5 py-2 bg-primary/[0.07] border border-primary/30 rounded-lg">
           <span className="text-sm font-medium text-foreground">
             <span className="tabular-nums">{selectedIds.size}</span> thread

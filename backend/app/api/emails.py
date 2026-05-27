@@ -820,6 +820,77 @@ def download_attachment(
     )
 
 
+@router.get("/{thread_id}/messages/{message_id}/inline/{content_id:path}")
+def get_inline_image(
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    content_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Stream an inline image (referenced by <img src="cid:..."> in the HTML body)
+    on demand from the email provider, matched by Content-ID.
+
+    Used by the message renderer to display embedded images like Outlook.
+    Fetched live — never stored — mirroring the attachment-download model, so it
+    works for already-polled messages with no migration. Not audited: a single
+    email can reference many inline images and each render would flood the audit
+    log; these are decorative body content, not deliberate document downloads.
+    """
+    msg = db.execute(
+        select(EmailMessage).where(
+            EmailMessage.id == message_id,
+            EmailMessage.thread_id == thread_id,
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found in this thread.",
+        )
+
+    from app.services.email_provider import get_email_provider
+    provider = get_email_provider()
+    try:
+        provider.connect()
+        content_iter, content_type = provider.fetch_inline_attachment(
+            internet_message_id=msg.message_id_header,
+            content_id=content_id,
+        )
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Current email provider does not support inline images.",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        upstream_status = exc.response.status_code
+        logger.warning(
+            "Inline image upstream failure: HTTP %d for message_id=%s cid=%s",
+            upstream_status,
+            msg.message_id_header,
+            content_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Failed to fetch inline image from the email provider "
+                f"(upstream returned HTTP {upstream_status})."
+            ),
+        )
+
+    # Inline images are immutable for a given message+cid, so a short private
+    # cache cuts repeat fetches when a thread re-renders. `private` keeps it out
+    # of any shared cache since the bytes sit behind per-user auth.
+    return StreamingResponse(
+        content_iter,
+        media_type=content_type or "application/octet-stream",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @router.post("/{thread_id}/categorize", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
 def manual_categorize(
     request: Request,

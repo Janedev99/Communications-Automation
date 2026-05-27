@@ -72,6 +72,9 @@ export interface EmailMessage {
   sender: string;
   recipient: string | null;
   body_text: string | null;
+  /** Raw HTML body — sanitized client-side before render; powers inline images.
+   *  Falls back to body_text (plain-text renderer) when null. */
+  body_html: string | null;
   received_at: string;
   direction: "inbound" | "outbound";
   is_processed: boolean;

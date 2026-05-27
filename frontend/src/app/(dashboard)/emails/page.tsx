@@ -27,18 +27,75 @@ function parseTierParam(raw: string | null): TierFilter {
   return "all";
 }
 
+// Per-session memory of the email list view, so returning from a thread lands
+// the user where they left off (page, folder, filters) instead of resetting to
+// page 1 / inbox. sessionStorage (not localStorage) — it's a within-session
+// convenience, not a durable preference.
+const VIEW_STATE_KEY = "emails_view_state";
+
+interface SavedEmailsView {
+  page: number;
+  folder: MailFolder;
+  status: string;
+  category: string;
+  tier: TierFilter;
+  clientEmail: string;
+  assignedTo: string;
+}
+
+function readSavedView(): Partial<SavedEmailsView> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.sessionStorage.getItem(VIEW_STATE_KEY);
+    return raw ? (JSON.parse(raw) as Partial<SavedEmailsView>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function EmailsPage() {
   const searchParams = useSearchParams();
   const { isAdmin } = useUser();
 
-  // Filter state — initialised from URL search params
-  const [status, setStatus] = useState(searchParams.get("status") ?? "");
-  const [category, setCategory] = useState(searchParams.get("category") ?? "");
-  const [tier, setTier] = useState<TierFilter>(parseTierParam(searchParams.get("tier")));
-  const [clientEmail, setClientEmail] = useState(searchParams.get("client_email") ?? "");
-  const [assignedTo, setAssignedTo] = useState("");
-  const [page, setPage] = useState(1);
-  const [folder, setFolder] = useState<MailFolder>("inbox");
+  // Initial view: an explicit deep-link (e.g. ?client_email=) wins and starts at
+  // page 1; otherwise restore the last view from sessionStorage so returning
+  // from a thread lands where the user left off.
+  const [initialView] = useState(() => {
+    const urlClientEmail = searchParams.get("client_email") ?? "";
+    const urlStatus = searchParams.get("status") ?? "";
+    const urlCategory = searchParams.get("category") ?? "";
+    const urlTier = searchParams.get("tier");
+    if (urlClientEmail || urlStatus || urlCategory || urlTier) {
+      return {
+        page: 1,
+        folder: "inbox" as MailFolder,
+        status: urlStatus,
+        category: urlCategory,
+        tier: parseTierParam(urlTier),
+        clientEmail: urlClientEmail,
+        assignedTo: "",
+      };
+    }
+    const saved = readSavedView();
+    return {
+      page: saved.page ?? 1,
+      folder: saved.folder ?? ("inbox" as MailFolder),
+      status: saved.status ?? "",
+      category: saved.category ?? "",
+      tier: saved.tier ?? ("all" as TierFilter),
+      clientEmail: saved.clientEmail ?? "",
+      assignedTo: saved.assignedTo ?? "",
+    };
+  });
+
+  // Filter + list-position state (seeded from initialView above)
+  const [status, setStatus] = useState(initialView.status);
+  const [category, setCategory] = useState(initialView.category);
+  const [tier, setTier] = useState<TierFilter>(initialView.tier);
+  const [clientEmail, setClientEmail] = useState(initialView.clientEmail);
+  const [assignedTo, setAssignedTo] = useState(initialView.assignedTo);
+  const [page, setPage] = useState(initialView.page);
+  const [folder, setFolder] = useState<MailFolder>(initialView.folder);
   const [showExport, setShowExport] = useState(false);
 
   // Search state: local (immediate) and debounced (sent to API)
@@ -56,8 +113,20 @@ export default function EmailsPage() {
   const [showBulkDelete, setShowBulkDelete] = useState(false);
   const [showBulkSave, setShowBulkSave] = useState(false);
 
-  // Re-apply URL params if they change (e.g. navigating from thread detail)
+  // Re-apply URL params only on a *genuine* query-string change (e.g. clicking a
+  // client link while already on this page). Comparing the actual string —
+  // rather than a first-render flag — avoids clobbering the restored view on
+  // mount and is resilient to StrictMode's double-invoked effects.
+  const lastParamsRef = useRef<string | null>(null);
   useEffect(() => {
+    const current = searchParams.toString();
+    if (lastParamsRef.current === null) {
+      // Mount: initialView already reflects the URL / saved view — just record.
+      lastParamsRef.current = current;
+      return;
+    }
+    if (lastParamsRef.current === current) return;
+    lastParamsRef.current = current;
     setClientEmail(searchParams.get("client_email") ?? "");
     setStatus(searchParams.get("status") ?? "");
     setCategory(searchParams.get("category") ?? "");
@@ -65,6 +134,19 @@ export default function EmailsPage() {
     setFolder("inbox");
     setPage(1);
   }, [searchParams]);
+
+  // Persist the view so returning from a thread restores page / folder / filters.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(
+        VIEW_STATE_KEY,
+        JSON.stringify({ page, folder, status, category, tier, clientEmail, assignedTo }),
+      );
+    } catch {
+      // sessionStorage can throw (private mode / quota) — non-fatal.
+    }
+  }, [page, folder, status, category, tier, clientEmail, assignedTo]);
 
   const isSearchActive = !!searchTerm;
   const isInbox = folder === "inbox";

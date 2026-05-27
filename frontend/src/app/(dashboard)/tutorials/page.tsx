@@ -89,7 +89,7 @@ function DraftPanelDemo() {
         <br />
         Best,
         <br />
-        Point Profit
+        Schiller CPA
       </div>
       <div className="flex items-center gap-2 text-sm">
         <span className="text-muted-foreground">Tone:</span>
@@ -217,7 +217,7 @@ function ShortcutsList() {
 const STEPS: Step[] = [
   {
     id: "welcome",
-    title: "Welcome to Point Profit's Staff Portal",
+    title: "Welcome to Schiller CPA's Staff Portal",
     icon: GraduationCap,
     description:
       "This system reads incoming client email, categorizes each message, drafts a suggested reply using the firm's knowledge base, and lets staff review before anything is sent. Anything sensitive — IRS notices, complaints, legal matters — is escalated directly to Jane. The result: most routine emails handled in seconds, and zero client communication leaves the firm without human approval (unless you explicitly enable T1 auto-send).",

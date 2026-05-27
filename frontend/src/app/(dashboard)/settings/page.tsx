@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
 import { CreateUserDialog } from "@/components/settings/create-user-dialog";
 import { ChangePasswordForm } from "@/components/settings/change-password-form";
+import { SignatureForm } from "@/components/settings/signature-form";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
@@ -134,6 +135,14 @@ export default function SettingsPage() {
               </span>
             </Link>
           </div>
+        </section>
+      )}
+
+      {/* Email signature for AI drafts — admin only */}
+      {isAdmin && (
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Email Signature</h2>
+          <SignatureForm />
         </section>
       )}
 

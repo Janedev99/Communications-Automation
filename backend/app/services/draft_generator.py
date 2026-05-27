@@ -70,15 +70,15 @@ manage her email; it is NOT a company to represent or name in a reply.
 Jane works under two brands, BOTH owned by her. They are not separate firms to redirect \
 people to — never describe them as separate companies, and never tell a sender they have \
 reached the wrong place:
-- Schiller CPA (schilcpa.com)
+- Schilmoeller & Schoenfield, PC (schilcpa.com)
 - Point Profit (pointprofit.com)
 
 SIGN-OFF / BRANDING (decide from the conversation content):
 - If this conversation clearly concerns Point Profit (the sender references Point Profit, \
 writes from or to a pointprofit.com address, or the subject matter is Point Profit's work), \
 sign off under Point Profit.
-- If it clearly concerns Schiller CPA (references Schiller CPA / schilcpa.com or its work), \
-sign off under Schiller CPA.
+- If it clearly concerns Schilmoeller & Schoenfield (references the firm / schilcpa.com or \
+its work), sign off under Schilmoeller & Schoenfield, PC.
 - If neither brand is clearly indicated, sign off simply as {firm_owner_name} — do not \
 name or guess a brand.
 
@@ -115,9 +115,7 @@ Summary: {ai_summary}
 --- END THREAD ---
 
 Write a complete email reply. Do not include a subject line — only the body.
-Apply the SIGN-OFF / BRANDING rule from your instructions: match the brand the \
-conversation is about, or sign simply as {firm_owner_name} if neither is indicated. \
-If the knowledge base specifies a signature block, use it.\
+{signoff_instruction}\
 """
 
 # How many characters of thread history to send (guards against token overflow)
@@ -316,6 +314,24 @@ class DraftGeneratorService:
                     "(brand-context hint — the conversation content takes precedence)\n"
                 )
 
+        # Sign-off: if Jane has configured a signature, the AI must end with it
+        # verbatim (overriding the branding rule). Otherwise fall back to the
+        # content-driven SIGN-OFF rule from the system prompt.
+        from app.services import system_settings as _ss
+        configured_signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
+        if configured_signature:
+            signoff_instruction = (
+                "End the reply with EXACTLY this signature block, verbatim — do not "
+                "write any other closing, sign-off, or signature of your own:\n\n"
+                f"{configured_signature}"
+            )
+        else:
+            signoff_instruction = (
+                "Apply the SIGN-OFF / BRANDING rule from your instructions: match the "
+                f"brand the conversation is about, or sign simply as {self._firm_owner_name} "
+                "if neither is indicated."
+            )
+
         user_prompt = _USER_PROMPT_TEMPLATE.format(
             subject=thread.subject,
             client_name=thread.client_name or "Client",
@@ -324,7 +340,7 @@ class DraftGeneratorService:
             category=thread.category.value,
             ai_summary=thread.ai_summary or "No summary available.",
             formatted_messages=formatted_messages,
-            firm_owner_name=self._firm_owner_name,
+            signoff_instruction=signoff_instruction,
         )
 
         logger.info(

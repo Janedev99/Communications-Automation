@@ -130,7 +130,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <div className="min-w-0 text-sm font-semibold text-foreground leading-tight tracking-tight truncate">
-                  Schiller CPA
+                  Schilmoeller & Schoenfield
                 </div>
                 <AlphaBadge className="flex-shrink-0" />
               </div>

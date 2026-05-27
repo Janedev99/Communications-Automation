@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/providers/theme-provider";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "Schiller CPA — Staff Portal",
+  title: "Schilmoeller & Schoenfield — Staff Portal",
   description: "Internal email management system",
 };
 

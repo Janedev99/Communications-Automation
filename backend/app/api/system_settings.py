@@ -71,7 +71,7 @@ def list_settings(
 
 # Allowlist of settings that can be PATCH'd via the API. Anything outside
 # this set gets a 404 — defense against typos elevating arbitrary keys.
-_PATCHABLE_KEYS: set[str] = {ss.AUTO_SEND_ENABLED}
+_PATCHABLE_KEYS: set[str] = {ss.AUTO_SEND_ENABLED, ss.DRAFT_SIGNATURE}
 
 
 @router.patch("/{key}", response_model=SystemSettingResponse)
@@ -89,17 +89,21 @@ def update_setting(
             detail=f"No system setting '{key}'.",
         )
 
-    # For boolean flags, normalize and reject malformed inputs.
-    raw = payload.value.strip().lower()
+    # Per-key normalization. Boolean flags are lowercased + validated; free-text
+    # settings (the signature) must preserve case + internal formatting — only
+    # outer whitespace is trimmed.
     if key == ss.AUTO_SEND_ENABLED:
-        if raw not in ("true", "false"):
+        value_to_store = payload.value.strip().lower()
+        if value_to_store not in ("true", "false"):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="auto_send_enabled must be 'true' or 'false'.",
             )
+    else:
+        value_to_store = payload.value.strip()
 
     before = ss.get_setting(db, key)
-    row = ss.set_setting(db, key, raw, updated_by_id=current_user.id)
+    row = ss.set_setting(db, key, value_to_store, updated_by_id=current_user.id)
 
     log_action(
         db,
@@ -108,7 +112,7 @@ def update_setting(
         entity_id=key,
         user_id=current_user.id,
         ip_address=get_client_ip(request),
-        details={"before": {"value": before}, "after": {"value": raw}},
+        details={"before": {"value": before}, "after": {"value": value_to_store}},
     )
 
     db.commit()

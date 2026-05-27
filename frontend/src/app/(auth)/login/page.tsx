@@ -56,7 +56,7 @@ export default function LoginPage() {
           </div>
           <div className="flex items-center gap-2 mt-4">
             <h1 className="text-2xl font-semibold text-foreground tracking-tight">
-              Schiller CPA
+              Schilmoeller & Schoenfield
             </h1>
             <AlphaBadge />
           </div>
@@ -132,7 +132,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-xs text-muted-foreground text-center mt-6">
-          Internal use only · {new Date().getFullYear()} Schiller CPA
+          Internal use only · {new Date().getFullYear()} Schilmoeller & Schoenfield
         </p>
       </div>
     </div>

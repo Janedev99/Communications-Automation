@@ -44,6 +44,9 @@ Usage:
     python scripts/reprocess_all_threads.py --days 30        # limit to a window
     python scripts/reprocess_all_threads.py --execute        # apply to ALL threads
     python scripts/reprocess_all_threads.py --days 30 --execute
+    # Also refresh existing pending drafts (e.g. to pick up a signature/prompt
+    # change) by deleting + regenerating them:
+    python scripts/reprocess_all_threads.py --execute --regenerate-pending
 """
 from __future__ import annotations
 
@@ -132,6 +135,15 @@ def main() -> None:
         action="store_true",
         help="Apply changes (default: dry run, read-only, no LLM).",
     )
+    parser.add_argument(
+        "--regenerate-pending",
+        action="store_true",
+        help=(
+            "For threads that should have a draft, delete the existing PENDING "
+            "draft and regenerate it (so drafts pick up prompt/signature changes). "
+            "Without this flag, threads that already have a draft are left as-is."
+        ),
+    )
     args = parser.parse_args()
 
     db = SessionLocal()
@@ -177,8 +189,10 @@ def main() -> None:
 
     recategorized = 0
     drafted = 0
+    drafts_regenerated = 0
     drafts_removed = 0
     preserved_human = 0
+    preserved_escalated = 0
     skipped_no_inbound = 0
     failed = 0
 
@@ -215,6 +229,15 @@ def main() -> None:
                 category=result.category,
                 draft_auto_generate=settings.draft_auto_generate,
             )
+            # Threads already in `escalated` status are Jane's to handle — leave
+            # them entirely (metadata refreshed above, draft + status untouched).
+            # generate() refuses escalated threads anyway, so attempting one only
+            # produces an isolated failure (the 4 we saw on the first run).
+            if thread.status == EmailStatus.escalated:
+                preserved_escalated += 1
+                db.commit()
+                continue
+
             drafts = _drafts_for(db, thread.id)
             deletable = [d for d in drafts if d.status in _DELETABLE_DRAFT_STATES]
             human_touched = [d for d in drafts if d.status not in _DELETABLE_DRAFT_STATES]
@@ -239,7 +262,15 @@ def main() -> None:
                 )
             else:
                 # Draft warranted.
-                if not drafts:
+                if args.regenerate_pending and deletable:
+                    # Force a fresh draft so it picks up prompt/signature changes:
+                    # drop the existing pending draft(s), then regenerate.
+                    for d in deletable:
+                        db.delete(d)
+                    db.flush()
+                    generator.generate(db, thread)  # never auto-sent
+                    drafts_regenerated += 1
+                elif not drafts:
                     generator.generate(db, thread)  # never auto-sent
                     drafted += 1
                 # A draft now exists (just-generated or a pre-existing pending
@@ -259,9 +290,11 @@ def main() -> None:
 
     print("-" * 72)
     print(f"Re-categorized:                       {recategorized}")
-    print(f"Drafts generated for review:          {drafted}")
+    print(f"Drafts generated (was missing):       {drafted}")
+    print(f"Drafts regenerated (pending refresh): {drafts_regenerated}")
     print(f"Stale drafts removed (pending only):  {drafts_removed}")
     print(f"Preserved (human-touched draft):      {preserved_human}")
+    print(f"Preserved (escalated — Jane's):       {preserved_escalated}")
     print(f"Skipped (no inbound message):         {skipped_no_inbound}")
     print(f"Failed (isolated, see above):         {failed}")
 

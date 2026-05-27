@@ -55,12 +55,12 @@ _MAX_CONTENT_CHARS = 8000
 CATEGORY_DESCRIPTIONS = {
     EmailCategory.status_update: "Client asking for a status update on their tax return, filing, or other in-progress work",
     EmailCategory.document_request: "Request to provide or confirm receipt of documents (W-2s, receipts, IDs, prior returns, etc.)",
-    EmailCategory.appointment: "Scheduling, rescheduling, or cancelling a meeting or call",
+    EmailCategory.appointment: "Scheduling, rescheduling, or cancelling a meeting or call, including calendar/meeting invitations",
     EmailCategory.clarification: "Client asking to clarify something about their taxes, a deadline, or an action they need to take",
     EmailCategory.general_inquiry: "General questions about services, pricing, or processes",
     EmailCategory.complaint: "Client expressing dissatisfaction, frustration, or making a formal complaint",
     EmailCategory.urgent: "Time-sensitive matter requiring immediate attention (imminent IRS deadline, audit notice with short response window, etc.)",
-    EmailCategory.promotional: "ONLY machine-generated, automated, or bulk mail where no human is awaiting a reply: marketing/promotions, newsletters, social or app notifications (e.g. LinkedIn, Pinterest), brand subscriptions, automated receipts/confirmations, and system notices (voicemail/quarantine/delivery reports). NEVER use this for an email written by a real person — even if it is off-topic, internal/colleague correspondence, or unrelated to tax/accounting; a real person's message goes to general_inquiry or the best-fitting category, not promotional",
+    EmailCategory.promotional: "ONLY machine-generated, automated, or bulk mail where no human is awaiting a reply: marketing/promotions, newsletters, social or app notifications (e.g. LinkedIn, Pinterest), brand subscriptions, automated receipts/confirmations, and system notices (voicemail/quarantine/delivery reports). NEVER use this for an email written by a real person — even if it is off-topic, internal/colleague correspondence, or unrelated to tax/accounting; a real person's message goes to general_inquiry or the best-fitting category, not promotional. Two specific carve-outs that are NOT promotional: (1) a calendar or meeting invitation — use appointment; (2) a proposal, quote, bid, renewal, or business solicitation written by a named individual (even about marketing or sales) — categorize by its content (e.g. general_inquiry), because a person may expect a reply",
 }
 
 
@@ -101,6 +101,42 @@ def _automated_sender_result(sender: str) -> "CategorizationResult | None":
         suggested_reply_tone="professional",
         source=CategorizationSource.rules_fallback,
     )
+
+
+# Calendar / meeting invitations (Google Calendar, Outlook). These are
+# scheduling items, NOT promotional bulk mail — a real meeting with a real
+# person sits behind them. Match the standard subject prefixes deterministically
+# and route to `appointment`. Checked BEFORE the automated-sender heuristic
+# because some invites are sent from notification addresses (e.g.
+# calendar-notification@google.com) that would otherwise be grabbed as
+# promotional. Conservative: only explicit invite/RSVP prefixes match; a bare
+# meeting-title subject falls through to the LLM (which has the carve-out).
+_CALENDAR_INVITE_RE = re.compile(
+    r"^\s*(?:re:\s*|fwd?:\s*)*(?:"
+    r"(?:updated\s+|new\s+)?invitation\s*:"            # "Invitation:" / "Updated invitation:"
+    r"|(?:canceled|cancelled)\s+event\s*:"             # "Canceled event:"
+    r"|(?:accepted|declined|tentatively\s+accepted|tentative)\s*:"  # RSVP replies
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _calendar_invite_result(subject: str) -> "CategorizationResult | None":
+    """Classify standard calendar/meeting-invitation subjects as `appointment`
+    so they are neither dropped as promotional nor sent to the LLM. Returns None
+    when the subject isn't an obvious invitation (those go to the LLM)."""
+    if not subject or not _CALENDAR_INVITE_RE.match(subject):
+        return None
+    return CategorizationResult(
+        category=EmailCategory.appointment,
+        confidence=0.9,
+        escalation_needed=False,
+        escalation_reasons=[],
+        summary="Calendar / meeting invitation — a scheduling item.",
+        suggested_reply_tone="professional",
+        source=CategorizationSource.rules_fallback,
+    )
+
 
 ESCALATION_TRIGGERS = [
     "Client complaints — dissatisfaction, formal complaints",
@@ -356,6 +392,17 @@ class CategorizerService:
         Never raises — on any error, returns a safe fallback result with
         escalation_needed=True.
         """
+        # Fast path 0: calendar / meeting invitations are scheduling items, not
+        # promotional. Checked FIRST so an invite from a notification address
+        # isn't grabbed by the automated-sender heuristic below.
+        invite = _calendar_invite_result(subject)
+        if invite is not None:
+            logger.info(
+                "Categorizer: %r matched calendar-invite heuristic → appointment (no LLM call)",
+                subject,
+            )
+            return invite
+
         # Fast path: obvious automated / no-reply senders are promotional and
         # need no reply — classify deterministically and skip the LLM entirely
         # to save AI credits (content-based promo still falls through to the LLM).

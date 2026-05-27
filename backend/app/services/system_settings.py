@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Known setting keys (use these constants instead of raw strings to avoid typos).
 AUTO_SEND_ENABLED = "auto_send_enabled"
+# Jane's email signature block, appended verbatim to AI drafts when set.
+DRAFT_SIGNATURE = "draft_signature"
 
 
 def get_setting(db: Session, key: str) -> str | None:

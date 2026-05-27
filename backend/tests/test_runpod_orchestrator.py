@@ -1179,15 +1179,18 @@ def test_ensure_ready_fast_fail_concurrent_calls_only_spawn_one_bg_thread(
 # ── Integration: draft_generator fallback path ───────────────────────────────
 
 
-def test_draft_generator_falls_back_to_claude_on_runpod_unavailable(
+def test_draft_generator_skips_runpod_orchestration_under_anthropic(
     db_session, mock_anthropic, monkeypatch
 ):
-    """When the orchestrator raises RunPodUnavailableError, draft_generator
-    switches to Claude and logs draft.fallback_to_claude.
+    """Under the anthropic provider, draft_generator does NOT consult the RunPod
+    orchestrator even when a pod is configured/enabled — it drafts directly via
+    Anthropic.
 
-    End-to-end wiring check: ensures the import wiring, the catch block in
-    generate(), the AnthropicLLMClient fallback, and the audit log all
-    cooperate. Doesn't rely on a real RunPod or real Anthropic.
+    Perf fix: waking + health-probing the pod under anthropic was pure latency
+    (it made regeneration feel slow). RunPod orchestration + Claude fallback only
+    applies under the openai_compat provider, where the pod actually serves the
+    LLM. The test conftest pins LLM_PROVIDER=anthropic, so ensure_ready must NOT
+    be called here.
     """
     import uuid
     from unittest.mock import MagicMock
@@ -1272,28 +1275,25 @@ def test_draft_generator_falls_back_to_claude_on_runpod_unavailable(
     draft = generator.generate(db_session, thread)
     db_session.commit()
 
-    # Draft was produced (fallback succeeded)
+    # Draft was produced directly by Anthropic (primary under this provider).
     assert draft is not None
     assert "Tony" in draft.body_text or "thank you" in draft.body_text.lower()
-    # ai_model reflects the Claude fallback model, not the primary's name
-    assert draft.ai_model  # any string is fine — the test conftest config'd Claude
+    assert draft.ai_model
 
-    # Audit log has the fallback event
+    # The orchestrator was NOT consulted — anthropic skips RunPod entirely, so
+    # the RunPodUnavailableError side-effect never fires. This is the perf fix.
+    fake_orchestrator.ensure_ready.assert_not_called()
+    fake_orchestrator.mark_used.assert_not_called()
+
+    # No fallback happened: Anthropic was the primary, not a fallback.
     fallback_rows = (
         db_session.query(AuditLog)
         .filter(AuditLog.action == "draft.fallback_to_claude")
         .filter(AuditLog.entity_id == str(thread.id))
         .all()
     )
-    assert len(fallback_rows) == 1
-    details = fallback_rows[0].details
-    # Reason is the structured reason code from the orchestrator. Filter
-    # criteria: prefix matches one of the canonical codes documented in
-    # runpod_orchestrator.py module docstring.
-    assert details["reason"].startswith("runpod_capacity_error")
-    assert details["draft_id"] == str(draft.id)
+    assert len(fallback_rows) == 0
 
-    # draft.generated also records the fallback flag for dashboards
     gen_rows = (
         db_session.query(AuditLog)
         .filter(AuditLog.action == "draft.generated")
@@ -1301,9 +1301,4 @@ def test_draft_generator_falls_back_to_claude_on_runpod_unavailable(
         .all()
     )
     assert len(gen_rows) == 1
-    assert gen_rows[0].details["fallback_used"] is True
-
-    # ensure_ready was called (proves we went through the orchestrator path)
-    fake_orchestrator.ensure_ready.assert_called_once()
-    # mark_used was NOT called — fallback path doesn't bump RunPod's idle clock
-    fake_orchestrator.mark_used.assert_not_called()
+    assert gen_rows[0].details["fallback_used"] is False

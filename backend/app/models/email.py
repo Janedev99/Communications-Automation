@@ -52,6 +52,10 @@ class EmailCategory(str, enum.Enum):
     general_inquiry = "general_inquiry"
     complaint = "complaint"
     urgent = "urgent"
+    # Automated / bulk / no-reply mail (marketing, newsletters, social & app
+    # notifications, subscriptions). The pipeline skips drafting these to save
+    # AI credits, and they are never tier T1 ("auto-handled").
+    promotional = "promotional"
     uncategorized = "uncategorized"
 
 

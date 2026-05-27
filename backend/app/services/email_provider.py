@@ -9,6 +9,7 @@ Factory function `get_email_provider()` returns the configured provider.
 """
 from __future__ import annotations
 
+import base64
 import email as email_lib
 import email.header
 import imaplib
@@ -109,6 +110,30 @@ class RawEmail:
     attachments: list[AttachmentMeta] = field(default_factory=list)
 
 
+# Microsoft Graph rejects sendMail request bodies above ~4 MB, and base64
+# inflates binary by ~33%, so ~3 MB of raw attachment is the safe inline ceiling.
+# Above it, Graph requires the create-draft → upload-session flow.
+GRAPH_INLINE_ATTACHMENT_LIMIT = 3 * 1024 * 1024
+# Hard ceiling for a single outbound message's total attachment size. Recipient
+# mail servers commonly bounce anything larger, so we reject before sending.
+MAX_TOTAL_ATTACHMENT_SIZE = 25 * 1024 * 1024
+# Graph upload-session chunk size MUST be a multiple of 320 KiB (327680 bytes).
+_GRAPH_UPLOAD_CHUNK = 5 * 327680  # 1.6 MiB
+
+
+@dataclass
+class EmailAttachment:
+    """An outbound attachment to send with an email. Unlike AttachmentMeta
+    (inbound, metadata-only), this carries the binary payload."""
+    filename: str
+    content: bytes
+    content_type: str = "application/octet-stream"
+
+    @property
+    def size(self) -> int:
+        return len(self.content)
+
+
 class EmailProvider(ABC):
     """Abstract base class for all email provider implementations."""
 
@@ -142,6 +167,8 @@ class EmailProvider(ABC):
         subject: str,
         body_text: str,
         body_html: str | None = None,
+        cc: list[str] | None = None,
+        attachments: list[EmailAttachment] | None = None,
         reply_to_message_id: str | None = None,
         references_header: str | None = None,
         message_id: str | None = None,
@@ -149,6 +176,9 @@ class EmailProvider(ABC):
         """
         Send an outbound email. Returns the Message-ID of the sent message.
 
+        cc:                  optional list of Cc recipient addresses
+        attachments:         optional list of EmailAttachment (filename + bytes);
+                             total size is capped at MAX_TOTAL_ATTACHMENT_SIZE
         reply_to_message_id: the Message-ID of the message being replied to
         references_header:   full References header value (parent References + parent ID)
                              preserving the full thread ancestry for email clients (T2.1)
@@ -622,63 +652,165 @@ class MSGraphProvider(EmailProvider):
         subject: str,
         body_text: str,
         body_html: str | None = None,
+        cc: list[str] | None = None,
+        attachments: list[EmailAttachment] | None = None,
         reply_to_message_id: str | None = None,
         references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
         """
-        Send via Graph's /sendMail action.
+        Send via Graph. Small messages use the /sendMail action; messages with
+        more than GRAPH_INLINE_ATTACHMENT_LIMIT of attachments use the
+        create-draft → upload-session → send flow (Graph rejects large sendMail
+        bodies).
 
         Note on threading headers: Microsoft Graph rejects any
         ``internetMessageHeaders`` entry whose name does not start with ``x-``
         / ``X-``. ``Message-ID``, ``In-Reply-To``, and ``References`` are
         reserved transport headers that Exchange generates itself — attempting
-        to set them via Graph returns HTTP 400 ``ErrorInvalidInternetMessageHeader``
-        ("The internet message header name should start with 'x-' or 'X-'").
-        This is *the* reason every /sendMail call after the M365 cutover
-        failed: the IMAP/SMTP path could author these headers, the Graph path
-        cannot. The ``reply_to_message_id`` / ``references_header`` /
-        ``message_id`` arguments are kept in the signature for interface parity
-        with ``IMAPProvider`` but are not transmitted on the Graph path. Thread
-        continuity for replies routes through Exchange's own ``conversationId``
-        rather than RFC5322 headers; a follow-up that switches replies to
-        ``POST /messages/{parent}/createReply`` will restore client-side
-        threading in Outlook/Gmail. See FIX/msgraph-invalid-headers.
+        to set them via Graph returns HTTP 400 ``ErrorInvalidInternetMessageHeader``.
+        The ``reply_to_message_id`` / ``references_header`` / ``message_id``
+        arguments are kept for interface parity with ``IMAPProvider`` but are not
+        transmitted on the Graph path; thread continuity routes through Exchange's
+        own ``conversationId``. See FIX/msgraph-invalid-headers.
         """
         import uuid as _uuid
         mailbox = self._settings.msgraph_mailbox
-        url = f"{self.GRAPH_BASE}/users/{mailbox}/sendMail"
         content_type = "html" if body_html else "text"
         content = body_html or body_text
 
-        # Generated id is returned to the caller for DB tracking. Graph will
-        # assign its own Message-ID at the Exchange transport layer and we
-        # cannot influence it from /sendMail — the returned value is a local
-        # correlation id only, not the on-wire Message-ID.
+        # Generated id is returned to the caller for DB tracking. Graph assigns
+        # its own Message-ID at the transport layer; this is a local correlation
+        # id only.
         if not message_id:
             domain = mailbox.split("@")[-1] if "@" in mailbox else "localhost"
             message_id = f"<{_uuid.uuid4()}@{domain}>"
 
-        payload: dict[str, Any] = {
-            "message": {
-                "subject": subject,
-                "body": {"contentType": content_type, "content": content},
-                "toRecipients": [{"emailAddress": {"address": to}}],
-            },
-            "saveToSentItems": True,
+        attachments = attachments or []
+        total = sum(a.size for a in attachments)
+        if total > MAX_TOTAL_ATTACHMENT_SIZE:
+            raise ValueError(
+                f"Attachments total {total} bytes exceeds the "
+                f"{MAX_TOTAL_ATTACHMENT_SIZE}-byte send limit."
+            )
+
+        message: dict[str, Any] = {
+            "subject": subject,
+            "body": {"contentType": content_type, "content": content},
+            "toRecipients": [{"emailAddress": {"address": to}}],
         }
+        if cc:
+            message["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
+
+        # Path A — small/no attachments: single sendMail with inline base64.
+        if total <= GRAPH_INLINE_ATTACHMENT_LIMIT:
+            if attachments:
+                message["attachments"] = [
+                    {
+                        "@odata.type": "#microsoft.graph.fileAttachment",
+                        "name": a.filename,
+                        "contentType": a.content_type,
+                        "contentBytes": base64.b64encode(a.content).decode("ascii"),
+                    }
+                    for a in attachments
+                ]
+            url = f"{self.GRAPH_BASE}/users/{mailbox}/sendMail"
+            payload = {"message": message, "saveToSentItems": True}
+            try:
+                resp = self._client.post(url, headers=self._headers(), json=payload)
+                resp.raise_for_status()
+                logger.info(
+                    "MSGraph: sent email to %s subject=%r (%d inline attachment(s))",
+                    to, subject, len(attachments),
+                )
+                return message_id
+            except httpx.HTTPStatusError as exc:
+                logger.error(
+                    "MSGraph send_email failed: %s | response_body=%s",
+                    exc, exc.response.text[:500],
+                )
+                raise
+
+        # Path B — large attachments: draft + upload session + send.
+        self._send_via_upload_session(mailbox, message, attachments)
+        logger.info(
+            "MSGraph: sent email to %s subject=%r via upload session (%d attachment(s), %d bytes)",
+            to, subject, len(attachments), total,
+        )
+        return message_id
+
+    def _send_via_upload_session(
+        self, mailbox: str, message: dict[str, Any], attachments: list[EmailAttachment]
+    ) -> None:
+        """Create a draft, upload each attachment via its own upload session,
+        then send the draft. Used when total attachment size exceeds Graph's
+        inline sendMail limit."""
+        base = f"{self.GRAPH_BASE}/users/{mailbox}"
+        try:
+            resp = self._client.post(f"{base}/messages", headers=self._headers(), json=message)
+            resp.raise_for_status()
+            draft_id = resp.json()["id"]
+        except httpx.HTTPStatusError as exc:
+            logger.error("MSGraph create-draft failed: %s | %s", exc, exc.response.text[:500])
+            raise
+
+        for a in attachments:
+            self._upload_one_attachment(base, draft_id, a)
 
         try:
-            resp = self._client.post(url, headers=self._headers(), json=payload)
-            resp.raise_for_status()
-            logger.info("MSGraph: sent email to %s subject=%r", to, subject)
-            return message_id
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "MSGraph send_email failed: %s | response_body=%s",
-                exc, exc.response.text[:500],
+            resp = self._client.post(
+                f"{base}/messages/{draft_id}/send", headers=self._headers()
             )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error("MSGraph send-draft failed: %s | %s", exc, exc.response.text[:500])
             raise
+
+    def _upload_one_attachment(
+        self, base: str, draft_id: str, a: EmailAttachment
+    ) -> None:
+        """Create an upload session for one attachment and PUT it in 320 KiB-
+        aligned chunks. The upload URL is pre-authenticated, so chunk PUTs carry
+        only Content-Length / Content-Range — never the Graph auth header."""
+        session_body = {
+            "AttachmentItem": {
+                "attachmentType": "file",
+                "name": a.filename,
+                "size": a.size,
+                "contentType": a.content_type,
+            }
+        }
+        try:
+            resp = self._client.post(
+                f"{base}/messages/{draft_id}/attachments/createUploadSession",
+                headers=self._headers(), json=session_body,
+            )
+            resp.raise_for_status()
+            upload_url = resp.json()["uploadUrl"]
+        except httpx.HTTPStatusError as exc:
+            logger.error("MSGraph createUploadSession failed: %s | %s", exc, exc.response.text[:500])
+            raise
+
+        size = a.size
+        for start in range(0, size, _GRAPH_UPLOAD_CHUNK):
+            chunk = a.content[start:start + _GRAPH_UPLOAD_CHUNK]
+            end = start + len(chunk) - 1
+            try:
+                put = self._client.put(
+                    upload_url,
+                    headers={
+                        "Content-Length": str(len(chunk)),
+                        "Content-Range": f"bytes {start}-{end}/{size}",
+                    },
+                    content=chunk,
+                )
+                put.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                logger.error(
+                    "MSGraph upload chunk %d-%d/%d failed: %s | %s",
+                    start, end, size, exc, exc.response.text[:500],
+                )
+                raise
 
     def disconnect(self) -> None:
         self._client.close()
@@ -852,21 +984,60 @@ class IMAPProvider(EmailProvider):
         subject: str,
         body_text: str,
         body_html: str | None = None,
+        cc: list[str] | None = None,
+        attachments: list[EmailAttachment] | None = None,
         reply_to_message_id: str | None = None,
         references_header: str | None = None,
         message_id: str | None = None,
     ) -> str:
         import uuid as _uuid
+        from email import encoders as _encoders
+        from email.mime.base import MIMEBase
         s = self._settings
+        cc = cc or []
+        attachments = attachments or []
+        total = sum(a.size for a in attachments)
+        if total > MAX_TOTAL_ATTACHMENT_SIZE:
+            raise ValueError(
+                f"Attachments total {total} bytes exceeds the "
+                f"{MAX_TOTAL_ATTACHMENT_SIZE}-byte send limit."
+            )
 
         # Generate a Message-ID we control for thread continuity
         if not message_id:
             domain = s.smtp_username.split("@")[-1] if "@" in s.smtp_username else "localhost"
             message_id = f"<{_uuid.uuid4()}@{domain}>"
 
-        msg = MIMEMultipart("alternative") if body_html else MIMEText(body_text, "plain")
+        # Body part: plain, or multipart/alternative when HTML is present.
+        if body_html:
+            body_part: Any = MIMEMultipart("alternative")
+            body_part.attach(MIMEText(body_text, "plain"))
+            body_part.attach(MIMEText(body_html, "html"))
+        else:
+            body_part = MIMEText(body_text, "plain")
+
+        # Wrap in multipart/mixed only when there are attachments.
+        if attachments:
+            msg: Any = MIMEMultipart("mixed")
+            msg.attach(body_part)
+            for a in attachments:
+                maintype, _, subtype = (
+                    a.content_type or "application/octet-stream"
+                ).partition("/")
+                part = MIMEBase(maintype or "application", subtype or "octet-stream")
+                part.set_payload(a.content)
+                _encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition", "attachment", filename=a.filename
+                )
+                msg.attach(part)
+        else:
+            msg = body_part
+
         msg["From"] = s.smtp_username
         msg["To"] = to
+        if cc:
+            msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
         msg["Message-ID"] = message_id
         if reply_to_message_id:
@@ -876,11 +1047,7 @@ class IMAPProvider(EmailProvider):
         if ref_value:
             msg["References"] = ref_value
 
-        if body_html:
-            assert isinstance(msg, MIMEMultipart)
-            msg.attach(MIMEText(body_text, "plain"))
-            msg.attach(MIMEText(body_html, "html"))
-
+        recipients = [to, *cc]
         context = ssl.create_default_context()
         try:
             if s.smtp_use_tls:
@@ -888,12 +1055,15 @@ class IMAPProvider(EmailProvider):
                     server.ehlo()
                     server.starttls(context=context)
                     server.login(s.smtp_username, s.smtp_password)
-                    server.sendmail(s.smtp_username, to, msg.as_string())
+                    server.sendmail(s.smtp_username, recipients, msg.as_string())
             else:
                 with smtplib.SMTP_SSL(s.smtp_host, s.smtp_port, context=context) as server:
                     server.login(s.smtp_username, s.smtp_password)
-                    server.sendmail(s.smtp_username, to, msg.as_string())
-            logger.info("IMAPProvider: sent email to %s subject=%r", to, subject)
+                    server.sendmail(s.smtp_username, recipients, msg.as_string())
+            logger.info(
+                "IMAPProvider: sent email to %s subject=%r (%d attachment(s))",
+                to, subject, len(attachments),
+            )
             return message_id
         except smtplib.SMTPException as exc:
             logger.error("IMAPProvider send_email failed: %s", exc)

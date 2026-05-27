@@ -24,7 +24,7 @@ export const STATUS_LABELS: Record<EmailStatus, string> = {
   pending_review: "Pending Review",
   sent: "Sent",
   escalated: "Escalated",
-  closed: "Closed",
+  closed: "Resolved",
   deleted: "Deleted",
   spam: "Spam",
 };

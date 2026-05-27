@@ -185,8 +185,8 @@ export function MessageBubble({
 
   if (isInbound) {
     return (
-      <div className="flex flex-col max-w-[75%] self-start">
-        <div className="group relative bg-card rounded-2xl rounded-tl-sm px-4 py-3 border border-border shadow-sm">
+      <div className="flex flex-col max-w-[75%] min-w-0 self-start">
+        <div className="group relative bg-card rounded-2xl rounded-tl-sm px-4 py-3 border border-border shadow-sm min-w-0 overflow-hidden">
           <p className="text-[11px] font-medium text-muted-foreground mb-1.5 truncate pr-8">
             {message.sender}
           </p>
@@ -225,8 +225,8 @@ export function MessageBubble({
   }
 
   return (
-    <div className="flex flex-col max-w-[75%] self-end items-end">
-      <div className="group relative bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm">
+    <div className="flex flex-col max-w-[75%] min-w-0 self-end items-end">
+      <div className="group relative bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm min-w-0 overflow-hidden">
         <p className="text-[11px] font-medium text-primary-foreground/70 mb-1.5 truncate pl-8">
           {message.sender}
         </p>

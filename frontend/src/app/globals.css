@@ -4,62 +4,62 @@
 
 @layer base {
   :root {
-    /* Surfaces — Point Profit canvas tinted pale blue-gray; white cards lift */
-    --background: 210 28% 96%;         /* pale blue-tinted canvas (~#F0F3F8) */
-    --foreground: 200 4% 18%;          /* #2d3031 — primary text */
-    --card: 0 0% 100%;                 /* pure white — raised surfaces lift off canvas */
-    --card-foreground: 200 4% 18%;
+    /* Surfaces — canvas is the page bg, card is the raised surface */
+    --background: 240 5% 97%;          /* gray-50 — page canvas */
+    --foreground: 240 10% 10%;         /* near-black — primary text */
+    --card: 0 0% 100%;                 /* white — raised surfaces (header, cards) */
+    --card-foreground: 240 10% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 200 4% 18%;
+    --popover-foreground: 240 10% 10%;
 
-    /* Brand — Point Profit deep navy */
-    --primary: 210 47% 19%;            /* #193046 — Point Profit deep navy */
+    /* Brand */
+    --primary: 223 82% 58%;            /* brand-500 #3B6FF0 */
     --primary-foreground: 0 0% 100%;
 
-    /* Subtle surfaces / muted text — deep enough to register on white cards */
-    --secondary: 210 25% 92%;          /* visible against canvas + card */
-    --secondary-foreground: 210 30% 22%;
-    --muted: 210 22% 93%;              /* slightly lighter than secondary */
-    --muted-foreground: 220 5% 43%;    /* #696c74 — body muted (matches pointprofit) */
-    --accent: 210 35% 90%;             /* clear blue-cast hover bg */
-    --accent-foreground: 210 47% 19%;  /* hover text matches navy */
+    /* Subtle surfaces / muted text */
+    --secondary: 240 5% 94%;           /* slightly darker than canvas */
+    --secondary-foreground: 240 6% 28%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;    /* secondary text — labels, metadata */
+    --accent: 240 5% 92%;              /* hover bg */
+    --accent-foreground: 240 6% 28%;
 
     /* Status */
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    /* Borders + focus — slightly stronger so card edges/dividers register */
-    --border: 210 22% 86%;
-    --input: 210 22% 86%;
-    --ring: 211 97% 58%;               /* #2E91FC — vivid focus indicator */
+    /* Borders + focus */
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 223 82% 58%;
 
     --radius: 0.5rem;
   }
 
   .dark {
-    --background: 210 30% 7%;          /* very dark navy canvas */
-    --foreground: 0 0% 95%;
-    --card: 210 25% 13%;               /* slightly more lift than 11% */
+    --background: 240 10% 4%;          /* near-black canvas */
+    --foreground: 0 0% 95%;            /* off-white primary text */
+    --card: 240 8% 8%;                 /* slightly raised surface */
     --card-foreground: 0 0% 95%;
-    --popover: 210 25% 13%;
+    --popover: 240 8% 8%;
     --popover-foreground: 0 0% 95%;
 
-    --primary: 211 90% 62%;            /* lifted navy — visible on dark bg */
+    --primary: 223 82% 62%;            /* slight lift for dark contrast */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 20% 17%;
+    --secondary: 240 6% 12%;
     --secondary-foreground: 0 0% 90%;
-    --muted: 210 18% 19%;
-    --muted-foreground: 210 10% 65%;
-    --accent: 210 25% 22%;
+    --muted: 240 6% 14%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 240 6% 16%;
     --accent-foreground: 0 0% 95%;
 
     --destructive: 0 65% 55%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 210 20% 24%;
-    --input: 210 20% 24%;
-    --ring: 211 97% 65%;               /* lifted accent for dark mode focus */
+    --border: 240 5% 18%;
+    --input: 240 5% 18%;
+    --ring: 223 82% 62%;
   }
 
   * {

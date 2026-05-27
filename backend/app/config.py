@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     draft_max_tokens: int = 1024
     draft_auto_generate: bool = True   # Set to False to disable auto-generation in pipeline
     firm_name: str = "Schiller CPA"
-    firm_owner_name: str = "Jane Schiller"
+    firm_owner_name: str = "Jane Schilmoeller"
     firm_owner_email: str = "jane@schilcpa.com"
 
     # ── CORS ──────────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from app.services.llm_client import (
     LLMError,
@@ -39,6 +40,30 @@ from app.services.notification import get_notification_service
 from app.utils.sanitize import strip_html
 
 logger = logging.getLogger(__name__)
+
+
+class _LLMOutcome(NamedTuple):
+    """Result of one orchestrated LLM completion — shared by the reply-draft
+    and compose-draft paths so both get identical RunPod → Claude fallback
+    behaviour without duplicating the routing logic."""
+    text: str
+    model: str
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    used_fallback: bool
+    fallback_reason: str | None
+
+
+class ComposedEmail(NamedTuple):
+    """A cold (no-thread) AI-drafted email for the Compose / 'New Email' flow.
+    The body deliberately omits the signature — the /compose send path appends
+    Jane's configured signature itself, so baking it in here would double it."""
+    subject: str
+    body: str
+    model: str
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    used_fallback: bool
 
 
 # ── Pydantic model for Claude draft response validation ───────────────────────
@@ -186,6 +211,77 @@ def _format_thread_messages(messages: list[EmailMessage]) -> str:
     return full_text
 
 
+# ── Compose ('New Email') AI draft — cold generation, no inbound thread ─────────
+
+_COMPOSE_SYSTEM_PROMPT = """\
+You are the personal email assistant for {firm_owner_name}, CPA ({firm_owner_email}), \
+at {firm_name}. You draft brand-new outbound emails on Jane's behalf to clients and \
+contacts.
+
+Write a complete, ready-to-send email based on the instruction you are given:
+- Professional, warm, and concise — the voice of a trusted CPA's office.
+- Open with an appropriate greeting when a recipient is known.
+- Cover exactly what the instruction asks. Do NOT invent facts, figures, dates, \
+dollar amounts, deadlines, or commitments that were not provided.
+- Do NOT write any closing, sign-off, name, title, or signature — end with your \
+final substantive sentence. Jane's signature is appended automatically.
+- Also propose a short, specific subject line (no "Re:" prefix).
+
+Return ONLY a JSON object with exactly two string fields and nothing else:
+{{"subject": "<subject line>", "body": "<email body>"}}
+"""
+
+_COMPOSE_USER_PROMPT = """\
+Recipient: {recipient}
+Suggested subject (optional, may be empty): {subject_hint}
+
+Instruction — what this email should say:
+{instruction}
+"""
+
+
+class _ComposedEmailResponse(BaseModel):
+    """Validates the parsed subject + body of a composed-email AI draft."""
+    subject: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1)
+
+
+def _parse_composed_email(raw: str, subject_hint: str | None) -> tuple[str, str]:
+    """Parse the model's ``{"subject", "body"}`` JSON. Tolerant of code fences
+    and of a model that ignores the JSON instruction — in that case the whole
+    text becomes the body and we fall back to the subject hint."""
+    import json
+
+    text = (raw or "").strip()
+    # Strip ```json ... ``` / ``` ... ``` fences if the model wrapped its output.
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text[:4].lower() == "json":
+            text = text[4:].strip()
+
+    subject = (subject_hint or "").strip()
+    body = ""
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            subject = str(data.get("subject") or subject or "").strip()
+            body = str(data.get("body") or "").strip()
+    except (ValueError, TypeError):
+        body = ""
+
+    if not body:
+        # Not parseable JSON — treat the raw model text as the body.
+        body = text
+    if not subject:
+        subject = "(no subject)"
+
+    try:
+        validated = _ComposedEmailResponse(subject=subject, body=body)
+    except ValidationError as exc:
+        raise ValueError("AI returned an empty or invalid email draft.") from exc
+    return validated.subject, validated.body
+
+
 class DraftGeneratorService:
     """
     Service that generates AI draft replies for email threads.
@@ -204,6 +300,122 @@ class DraftGeneratorService:
         self._firm_name = settings.firm_name
         self._firm_owner_name = settings.firm_owner_name
         self._firm_owner_email = settings.firm_owner_email
+
+    def _complete_with_orchestration(
+        self,
+        db,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        wait_for_ready: bool = True,
+    ) -> _LLMOutcome:
+        """Run one LLM completion through the RunPod → Claude orchestration.
+
+        Two-stage routing:
+          Stage A — ensure_ready: start the RunPod pod if EXITED, health-probe
+            if RUNNING. On RunPodUnavailableError, switch to the Claude fallback
+            if ALLOW_CLAUDE_FALLBACK=true; else raise ValueError so the API
+            surfaces a clear 409.
+          Stage B — the call itself. If it raises LLMError after a successful
+            ensure_ready (e.g. vLLM died in between), retry once via Claude —
+            but only if we haven't already switched.
+
+        mark_used fires only when the primary RunPod path actually served the
+        call, so the idle watchdog reflects real activity. Token-usage recording
+        is left to the caller (reply vs compose record under different contexts).
+        """
+        settings = get_settings()
+        orchestrator = get_runpod_orchestrator()
+        use_fallback = False
+        fallback_reason: str | None = None
+
+        # Only touch the RunPod pod when the calls actually go to it
+        # (openai_compat). Under anthropic the pod was never woken, so waking +
+        # health-probing it would add pure latency for zero benefit. Gate every
+        # orchestrator interaction on this one flag.
+        use_runpod = orchestrator.enabled and settings.llm_provider == "openai_compat"
+
+        if use_runpod:
+            try:
+                # wait_for_ready=False on user-facing API paths (fast-fail to
+                # Claude on cold-start), True on background paths.
+                orchestrator.ensure_ready(db, wait_for_ready=wait_for_ready)
+            except RunPodUnavailableError as exc:
+                if settings.allow_claude_fallback:
+                    use_fallback = True
+                    # First colon-separated token is the canonical reason code
+                    # (e.g. "runpod_cold_start_in_progress"); dashboards filter
+                    # on this prefix.
+                    fallback_reason = str(exc)
+                    logger.warning(
+                        "DraftGenerator: RunPod unavailable, falling back to Claude: %s",
+                        exc,
+                    )
+                else:
+                    raise ValueError(
+                        f"RunPod unavailable and Claude fallback disabled: {exc}. "
+                        "Either fix RunPod connectivity or set ALLOW_CLAUDE_FALLBACK=true."
+                    ) from exc
+
+        if use_fallback:
+            try:
+                active_client = get_claude_fallback_client()
+            except LLMError as fallback_exc:
+                # Fallback requested but Claude isn't configured → ValueError so
+                # the API returns a clear 409 instead of a generic 502.
+                raise ValueError(
+                    f"RunPod unavailable AND Claude fallback unconfigured: {fallback_exc}"
+                ) from fallback_exc
+        else:
+            active_client = self._client
+        active_model = active_client.model
+
+        try:
+            llm_result = active_client.complete(
+                system=system_prompt,
+                user=user_prompt,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+            )
+        except LLMError as exc:
+            # Primary call failed mid-flight. If we haven't switched and fallback
+            # is allowed, retry once via Claude (catches "pod healthy at
+            # ensure_ready but vLLM died between then and the call").
+            if not use_fallback and use_runpod and settings.allow_claude_fallback:
+                logger.warning(
+                    "DraftGenerator: primary LLM call failed, retrying via Claude: %s",
+                    exc,
+                )
+                use_fallback = True
+                fallback_reason = f"runpod_call_failed: {exc}"
+                try:
+                    active_client = get_claude_fallback_client()
+                except LLMError as fallback_exc:
+                    # Both failed — propagate the original LLMError (chained) so
+                    # the API returns 502 with the most actionable message.
+                    raise exc from fallback_exc
+                active_model = active_client.model
+                llm_result = active_client.complete(
+                    system=system_prompt,
+                    user=user_prompt,
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
+                )
+            else:
+                raise
+
+        # Only mark RunPod "used" if it actually served the call.
+        if not use_fallback and use_runpod:
+            orchestrator.mark_used(db)
+
+        return _LLMOutcome(
+            text=llm_result.text.strip(),
+            model=active_model,
+            prompt_tokens=llm_result.prompt_tokens,
+            completion_tokens=llm_result.completion_tokens,
+            used_fallback=use_fallback,
+            fallback_reason=fallback_reason,
+        )
 
     def generate(
         self,
@@ -389,127 +601,20 @@ class DraftGeneratorService:
             len(negative_patterns),
         )
 
-        # Orchestrate the LLM call. Two-stage routing:
-        #   Stage A — ensure_ready: start the RunPod pod if EXITED, health-
-        #     probe if RUNNING. On RunPodUnavailableError, switch to Claude
-        #     fallback if ALLOW_CLAUDE_FALLBACK=true (project_claude_fallback_
-        #     override memory has the policy context); else raise ValueError
-        #     so api/drafts.py surfaces a clear 409 to the admin.
-        #   Stage B — the LLM call itself. If the primary call still LLMError
-        #     after a successful ensure_ready (e.g. vLLM died between ready and
-        #     the call), retry once via Claude — but only if we haven't already
-        #     switched.
-        # mark_used is called only when the primary path succeeded so the
-        # watchdog's idle calculation reflects real RunPod activity.
-        # Every fallback event is audit-logged at the bottom of this method
-        # so the team can observe how often the closed loop is broken.
-        settings = get_settings()
-        orchestrator = get_runpod_orchestrator()
-        use_fallback = False
-        fallback_reason: str | None = None
-
-        # Single source of truth: only touch the RunPod pod when the LLM calls
-        # actually go to it (openai_compat provider). Under the anthropic
-        # provider the draft is generated by Claude directly, so waking +
-        # health-probing the pod adds pure latency — a RunPod status call plus
-        # a vLLM probe that can sit on its timeout before fast-failing — for
-        # zero benefit. This was the main reason draft generation / regeneration
-        # felt slow while a RUNPOD_POD_ID was configured but
-        # LLM_PROVIDER=anthropic. Gate EVERY orchestrator interaction
-        # (ensure_ready, the LLMError retry, mark_used) on this one flag so none
-        # can quietly fire under the wrong provider.
-        use_runpod = orchestrator.enabled and settings.llm_provider == "openai_compat"
-
-        if use_runpod:
-            try:
-                # wait_for_ready=False on user-facing API path (fast-fail
-                # to Claude on cold-start), True on background paths
-                # (polling, login sweep — those can afford to wait).
-                orchestrator.ensure_ready(db, wait_for_ready=wait_for_ready)
-            except RunPodUnavailableError as exc:
-                if settings.allow_claude_fallback:
-                    use_fallback = True
-                    # Reason string structure: first colon-separated token is
-                    # the canonical reason code from the orchestrator (e.g.
-                    # "runpod_cold_start_in_progress" for fast-fail,
-                    # "daily_cap_reached" for circuit breaker). Audit log
-                    # dashboards can filter on this prefix.
-                    fallback_reason = str(exc)
-                    logger.warning(
-                        "DraftGenerator: RunPod unavailable, falling back to Claude: %s",
-                        exc,
-                    )
-                else:
-                    raise ValueError(
-                        f"RunPod unavailable and Claude fallback disabled: {exc}. "
-                        "Either fix RunPod connectivity or set ALLOW_CLAUDE_FALLBACK=true."
-                    ) from exc
-
-        if use_fallback:
-            try:
-                active_client = get_claude_fallback_client()
-            except LLMError as fallback_exc:
-                # Fallback was requested but Claude itself isn't configured.
-                # Convert to ValueError so the API surfaces a clear 409
-                # ("set ANTHROPIC_API_KEY or disable fallback") rather than
-                # a generic 502.
-                raise ValueError(
-                    f"RunPod unavailable AND Claude fallback unconfigured: {fallback_exc}"
-                ) from fallback_exc
-        else:
-            active_client = self._client
-        active_model = active_client.model
-
-        try:
-            llm_result = active_client.complete(
-                system=system_prompt,
-                user=user_prompt,
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
-            )
-        except LLMError as exc:
-            # Primary LLM call failed mid-flight. If we haven't switched yet
-            # and fallback is allowed, retry once via Claude — this catches
-            # the "pod was healthy at ensure_ready but vLLM died between then
-            # and the call" race that triggered today's testing pain.
-            if (
-                not use_fallback
-                and use_runpod
-                and settings.allow_claude_fallback
-            ):
-                logger.warning(
-                    "DraftGenerator: primary LLM call failed, retrying via Claude: %s",
-                    exc,
-                )
-                use_fallback = True
-                fallback_reason = f"runpod_call_failed: {exc}"
-                try:
-                    active_client = get_claude_fallback_client()
-                except LLMError as fallback_exc:
-                    # Both RunPod and Claude failed — propagate the original
-                    # LLMError (with the fallback exception chained) so the
-                    # API returns 502 with the most actionable message.
-                    raise exc from fallback_exc
-                active_model = active_client.model
-                llm_result = active_client.complete(
-                    system=system_prompt,
-                    user=user_prompt,
-                    max_tokens=self._max_tokens,
-                    temperature=self._temperature,
-                )
-            else:
-                raise
-
-        # Only mark RunPod "used" if we actually used it. Fallback path leaves
-        # last_used_at alone — the watchdog will idle-stop the pod normally
-        # on its regular schedule. Under anthropic (use_runpod False) the pod
-        # was never woken, so there is nothing to mark.
-        if not use_fallback and use_runpod:
-            orchestrator.mark_used(db)
-
-        raw_body = llm_result.text.strip()
-        prompt_tokens = llm_result.prompt_tokens
-        completion_tokens = llm_result.completion_tokens
+        # Orchestrate the LLM call (RunPod ensure-ready → Claude fallback →
+        # one-time retry) via the shared helper, then validate + persist below.
+        outcome = self._complete_with_orchestration(
+            db,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            wait_for_ready=wait_for_ready,
+        )
+        raw_body = outcome.text
+        use_fallback = outcome.used_fallback
+        fallback_reason = outcome.fallback_reason
+        active_model = outcome.model
+        prompt_tokens = outcome.prompt_tokens
+        completion_tokens = outcome.completion_tokens
 
         # Validate the draft body using Pydantic — catches empty/too-short output.
         # min_length=20 rejects degenerate responses that are too brief to be useful.
@@ -649,6 +754,103 @@ class DraftGeneratorService:
             logger.error("DraftGenerator: failed to send draft.ready notification: %s", exc)
 
         return draft
+
+    def generate_composed_email(
+        self,
+        db,
+        *,
+        instruction: str,
+        recipient: str | None = None,
+        subject_hint: str | None = None,
+        wait_for_ready: bool = False,
+    ) -> ComposedEmail:
+        """Draft a brand-new outbound email from a free-text instruction.
+
+        Unlike `generate`, there is no inbound thread — this is a 'cold'
+        generation for the Compose / 'New Email' flow. It reuses the firm
+        persona and the same RunPod → Claude orchestration, then returns a
+        subject + body for the user to review and edit before sending. The body
+        omits the signature; the /compose send path appends it.
+
+        Raises ValueError on an unconfigured provider, exceeded budget, empty
+        instruction, or unparseable model output — the API maps these to 4xx/409.
+        """
+        instruction = (instruction or "").strip()
+        if not instruction:
+            raise ValueError("An instruction is required to draft an email.")
+
+        # Provider-config guard — same messages as the reply path.
+        if not is_llm_configured():
+            settings = get_settings()
+            if settings.llm_provider == "openai_compat":
+                raise ValueError(
+                    "AI provider is not configured. Set LLM_API_KEY and LLM_BASE_URL, "
+                    "or switch LLM_PROVIDER to 'anthropic' and set ANTHROPIC_API_KEY."
+                )
+            raise ValueError(
+                "AI provider is not configured. Set ANTHROPIC_API_KEY to a real key, "
+                "or switch LLM_PROVIDER to 'openai_compat' with the RunPod / OpenAI "
+                "credentials."
+            )
+
+        # Budget guard — same as the reply path.
+        try:
+            from app.services.ai_budget import check_budget
+            check_budget()
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning("DraftGenerator: AI budget exceeded, skipping compose: %s", exc)
+            raise ValueError(f"AI budget exceeded: {exc}") from exc
+
+        system_prompt = _COMPOSE_SYSTEM_PROMPT.format(
+            firm_name=self._firm_name,
+            firm_owner_name=self._firm_owner_name,
+            firm_owner_email=self._firm_owner_email,
+        )
+        user_prompt = _COMPOSE_USER_PROMPT.format(
+            recipient=recipient or "(not specified)",
+            subject_hint=subject_hint or "(none — propose one)",
+            # Wrap the free-text instruction in injection-defence delimiters,
+            # same as inbound message bodies in the reply path.
+            instruction=wrap_user_content(instruction),
+        )
+
+        outcome = self._complete_with_orchestration(
+            db,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            wait_for_ready=wait_for_ready,
+        )
+
+        # Record token spend (caller-side, mirroring generate()).
+        if outcome.prompt_tokens is not None or outcome.completion_tokens is not None:
+            try:
+                from app.services.ai_budget import record_usage
+                record_usage(
+                    input_tokens=outcome.prompt_tokens or 0,
+                    output_tokens=outcome.completion_tokens or 0,
+                )
+            except Exception as exc:
+                logger.warning("DraftGenerator: failed to record token usage: %s", exc)
+
+        subject, body = _parse_composed_email(outcome.text, subject_hint)
+        logger.info(
+            "DraftGenerator: composed email drafted model=%s prompt_tokens=%s "
+            "completion_tokens=%s fallback=%s",
+            outcome.model,
+            outcome.prompt_tokens,
+            outcome.completion_tokens,
+            outcome.used_fallback,
+        )
+        return ComposedEmail(
+            subject=subject,
+            body=body,
+            model=outcome.model,
+            prompt_tokens=outcome.prompt_tokens,
+            completion_tokens=outcome.completion_tokens,
+            used_fallback=outcome.used_fallback,
+        )
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────

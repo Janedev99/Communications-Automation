@@ -23,7 +23,18 @@ from datetime import datetime, date, timezone
 from typing import AsyncGenerator, DefaultDict, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -66,6 +77,8 @@ from app.schemas.email import (
     AssignRequest,
     BulkActionRequest,
     BulkActionResponse,
+    ComposeDraftRequest,
+    ComposeDraftResponse,
     DraftResponseResponse,
     EmailThreadListItem,
     EmailThreadListResponse,
@@ -524,6 +537,10 @@ def list_threads(
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
     saved: bool | None = Query(default=None, description="Filter to saved threads only"),
     folder: str | None = Query(default=None, description="Filter to a specific saved folder"),
+    sent_only: bool = Query(
+        default=False,
+        description="Show only threads containing at least one outbound (sent) message",
+    ),
     sort: Literal[
         "updated_desc", "updated_asc",
         "subject_asc", "subject_desc",
@@ -566,6 +583,22 @@ def list_threads(
             )
         else:
             query = query.where(EmailThread.saved_folder == folder)
+    if sent_only:
+        # "Sent" = any thread we've actually sent mail in — composed emails AND
+        # approved reply-sends. Keyed off the presence of an outbound message
+        # rather than a terminal status, so a resolved/closed thread still
+        # appears if Jane replied in it (matches Outlook's Sent Items, which is
+        # independent of Inbox read/closed state). Trash + spam threads are
+        # still excluded by the default status filter above.
+        outbound_exists = (
+            select(EmailMessage.id)
+            .where(
+                EmailMessage.thread_id == EmailThread.id,
+                EmailMessage.direction == MessageDirection.outbound,
+            )
+            .exists()
+        )
+        query = query.where(outbound_exists)
     if tier is not None:
         # The Escalated tab is what users mental-model as "everything that
         # needs Jane's attention." Tier and status are stored independently and
@@ -2098,3 +2131,235 @@ def create_manual_draft(
     )
 
     return DraftResponseResponse.model_validate(draft)
+
+
+# ── Compose a brand-new outbound email ───────────────────────────────────────
+
+_COMPOSE_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _parse_recipient_list(raw: str | None) -> list[str]:
+    """Split a comma/semicolon-separated recipient string into validated, de-duped
+    addresses (order preserved). Raises 422 on any malformed address."""
+    if not raw:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in re.split(r"[;,]", raw):
+        addr = part.strip()
+        if not addr:
+            continue
+        if not _COMPOSE_EMAIL_RE.match(addr):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid email address: {addr!r}",
+            )
+        key = addr.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(addr)
+    return out
+
+
+@router.post(
+    "/compose",
+    response_model=EmailThreadResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def compose_email(
+    request: Request,
+    to: str = Form(...),
+    subject: str = Form(...),
+    body: str = Form(...),
+    cc: str | None = Form(None),
+    attachments: list[UploadFile] = File(default=[]),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailThreadResponse:
+    """Compose and SEND a brand-new outbound email (not a reply).
+
+    multipart/form-data: ``to`` / ``subject`` / ``body`` (required), optional
+    ``cc`` (comma/semicolon separated), and zero or more ``attachments`` files.
+
+    Records the sent mail as a new thread + outbound EmailMessage so it shows in
+    the app, and appends Jane's configured signature (same source the AI drafter
+    uses). The real send goes through the configured provider; on failure nothing
+    is persisted. Auth + CSRF required.
+    """
+    from app.config import get_settings as _get_settings
+    from app.services import system_settings as _ss
+    from app.services.email_provider import (
+        MAX_TOTAL_ATTACHMENT_SIZE,
+        EmailAttachment,
+        get_email_provider,
+    )
+
+    to_list = _parse_recipient_list(to)
+    if not to_list:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one valid 'to' recipient is required.",
+        )
+    cc_list = _parse_recipient_list(cc)
+
+    subject = (subject or "").strip()
+    if not subject:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Subject is required.",
+        )
+    body_text = (body or "").strip()
+    if not body_text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message body is required.",
+        )
+
+    # Read uploads into memory, enforcing the total-size cap as we go.
+    email_attachments: list[EmailAttachment] = []
+    total = 0
+    for up in attachments or []:
+        content = up.file.read()
+        if not content:
+            continue
+        total += len(content)
+        if total > MAX_TOTAL_ATTACHMENT_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"Attachments exceed the "
+                    f"{MAX_TOTAL_ATTACHMENT_SIZE // (1024 * 1024)} MB limit."
+                ),
+            )
+        email_attachments.append(
+            EmailAttachment(
+                filename=up.filename or "attachment",
+                content=content,
+                content_type=up.content_type or "application/octet-stream",
+            )
+        )
+
+    # Append Jane's signature (same setting the AI drafter uses).
+    signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
+    final_body = f"{body_text}\n\n{signature}" if signature else body_text
+
+    app_settings = _get_settings()
+    from_address = app_settings.msgraph_mailbox or app_settings.firm_owner_email
+    primary_to = to_list[0]
+    # send_email takes a single `to`; fold any extra To addresses into Cc so all
+    # recipients still receive the message (v1 — a multi-To provider API is a
+    # later enhancement).
+    effective_cc = to_list[1:] + cc_list
+
+    # Persist the thread + outbound message BEFORE sending; roll back on failure.
+    thread = EmailThread(
+        subject=subject,
+        client_email=primary_to,
+        status=EmailStatus.sent,
+        category=EmailCategory.uncategorized,
+    )
+    db.add(thread)
+    db.flush()
+
+    domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
+    outbound_message_id = f"<compose-{thread.id}@{domain}>"
+    outbound_msg = EmailMessage(
+        thread_id=thread.id,
+        message_id_header=outbound_message_id,
+        sender=f"{app_settings.firm_name} <{from_address}>",
+        recipient=", ".join(to_list),
+        body_text=final_body,
+        received_at=datetime.now(timezone.utc),
+        direction=MessageDirection.outbound,
+        is_processed=True,
+    )
+    db.add(outbound_msg)
+    db.flush()
+
+    provider = get_email_provider()
+    try:
+        provider.connect()
+        actual_message_id = provider.send_email(
+            to=primary_to,
+            subject=subject,
+            body_text=final_body,
+            cc=effective_cc,
+            attachments=email_attachments,
+            message_id=outbound_message_id,
+        )
+        if actual_message_id and actual_message_id != outbound_message_id:
+            outbound_msg.message_id_header = actual_message_id
+    except ValueError as exc:
+        # Provider-side size/validation failure → 413 with the reason.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        )
+    except Exception as exc:
+        logger.error("compose_email send failed to=%s: %s", to_list, exc, exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send the email. Please try again.",
+        )
+
+    log_action(
+        db,
+        action="email.composed",
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "to": to_list,
+            "cc": cc_list,
+            "subject": subject,
+            "attachment_count": len(email_attachments),
+            "attachment_bytes": total,
+            "message_id_header": outbound_msg.message_id_header,
+        },
+    )
+    db.commit()
+    db.refresh(thread)
+    return EmailThreadResponse.model_validate(thread)
+
+
+@router.post(
+    "/compose/draft",
+    response_model=ComposeDraftResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def compose_draft(
+    request: Request,
+    body: ComposeDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ComposeDraftResponse:
+    """Ask the AI to draft a brand-new outbound email from a free-text
+    instruction. Returns an editable subject + body — nothing is sent or
+    persisted here; the user reviews, edits, then sends via /compose.
+
+    Mirrors the reply-draft endpoint's error contract: provider/budget/parse
+    problems surface as 409 with the reason; transient AI failures as 502.
+    Auth + CSRF required.
+    """
+    from app.services.draft_generator import get_draft_generator
+
+    generator = get_draft_generator()
+    try:
+        result = generator.generate_composed_email(
+            db,
+            instruction=body.instruction,
+            recipient=body.recipient,
+            subject_hint=body.subject_hint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface a clean 502, log the detail
+        logger.error("compose_draft failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The AI service failed to draft the email. Please try again.",
+        )
+
+    return ComposeDraftResponse(subject=result.subject, body=result.body)

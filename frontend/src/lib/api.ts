@@ -11,6 +11,7 @@
  *   cannot read it. Falls back to the cookie for same-origin deploys.
  */
 import { ApiError } from "./types";
+import type { EmailThread } from "./types";
 
 const CSRF_STORAGE_KEY = "csrf_token";
 
@@ -229,4 +230,106 @@ export async function downloadBinary(
     // Defer revoke so the click handler has time to dispatch the download
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
+}
+
+
+/** Shared 401 / error handling for the non-JSON fetch helpers (multipart upload,
+ * binary download). Mirrors the generic `request()` flow but for callers that
+ * own their own body/headers. */
+async function assertOk(res: Response): Promise<void> {
+  if (res.status === 401) {
+    clearCsrfToken();
+    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
+    throw new ApiError(401, "Unauthorized");
+  }
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) message = body.detail;
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    throw new ApiError(res.status, message);
+  }
+}
+
+export interface ComposeEmailInput {
+  /** Comma/semicolon-separated To recipients. */
+  to: string;
+  subject: string;
+  body: string;
+  /** Comma/semicolon-separated Cc recipients. */
+  cc?: string;
+  attachments?: File[];
+}
+
+/**
+ * Compose and SEND a brand-new outbound email (the "New Email" flow).
+ *
+ * Posts multipart/form-data to /api/v1/emails/compose. We bypass the generic
+ * JSON `request()` wrapper here on purpose: for a multipart upload the browser
+ * must set its own `Content-Type: multipart/form-data; boundary=…` header, so
+ * we hand the FormData straight to fetch and only attach the CSRF token +
+ * credentials ourselves. Returns the created (sent) thread.
+ */
+export async function composeEmail(input: ComposeEmailInput): Promise<EmailThread> {
+  const url = `${getBaseUrl()}/api/v1/emails/compose`;
+
+  const form = new FormData();
+  form.set("to", input.to);
+  form.set("subject", input.subject);
+  form.set("body", input.body);
+  if (input.cc) form.set("cc", input.cc);
+  for (const file of input.attachments ?? []) {
+    form.append("attachments", file, file.name);
+  }
+
+  const headers: Record<string, string> = {};
+  const csrfToken = getCsrfToken();
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+
+  const res = await fetch(url, {
+    method: "POST",
+    body: form,
+    headers,
+    credentials: "include",
+  });
+  await assertOk(res);
+  return res.json() as Promise<EmailThread>;
+}
+
+/**
+ * Send an approved draft reply, optionally with file attachments.
+ *
+ * Multipart sibling of the JSON send: posts `idempotency_key` + `attachments`
+ * to the draft send endpoint. Same boundary-header rationale as composeEmail.
+ * Throws ApiError on non-OK (the caller treats 409 as "already sent").
+ */
+export async function sendDraft(
+  threadId: string,
+  draftId: string,
+  opts: { idempotencyKey?: string; attachments?: File[] } = {},
+): Promise<void> {
+  const url = `${getBaseUrl()}/api/v1/emails/${threadId}/drafts/${draftId}/send`;
+
+  const form = new FormData();
+  if (opts.idempotencyKey) form.set("idempotency_key", opts.idempotencyKey);
+  for (const file of opts.attachments ?? []) {
+    form.append("attachments", file, file.name);
+  }
+
+  const headers: Record<string, string> = {};
+  const csrfToken = getCsrfToken();
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+
+  const res = await fetch(url, {
+    method: "POST",
+    body: form,
+    headers,
+    credentials: "include",
+  });
+  await assertOk(res);
 }

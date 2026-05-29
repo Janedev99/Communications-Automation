@@ -11,6 +11,7 @@ import {
   Bookmark,
   GraduationCap,
   History,
+  PenSquare,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -18,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
 import { useDashboard } from "@/hooks/use-dashboard";
+import { useCompose } from "@/components/emails/compose-context";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { AlphaBadge } from "@/components/ui/alpha-badge";
 
@@ -64,6 +66,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useUser();
   const { stats } = useDashboard();
+  const { openCompose } = useCompose();
 
   // Compute whether there are new items since last seen
   const lastSeenRef = useRef<LastSeenCounts>(getLastSeen());
@@ -138,6 +141,22 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Compose — opens the docked New Email window from any page (Gmail-style) */}
+      <div className="px-2 pb-2">
+        <button
+          onClick={() => openCompose()}
+          title={collapsed ? "New Email" : undefined}
+          aria-label="New Email"
+          className={cn(
+            "flex items-center rounded-md bg-primary text-primary-foreground font-medium text-sm shadow-sm ring-1 ring-primary/20 hover:bg-primary/90 transition-colors duration-150 w-full",
+            collapsed ? "justify-center py-2 px-0" : "gap-2.5 px-3 py-2"
+          )}
+        >
+          <PenSquare className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
+          {!collapsed && <span>New Email</span>}
+        </button>
       </div>
 
       {/* Main nav */}

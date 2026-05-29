@@ -20,7 +20,18 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -417,14 +428,18 @@ def send_draft(
     request: Request,
     thread_id: uuid.UUID,
     draft_id: uuid.UUID,
-    body: SendDraftRequest = SendDraftRequest(),
+    idempotency_key: str | None = Form(default=None),
+    attachments: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DraftResponseResponse:
     """
-    Send an approved draft to the client via the configured email provider.
+    Send an approved draft to the client via the configured email provider,
+    optionally with file attachments.
 
-    Only drafts with status 'approved' or 'send_failed' can be sent.
+    multipart/form-data: optional ``idempotency_key`` (Form) + zero or more
+    ``attachments`` files. Only drafts with status 'approved' or 'send_failed'
+    can be sent.
 
     Idempotency (T1.12):
       - Client may supply an idempotency_key in the request body. If omitted,
@@ -468,7 +483,17 @@ def send_draft(
     # T1.12: If client supplies a key that matches an existing key on this draft
     # and status is send_failed, it means they are retrying a failed attempt.
     # We allow the retry — fall through to re-attempt sending.
-    client_key = body.idempotency_key
+    # Validate the key shape via the existing schema (the body moved to a Form
+    # field when this endpoint became multipart, so we validate explicitly).
+    if idempotency_key is not None:
+        try:
+            SendDraftRequest(idempotency_key=idempotency_key)
+        except ValidationError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="idempotency_key must match ^[A-Za-z0-9_-]{1,128}$.",
+            )
+    client_key = idempotency_key
 
     if draft.status not in (DraftStatus.approved, DraftStatus.send_failed):
         raise HTTPException(
@@ -477,6 +502,37 @@ def send_draft(
                 f"Cannot send a draft with status '{draft.status.value}'. "
                 "Only approved or send_failed drafts can be sent."
             ),
+        )
+
+    # Read uploaded attachments into memory, enforcing the total-size cap before
+    # we touch the idempotency machinery — a too-large request fails fast (413)
+    # without recording a send attempt.
+    from app.services.email_provider import (
+        MAX_TOTAL_ATTACHMENT_SIZE,
+        EmailAttachment,
+    )
+
+    email_attachments: list[EmailAttachment] = []
+    total_attachment_bytes = 0
+    for up in attachments or []:
+        content = up.file.read()
+        if not content:
+            continue
+        total_attachment_bytes += len(content)
+        if total_attachment_bytes > MAX_TOTAL_ATTACHMENT_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"Attachments exceed the "
+                    f"{MAX_TOTAL_ATTACHMENT_SIZE // (1024 * 1024)} MB limit."
+                ),
+            )
+        email_attachments.append(
+            EmailAttachment(
+                filename=up.filename or "attachment",
+                content=content,
+                content_type=up.content_type or "application/octet-stream",
+            )
         )
 
     # ── Step 1: Resolve / assign idempotency key and persist attempt counter ──
@@ -575,6 +631,7 @@ def send_draft(
             reply_to_message_id=reply_to_message_id,
             references_header=references_header,
             message_id=outbound_message_id,
+            attachments=email_attachments,
         )
         if actual_message_id and actual_message_id != outbound_message_id:
             outbound_msg.message_id_header = actual_message_id
@@ -623,6 +680,8 @@ def send_draft(
             "message_id_header": outbound_msg.message_id_header,
             "send_attempts": draft.send_attempts,
             "idempotency_key": draft.send_idempotency_key,
+            "attachment_count": len(email_attachments),
+            "attachment_bytes": total_attachment_bytes,
         },
     )
 

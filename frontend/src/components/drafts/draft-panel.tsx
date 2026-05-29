@@ -30,9 +30,16 @@ import { TemplatePickerDialog } from "./template-picker-dialog";
 import { FeedbackIndicator } from "./feedback-indicator";
 import { FeedbackOnboarding } from "./feedback-onboarding";
 import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants";
-import { api } from "@/lib/api";
+import { api, sendDraft } from "@/lib/api";
 import { ApiError } from "@/lib/types";
+import {
+  AttachButton,
+  AttachmentChips,
+  AttachmentInput,
+  useAttachments,
+} from "@/components/emails/attachments";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
+import { useSendCountdownEnabled } from "@/lib/preferences";
 import { ConfidenceMeter } from "@/components/ui/confidence-meter";
 import { SourcePill } from "@/components/ui/source-pill";
 import type { DraftResponse, EmailThread, KnowledgeEntry } from "@/lib/types";
@@ -87,6 +94,10 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     thread.suggested_reply_tone ?? "professional"
   );
 
+  // Per-user preference (browser-local): whether to run the 10s undo countdown
+  // after Send is confirmed, or send immediately.
+  const [countdownEnabled] = useSendCountdownEnabled();
+
   // Send state machine (Item 2)
   const [sendState, setSendState] = useState<SendState>({ phase: "idle" });
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +105,21 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref to stable idempotency key per send attempt
   const sendIdempotencyKeyRef = useRef<string>("");
+
+  // Attachments for this reply. Captured into a ref at send-confirm time so the
+  // countdown's deferred executeSend() can't read a stale closure if the list
+  // changes mid-countdown (mirrors the idempotency-key ref pattern).
+  const {
+    attachments,
+    addFiles,
+    removeAttachment,
+    clear: clearAttachments,
+    totalBytes,
+    overSizeLimit,
+    inputRef: attachInputRef,
+    openPicker: openAttachPicker,
+  } = useAttachments();
+  const pendingAttachmentsRef = useRef<File[]>([]);
 
   // Clean up timers on unmount
   useEffect(() => {
@@ -281,30 +307,42 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     if (!draft) return;
     setSendState({ phase: "sending" });
     try {
-      await api.post(`/api/v1/emails/${thread.id}/drafts/${draft.id}/send`, {
-        idempotency_key: sendIdempotencyKeyRef.current,
+      await sendDraft(thread.id, draft.id, {
+        idempotencyKey: sendIdempotencyKeyRef.current,
+        attachments: pendingAttachmentsRef.current,
       });
       const sentAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       setSendState({ phase: "sent", sentAt });
+      clearAttachments();
       onDraftChange();
     } catch (err: unknown) {
       // 409 = already sent — treat as success per backend idempotency contract
       if (err instanceof ApiError && err.status === 409) {
         toast.info("Email was already sent.");
         setSendState({ phase: "sent", sentAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+        clearAttachments();
         onDraftChange();
         return;
       }
       const message = err instanceof Error ? err.message : "Failed to send email.";
       setSendState({ phase: "error", message });
     }
-  }, [draft, thread.id, onDraftChange]);
+  }, [draft, thread.id, onDraftChange, clearAttachments]);
 
   /** Called when user confirms the Send confirm dialog */
   const handleSendWithCountdown = useCallback(() => {
     setShowSendConfirm(false);
     // Fresh idempotency key per send attempt
     sendIdempotencyKeyRef.current = `${draft?.id ?? "unknown"}-${Date.now()}`;
+    // Freeze the attachment list for this send so a mid-countdown change can't
+    // alter what goes out.
+    pendingAttachmentsRef.current = attachments;
+
+    // Per-user preference: when the undo countdown is off, send immediately.
+    if (!countdownEnabled) {
+      executeSend();
+      return;
+    }
 
     let remaining = UNDO_COUNTDOWN_SECONDS;
     setSendState({ phase: "pending_send", countdown: remaining });
@@ -318,7 +356,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         setSendState({ phase: "pending_send", countdown: remaining });
       }
     }, 1000);
-  }, [draft?.id, clearSendTimers, executeSend]);
+  }, [draft?.id, clearSendTimers, executeSend, attachments, countdownEnabled]);
 
   // ── Template handling ──────────────────────────────────────────────────────
 
@@ -938,7 +976,20 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           </>
         ) : (
           /* Normal action buttons when not in send flow */
-          <div className="flex items-center gap-2">
+          <div className="space-y-2 w-full">
+            {draft.status === "approved" && (
+              <div className="space-y-2 pb-1 border-b border-border/60">
+                <AttachButton onClick={openAttachPicker} label="Attach files" />
+                <AttachmentInput inputRef={attachInputRef} onFiles={addFiles} />
+                <AttachmentChips
+                  attachments={attachments}
+                  onRemove={removeAttachment}
+                  totalBytes={totalBytes}
+                  overSizeLimit={overSizeLimit}
+                />
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
             {draft.status !== "approved" && (
               <>
                 <Button
@@ -976,7 +1027,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               <>
                 <Button
                   onClick={() => setShowSendConfirm(true)}
-                  disabled={sendState.phase !== "idle" || reverting}
+                  disabled={sendState.phase !== "idle" || reverting || overSizeLimit}
                 >
                   <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
                   Send
@@ -1004,6 +1055,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 </Button>
               </>
             )}
+            </div>
           </div>
         )}
       </div>
@@ -1032,7 +1084,11 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         open={showSendConfirm}
         onOpenChange={setShowSendConfirm}
         title="Send this email?"
-        description={`Send this email to ${thread.client_email}? You'll have 10 seconds to cancel.`}
+        description={
+          countdownEnabled
+            ? `Send this email to ${thread.client_email}? You'll have 10 seconds to cancel.`
+            : `Send this email to ${thread.client_email}? It will be sent immediately.`
+        }
         confirmLabel="Send"
         confirmVariant="default"
         onConfirm={handleSendWithCountdown}

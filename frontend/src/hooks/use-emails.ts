@@ -39,6 +39,8 @@ interface UseEmailsParams {
   assigned_to?: string;
   /** When true, only saved threads. When false, only un-saved. Omit for both. */
   saved?: boolean;
+  /** When true, only threads containing a sent (outbound) message — the Sent folder. */
+  sentOnly?: boolean;
   /** Filter by saved folder. Empty string targets the unfiled bucket. */
   folder?: string;
   /** Sort axis. Defaults to most-recently-updated first server-side. */
@@ -58,6 +60,7 @@ export function useEmails(params: UseEmailsParams = {}) {
     client_email,
     assigned_to,
     saved,
+    sentOnly,
     folder,
     sort,
     search,
@@ -79,6 +82,7 @@ export function useEmails(params: UseEmailsParams = {}) {
     if (client_email) searchParams.set("client_email", client_email);
     if (assigned_to) searchParams.set("assigned_to", assigned_to);
     if (saved !== undefined) searchParams.set("saved", String(saved));
+    if (sentOnly) searchParams.set("sent_only", "true");
     if (folder !== undefined) searchParams.set("folder", folder);
     if (sort) searchParams.set("sort", sort);
   }
@@ -168,6 +172,32 @@ export function addThreadToKnowledgeBase(
 
 export function bulkAction(body: BulkActionRequest): Promise<BulkActionResponse> {
   return api.post<BulkActionResponse>("/api/v1/emails/bulk", body);
+}
+
+// ── Compose: AI "write this email for me" ──────────────────────────────────────
+
+export interface ComposeDraftRequest {
+  /** Plain-language instruction for what the email should say. */
+  instruction: string;
+  /** Optional recipient address, used as greeting context. */
+  recipient?: string;
+  /** Optional subject the AI should refine or use as a starting point. */
+  subject_hint?: string;
+}
+
+export interface ComposeDraftResult {
+  subject: string;
+  body: string;
+}
+
+/**
+ * Ask the AI to draft a brand-new outbound email from a free-text instruction.
+ * Returns an editable subject + body — nothing is sent. The signature is NOT
+ * included (the send path appends it). Surfaces the backend's 409 message
+ * verbatim (e.g. provider unconfigured / budget exceeded) via ApiError.
+ */
+export function composeDraft(body: ComposeDraftRequest): Promise<ComposeDraftResult> {
+  return api.post<ComposeDraftResult>("/api/v1/emails/compose/draft", body);
 }
 
 // ── Save / unsave thread ──────────────────────────────────────────────────────

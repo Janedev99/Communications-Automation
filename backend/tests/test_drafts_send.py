@@ -331,7 +331,7 @@ def test_client_idempotency_key_prevents_duplicate_send(
 
     resp1 = logged_in_admin.post(
         f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
-        json={"idempotency_key": idempotency_key},
+        data={"idempotency_key": idempotency_key},
     )
     assert resp1.status_code == 200, resp1.text
     assert resp1.json()["status"] == "sent"
@@ -340,7 +340,7 @@ def test_client_idempotency_key_prevents_duplicate_send(
     # Second call with same draft (already sent) — should return 200, no provider call
     resp2 = logged_in_admin.post(
         f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
-        json={"idempotency_key": idempotency_key},
+        data={"idempotency_key": idempotency_key},
     )
     assert resp2.status_code == 200, resp2.text
     assert resp2.json()["status"] == "sent"
@@ -378,7 +378,7 @@ def test_malformed_idempotency_key_rejected(
     for bad_key in malformed_keys:
         resp = logged_in_admin.post(
             f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
-            json={"idempotency_key": bad_key},
+            data={"idempotency_key": bad_key},
         )
         assert resp.status_code == 422, (
             f"Expected 422 for malformed key {bad_key!r}, got {resp.status_code}: {resp.text}"
@@ -387,8 +387,62 @@ def test_malformed_idempotency_key_rejected(
     # Valid key must still work (provider actually sends for approved draft)
     resp = logged_in_admin.post(
         f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
-        json={"idempotency_key": "valid-key-abc123"},
+        data={"idempotency_key": "valid-key-abc123"},
     )
     assert resp.status_code == 200, (
         f"Expected 200 for valid idempotency key, got {resp.status_code}: {resp.text}"
     )
+
+
+# ===========================================================================
+# 9. Attachments on a draft reply (multipart send)
+# ===========================================================================
+
+def test_send_draft_with_attachments(logged_in_admin, mock_email_provider):
+    """Files uploaded with the send request reach the provider as
+    EmailAttachment payloads alongside the reply body."""
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
+        files=[
+            ("attachments", ("worksheet.pdf", b"%PDF-1.4 fake", "application/pdf")),
+            ("attachments", ("summary.txt", b"plain notes", "text/plain")),
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "sent"
+
+    assert len(mock_email_provider.sent_emails) == 1
+    atts = mock_email_provider.sent_emails[0]["attachments"]
+    assert len(atts) == 2
+    assert {a.filename for a in atts} == {"worksheet.pdf", "summary.txt"}
+    pdf = next(a for a in atts if a.filename == "worksheet.pdf")
+    assert pdf.content == b"%PDF-1.4 fake"
+
+
+def test_send_draft_no_attachments_still_works(logged_in_admin, mock_email_provider):
+    """A bare send (no body, no files) keeps working after the multipart switch."""
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send"
+    )
+    assert resp.status_code == 200, resp.text
+    assert len(mock_email_provider.sent_emails) == 1
+    assert mock_email_provider.sent_emails[0]["attachments"] == []
+
+
+def test_send_draft_attachments_over_limit(
+    logged_in_admin, mock_email_provider, monkeypatch
+):
+    """Total attachment size over the cap returns 413 and does not send."""
+    import app.services.email_provider as prov
+    monkeypatch.setattr(prov, "MAX_TOTAL_ATTACHMENT_SIZE", 10)
+
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
+        files=[("attachments", ("big.bin", b"x" * 5000, "application/octet-stream"))],
+    )
+    assert resp.status_code == 413, resp.text
+    assert mock_email_provider.sent_emails == []

@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { UserList } from "@/components/settings/user-list";
 import { CreateUserDialog } from "@/components/settings/create-user-dialog";
 import { ChangePasswordForm } from "@/components/settings/change-password-form";
+import { SendPreferencesForm } from "@/components/settings/send-preferences-form";
 import { SignatureForm } from "@/components/settings/signature-form";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
@@ -47,6 +48,12 @@ export default function SettingsPage() {
       <section>
         <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Account</h2>
         <ChangePasswordForm />
+      </section>
+
+      {/* Personal sending preferences — available to all users (browser-local) */}
+      <section>
+        <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Sending</h2>
+        <SendPreferencesForm />
       </section>
 
       {/* AI / triage configuration — admin only */}

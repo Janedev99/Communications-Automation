@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
+import { ComposeProvider } from "@/components/emails/compose-context";
 import { useUser } from "@/hooks/use-user";
 import { api } from "@/lib/api";
 
@@ -155,19 +156,21 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
-        </main>
-      </div>
+    <ComposeProvider>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+          <Header />
+          <main className="flex-1 overflow-y-auto p-6">
+            {children}
+          </main>
+        </div>
 
-      <KeyboardShortcutsDialog
-        open={showShortcuts}
-        onOpenChange={setShowShortcuts}
-      />
-    </div>
+        <KeyboardShortcutsDialog
+          open={showShortcuts}
+          onOpenChange={setShowShortcuts}
+        />
+      </div>
+    </ComposeProvider>
   );
 }

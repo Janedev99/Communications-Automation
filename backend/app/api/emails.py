@@ -77,6 +77,8 @@ from app.schemas.email import (
     AssignRequest,
     BulkActionRequest,
     BulkActionResponse,
+    ComposeDraftRequest,
+    ComposeDraftResponse,
     DraftResponseResponse,
     EmailThreadListItem,
     EmailThreadListResponse,
@@ -535,6 +537,10 @@ def list_threads(
     assigned_to: str | None = Query(default=None, description="'me' or a user UUID"),
     saved: bool | None = Query(default=None, description="Filter to saved threads only"),
     folder: str | None = Query(default=None, description="Filter to a specific saved folder"),
+    sent_only: bool = Query(
+        default=False,
+        description="Show only threads containing at least one outbound (sent) message",
+    ),
     sort: Literal[
         "updated_desc", "updated_asc",
         "subject_asc", "subject_desc",
@@ -577,6 +583,22 @@ def list_threads(
             )
         else:
             query = query.where(EmailThread.saved_folder == folder)
+    if sent_only:
+        # "Sent" = any thread we've actually sent mail in — composed emails AND
+        # approved reply-sends. Keyed off the presence of an outbound message
+        # rather than a terminal status, so a resolved/closed thread still
+        # appears if Jane replied in it (matches Outlook's Sent Items, which is
+        # independent of Inbox read/closed state). Trash + spam threads are
+        # still excluded by the default status filter above.
+        outbound_exists = (
+            select(EmailMessage.id)
+            .where(
+                EmailMessage.thread_id == EmailThread.id,
+                EmailMessage.direction == MessageDirection.outbound,
+            )
+            .exists()
+        )
+        query = query.where(outbound_exists)
     if tier is not None:
         # The Escalated tab is what users mental-model as "everything that
         # needs Jane's attention." Tier and status are stored independently and
@@ -2300,3 +2322,44 @@ def compose_email(
     db.commit()
     db.refresh(thread)
     return EmailThreadResponse.model_validate(thread)
+
+
+@router.post(
+    "/compose/draft",
+    response_model=ComposeDraftResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def compose_draft(
+    request: Request,
+    body: ComposeDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ComposeDraftResponse:
+    """Ask the AI to draft a brand-new outbound email from a free-text
+    instruction. Returns an editable subject + body — nothing is sent or
+    persisted here; the user reviews, edits, then sends via /compose.
+
+    Mirrors the reply-draft endpoint's error contract: provider/budget/parse
+    problems surface as 409 with the reason; transient AI failures as 502.
+    Auth + CSRF required.
+    """
+    from app.services.draft_generator import get_draft_generator
+
+    generator = get_draft_generator()
+    try:
+        result = generator.generate_composed_email(
+            db,
+            instruction=body.instruction,
+            recipient=body.recipient,
+            subject_hint=body.subject_hint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface a clean 502, log the detail
+        logger.error("compose_draft failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The AI service failed to draft the email. Please try again.",
+        )
+
+    return ComposeDraftResponse(subject=result.subject, body=result.body)

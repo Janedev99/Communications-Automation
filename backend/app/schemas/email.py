@@ -226,6 +226,33 @@ class ManualDraftRequest(BaseModel):
     body_text: str = Field(min_length=1, max_length=50_000)
 
 
+class ComposeDraftRequest(BaseModel):
+    """Request body for POST /emails/compose/draft — ask the AI to write a
+    brand-new outbound email from a free-text instruction."""
+    instruction: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="What the email should say, in plain language.",
+    )
+    recipient: str | None = Field(
+        default=None,
+        max_length=320,
+        description="Optional recipient address, used as context for the greeting.",
+    )
+    subject_hint: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Optional subject the AI should refine or use as a starting point.",
+    )
+
+
+class ComposeDraftResponse(BaseModel):
+    """AI-drafted subject + body for the Compose flow. Body excludes the
+    signature — the send path appends it."""
+    subject: str
+    body: str
+
+
 class RejectDraftRequest(BaseModel):
     """Request body for POST .../reject. Rejection reason is required for audit purposes."""
     rejection_reason: str = Field(

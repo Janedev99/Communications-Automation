@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bookmark, Download, Search, ShieldX, Trash2, X } from "lucide-react";
+import { Bookmark, Download, PenSquare, Search, ShieldX, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { EmailFilters } from "@/components/emails/email-filters";
@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useUser } from "@/hooks/use-user";
+import { useCompose } from "@/components/emails/compose-context";
 import type { BulkActionRequest, ThreadTier } from "@/lib/types";
 
 function parseTierParam(raw: string | null): TierFilter {
@@ -56,6 +57,7 @@ function readSavedView(): Partial<SavedEmailsView> {
 export default function EmailsPage() {
   const searchParams = useSearchParams();
   const { isAdmin } = useUser();
+  const { openCompose } = useCompose();
 
   // Initial view: an explicit deep-link (e.g. ?client_email=) wins and starts at
   // page 1; otherwise restore the last view from sessionStorage so returning
@@ -150,12 +152,19 @@ export default function EmailsPage() {
 
   const isSearchActive = !!searchTerm;
   const isInbox = folder === "inbox";
+  const isSent = folder === "sent";
 
   const { threads, total, isLoading, isError, mutate } = useEmails({
-    // Spam / Deleted folders map straight to the status query. The inbox uses
-    // the status dropdown (which no longer offers deleted/spam) and relies on
-    // the backend's default exclusion of those terminal states.
-    status: isInbox ? (isSearchActive ? undefined : status || undefined) : folder,
+    // Spam / Deleted folders map straight to the status query. Sent maps to the
+    // sent_only flag (threads with an outbound message), independent of status.
+    // The inbox uses the status dropdown (which no longer offers deleted/spam)
+    // and relies on the backend's default exclusion of those terminal states.
+    status: isInbox
+      ? (isSearchActive ? undefined : status || undefined)
+      : isSent
+      ? undefined
+      : folder,
+    sentOnly: isSent || undefined,
     category: !isInbox || isSearchActive ? undefined : category || undefined,
     tier: !isInbox || isSearchActive || tier === "all" ? undefined : (tier as ThreadTier),
     client_email: !isInbox || isSearchActive ? undefined : clientEmail || undefined,
@@ -287,22 +296,30 @@ export default function EmailsPage() {
             : "Triage incoming threads, review AI drafts, and approve sends."
         }
         actions={
-          isAdmin ? (
-            <Button variant="outline" onClick={() => setShowExport(true)}>
-              <Download className="w-4 h-4 mr-1.5" aria-hidden="true" />
-              Export
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <Button variant="outline" onClick={() => setShowExport(true)}>
+                <Download className="w-4 h-4 mr-1.5" aria-hidden="true" />
+                Export
+              </Button>
+            )}
+            <Button onClick={() => openCompose()}>
+              <PenSquare className="w-4 h-4 mr-1.5" aria-hidden="true" />
+              New Email
             </Button>
-          ) : undefined
+          </div>
         }
       />
 
       {/* Mail folders — Inbox (working view) vs Spam / Deleted read views */}
       <FolderTabsNav active={folder} onChange={handleFolderChange} />
 
-      {/* Context note for the terminal-status folders */}
+      {/* Context note for the non-inbox folders */}
       {!isInbox && (
         <p className="text-xs text-muted-foreground mb-3 -mt-1">
-          {folder === "spam"
+          {folder === "sent"
+            ? "Threads you've sent mail in — composed emails and approved replies."
+            : folder === "spam"
             ? "Junk mail — hidden from your inbox. Restore from Outlook's Junk Email folder if needed."
             : "Deleted threads — hidden from your inbox. Restore from Outlook's Deleted Items folder if needed."}
         </p>

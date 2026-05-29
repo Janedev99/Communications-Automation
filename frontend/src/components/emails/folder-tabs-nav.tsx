@@ -1,16 +1,17 @@
 "use client";
 
-import { Inbox, ShieldX, Trash2, type LucideIcon } from "lucide-react";
+import { Inbox, Send, ShieldX, Trash2, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
  * Top-level mail "folder" the email list is scoped to. Inbox is the working
- * view (excludes deleted + spam server-side); Spam and Deleted are dedicated
- * read views onto the terminal-status threads, mirroring Outlook's Junk /
- * Deleted Items folders. Switching folders maps to the `status` query the
- * list endpoint already supports.
+ * view (excludes deleted + spam server-side); Sent shows threads we've sent
+ * mail in (composed emails + approved reply-sends); Spam and Deleted are
+ * dedicated read views onto the terminal-status threads, mirroring Outlook's
+ * Sent Items / Junk / Deleted Items folders. Inbox/Spam/Deleted map to the
+ * `status` query; Sent maps to the `sent_only` flag.
  */
-export type MailFolder = "inbox" | "spam" | "deleted";
+export type MailFolder = "inbox" | "sent" | "spam" | "deleted";
 
 interface FolderTab {
   id: MailFolder;
@@ -20,6 +21,7 @@ interface FolderTab {
 
 const FOLDERS: FolderTab[] = [
   { id: "inbox", label: "Inbox", icon: Inbox },
+  { id: "sent", label: "Sent", icon: Send },
   { id: "spam", label: "Spam", icon: ShieldX },
   { id: "deleted", label: "Deleted", icon: Trash2 },
 ];

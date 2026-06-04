@@ -1,22 +1,25 @@
 # Jane Communication Automation — Handoff & Migration Guide
 
-**Prepared for:** Gar (receiving engineer) and the Schilmoeller & Schoenfield team
+**Prepared for:** The receiving engineer and the Schilmoeller & Schoenfield team
 **Prepared by:** PRIME (RJ Tohay — rj@primelive.ai; early phases by Nate Geraldez — nate@primelive.ai)
-**Date:** 2026-06-04
-**Goal:** Migrate the system from PRIME's Railway environment to the client's own server, and hand over day-to-day operation.
+**Date:** 2026-06-04 (rev. 2)
+**Goal:** Migrate the system from PRIME's Railway environment to the firm's own server, and hand over day-to-day operation.
+
+> Companion documents: **README.md** (technical deep-dive) and
+> **docs/USER_GUIDE.md** (end-user app guide + integrations setup). This
+> document covers what those don't: access, migration steps, operations, and
+> the sharp edges.
 
 ---
 
 ## 1. What this system is
 
-An AI-assisted email platform for the firm's Microsoft 365 mailbox (`jane@schilcpa.com`). It polls the mailbox, categorizes every incoming email with AI (Anthropic Claude), assigns a triage tier, drafts a suggested reply from the firm's knowledge base, and gives staff a review UI. **Nothing is ever sent without human approval** (two independent safety gates — see §6.2). It also supports composing new outbound email, attachments in both directions, spam/delete synced back to Outlook, per-client saved folders, full-text search, an escalation queue for Jane, and a complete audit trail.
+An AI-assisted email platform for the firm's Microsoft 365 mailbox (`jane@schilcpa.com`). It polls the mailbox, categorizes every incoming email with AI (Anthropic Claude), assigns a triage tier, drafts a suggested reply from the firm's knowledge base, and gives staff a review UI. **Nothing is ever sent without human approval** (two independent safety gates — see §6.2). It also supports composing new outbound email, attachments in both directions, spam/delete synced back to Outlook, per-client saved folders, full-text search, an escalation queue for Jane, **per-user email signatures** (the sender's signature is appended at send; auto-sent mail uses the company signature), an **Analytics page** (AI token usage vs. budget, email volume, draft quality, escalation trends), and a complete audit trail.
 
 - **Backend:** Python 3.12 / FastAPI / SQLAlchemy / Alembic — `backend/`
 - **Frontend:** Next.js 14 / TypeScript / Tailwind — `frontend/`
-- **Database:** PostgreSQL 16 (13 tables, migrations 001–017)
-- **In-app user guide:** the app ships with an interactive **/tutorials** page — that is the end-user manual for Jane and staff.
-
-The technical deep-dive (architecture, full API list, schema) is in the repository **README.md**. This document covers what the README doesn't: access, migration steps, operations, and the sharp edges.
+- **Database:** PostgreSQL 16 (13 tables, migrations 001–018)
+- **In-app user guide:** the app ships with an interactive **/tutorials** page — that, plus `docs/USER_GUIDE.md`, is the end-user manual for Jane and staff.
 
 ---
 
@@ -29,11 +32,11 @@ The technical deep-dive (architecture, full API list, schema) is in the reposito
 
 - **Branches:** `master` = production, `development` = integration. Feature work happens on `FEAT/`, `FIX/`, `CHORE/`, `DOCS/` branches off `development`; merges are `--no-ff`.
 - `master` is only updated from `development` with the firm's approval.
-- After handoff, Gar can simplify to whatever workflow he prefers — the only hard rule worth keeping: **don't push straight to `master` without testing**, because production migrations run automatically on deploy (§4).
+- After handoff, the receiving engineer can simplify to whatever workflow they prefer — the only hard rule worth keeping: **don't push straight to `master` without testing**, because production migrations run automatically on deploy (§4).
 
 ---
 
-## 3. Access checklist — what Gar needs to receive
+## 3. Access checklist — what the receiving engineer needs
 
 | # | Item | From | Notes |
 |---|---|---|---|
@@ -42,7 +45,7 @@ The technical deep-dive (architecture, full API list, schema) is in the reposito
 | 3 | **Azure app registration credentials** (`MSGRAPH_TENANT_ID`, `MSGRAPH_CLIENT_ID`, `MSGRAPH_CLIENT_SECRET`) | PRIME (RJ) → rotate after | App permissions: `Mail.Read`, `Mail.Send`, `Mail.ReadWrite` (application, admin-consented). **Rotate the client secret after migration** so PRIME no longer holds a working credential. The registration lives in the firm's Azure tenant — it keeps working from any host. |
 | 4 | **Anthropic API key** | Firm should create its own | console.anthropic.com → API Keys. Don't inherit PRIME's key — billing and rate limits should be the firm's. |
 | 5 | `APP_SECRET_KEY` | Generate fresh | `python -c "import secrets; print(secrets.token_hex(32))"` — do NOT reuse PRIME's |
-| 6 | RunPod account | Gar already owns it | Optional — only if the self-hosted LLM path is ever revived (§6.5). The pod used during development is on Gar's shared account. |
+| 6 | RunPod account | Already held client-side | Optional — only if the self-hosted LLM path is ever revived (§6.5). The pod used during development is on a shared account the firm's engineering contact already holds. |
 | 7 | Slack webhook URL (escalation notifications) | Firm's Slack admin | Optional — `SLACK_WEBHOOK_URL` |
 | 8 | Admin login for the app | Set via `ADMIN_EMAIL`/`ADMIN_PASSWORD` env + `seed_admin.py` | Existing user accounts come across with the DB dump |
 
@@ -62,7 +65,7 @@ Three things to internalize about this setup:
 
 1. **Migrations run on every backend deploy** (`alembic upgrade head` in the start command). Convenient, but it means a bad migration can block boot — the health check (`/health`, 300s timeout) will catch it.
 2. **`NEXT_PUBLIC_API_URL` is a Docker BUILD ARG**, not a runtime env var. It's inlined into the JS bundle at build time. On Railway it's set under *Build* settings; on any new host it must be passed to `docker build`. Getting this wrong produces a frontend that builds fine but talks to the wrong backend.
-3. **Deploy drift has happened before.** In May 2026 production silently ran a stale build while master had moved on (migration lag was the symptom). After every deploy, verify the running version actually changed — check a recently-shipped feature or the migration level (`SELECT version_num FROM alembic_version;` should read `017` as of this writing).
+3. **Deploy drift has happened before.** In May 2026 production silently ran a stale build while master had moved on (migration lag was the symptom). After every deploy, verify the running version actually changed — check a recently-shipped feature or the migration level (`SELECT version_num FROM alembic_version;` should read `018` as of this writing).
 
 ---
 
@@ -88,7 +91,24 @@ Alternative: run the two Dockerfiles under any orchestrator, or bare-metal with 
    - `CORS_ORIGINS` = the real frontend URL only (no localhost)
    - `NEXT_PUBLIC_API_URL` = the real backend URL (build arg!)
    - `TRUSTED_PROXIES` = Caddy's container IP if you want accurate client IPs in rate limiting / audit logs (blank is safe)
-4. Build images. Do a dry-run boot against an EMPTY local database first: backend should apply migrations 001→017 and pass `/health`. This proves the stack works before touching real data.
+4. Build images. Do a dry-run boot against an EMPTY local database first.
+   **Tables are created automatically** — the backend's start command runs
+   `alembic upgrade head` before the server boots, which applies migrations
+   001→018 in order and creates the full schema on an empty database. No
+   manual `CREATE TABLE` work is ever needed.
+   **But verify, don't trust.** After the dry-run boot, double-check the
+   schema actually materialized:
+   ```sql
+   SELECT version_num FROM alembic_version;   -- must read: 018
+   SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1;
+   ```
+   Expect exactly these **13 application tables** (plus `alembic_version`):
+   `ai_budget_usage`, `audit_log`, `draft_responses`, `email_messages`,
+   `email_threads`, `escalations`, `knowledge_entries`, `runpod_daily_usage`,
+   `runpod_state`, `sessions`, `system_settings`, `tier_rules`, `users`.
+   If any are missing or `alembic_version` reads lower than 018, the
+   migration step failed silently — check the backend container logs for the
+   alembic output before going any further. Then confirm `/health` passes.
 
 **Cutover (brief downtime, do it outside business hours):**
 5. **Stop the Railway backend service first.** The poller marks emails processed as it ingests them — two pollers against two databases would each process new mail independently, and the one you're abandoning would still be sending nothing but would pollute the dump. Stop it, then dump.
@@ -100,7 +120,7 @@ Alternative: run the two Dockerfiles under any orchestrator, or bare-metal with 
    ```bash
    pg_restore --no-owner --no-privileges -d "$NEW_DATABASE_URL" jane_prod.dump
    ```
-8. Start the new stack. The backend's `alembic upgrade head` will no-op (the dump already contains schema + `alembic_version`).
+8. Start the new stack. The backend's `alembic upgrade head` will no-op (the dump already contains schema + `alembic_version`). Re-run the table-verification SQL from step 4 against the restored database — same 13 tables, `alembic_version` = `018`, and row counts that look like production (e.g. `SELECT count(*) FROM email_threads;` should match what the old dashboard showed).
 9. **Verify** (15 minutes, with Jane or Sara available):
    - `GET /health` returns ok; login works with an existing account
    - Dashboard shows the historical threads/stats (proves the data came across)
@@ -139,7 +159,8 @@ Production today: `SHADOW_MODE=true` → nothing auto-sends, every email is huma
 `DAILY_TOKEN_BUDGET` (default 1,000,000 tokens/day, resets UTC midnight) caps all AI spend. Exhausted → categorization falls back to the keyword rules engine; drafting pauses until reset. The dashboard shows usage. Bulk reprocessing scripts can burn the full budget in one run — plan those.
 
 ### 6.4 Routine admin tasks
-- **Signature**: Settings UI → stored in `system_settings.draft_signature`; appended to every draft/composed email in code.
+- **Signatures (per-user since migration 018)**: every user edits their own under Settings → "My Signature"; admins edit the firm-level **company signature** (used for T1 auto-sent mail and as the fallback for users without a personal one). The *sender's* signature is appended at send time — see `backend/app/services/signatures.py`.
+- **Monitoring**: the **/analytics** page (all staff) tracks AI token usage against the daily budget, email volume, draft edit/rejection rates, and escalation trends over 7/30/90-day ranges. This is the first place to look when usage questions come up.
 - **Triage rules**: Settings → Triage Rules — per-category T1 eligibility + confidence thresholds (complaint/urgent/promotional are locked server-side).
 - **Knowledge base**: Knowledge page — the content the AI drafts from. Keep it current; it matters more than prompt tweaks.
 - **Users**: Settings (admin) — staff vs admin roles.
@@ -147,7 +168,7 @@ Production today: `SHADOW_MODE=true` → nothing auto-sends, every email is huma
 - **Backups**: Railway plugin handled this implicitly. On self-hosting, schedule `pg_dump` (daily, retained ≥30 days). The database is the entire system state — email bodies, drafts, KB, audit log. Attachment binaries are NOT in the DB (streamed on demand from the mailbox), so DB backups stay small.
 
 ### 6.5 RunPod (dormant, optional)
-The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthropic — built before the 2026-05-14 decision to standardize on Anthropic for email. The orchestration (auto-start, idle-stop, daily cost cap, Claude fallback) is fully functional but **disabled in production** (`RUNPOD_POD_ID` empty). The dev pod lives on Gar's shared RunPod account (~$2.99/hr H100 when running). Ignore unless the firm revisits self-hosting; everything is documented in `.env.example`.
+The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthropic — built before the 2026-05-14 decision to standardize on Anthropic for email. The orchestration (auto-start, idle-stop, daily cost cap, Claude fallback) is fully functional but **disabled in production** (`RUNPOD_POD_ID` empty). The dev pod lives on a shared RunPod account already held on the client side (~$2.99/hr H100 when running). Ignore unless the firm revisits self-hosting; everything is documented in `.env.example`.
 
 ---
 
@@ -161,14 +182,14 @@ The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthrop
 | 4 | **`NEXT_PUBLIC_API_URL` is build-time.** | Changing the backend URL requires rebuilding the frontend image, not just restarting it. |
 | 5 | **Deploy drift precedent.** | Verify each deploy actually went live (§4.3). |
 | 6 | **Mobile layout is not yet refined.** | Jane accesses via phone browser; it works but isn't optimized. On the roadmap (§8). |
-| 7 | **Older drafts predating the signature feature** lack the configured signature. | Deliberate — firm chose not to regenerate them. |
+| 7 | **Pre-018 drafts have the old global signature baked into their body.** | Handled automatically: the send path strips the known legacy block and appends the sender's signature instead (exact-suffix match only). Self-heals as old drafts drain. |
 | 8 | **Single-worker constraint** (§6.1). | Scaling out requires extracting the poller first. |
 
 ---
 
 ## 8. Open roadmap (not blocking handoff)
 
-1. **Per-user signatures — IN FLIGHT (June 2026).** Each user gets their own signature (Settings → My Signature); the *sender's* signature is appended at send time; users without one fall back to an admin-managed **company signature** (`system_settings`), which is also what T1 auto-sent mail uses. This deliberately anticipates the mailbox ever moving from Jane's personal address to a general firm address (`office@`/`info@`) — staff-signed mail from a shared mailbox is the standard pattern. **One follow-up belongs with that mailbox switch:** the AI drafting persona is currently "write as Jane personally" (`draft_generator.py` system prompt); a general mailbox needs it reworded to a firm-office persona. Prompt-level change only.
+1. **General-mailbox persona reword.** Per-user signatures (shipped June 2026) deliberately anticipate the mailbox moving from Jane's personal address to a general firm address (`office@`/`info@`) — staff-signed mail from a shared mailbox is the standard pattern. **One follow-up belongs with that mailbox switch:** the AI drafting persona is currently "write as Jane personally" (`draft_generator.py` system prompt); a general mailbox needs it reworded to a firm-office persona. Prompt-level change only; the mailbox itself is pure config (`MSGRAPH_MAILBOX`).
 2. **Mobile view refinement** — committed verbally in the 2026-05-27 client meeting; not yet built.
 3. Direction discussed with the firm: evolve toward Jane's primary mail client (folders parity, richer search). Discussion stage only.
 4. "What's New" release-notes surface — designed, not built.
@@ -178,10 +199,11 @@ The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthrop
 
 ## 9. Quick reference
 
-- **Run tests:** `cd backend && venv/Scripts/python -m pytest tests/ -q` — 356 tests, in-memory SQLite, all providers mocked, zero real sends. Safe anywhere, run before every deploy.
+- **Run tests:** `cd backend && venv/Scripts/python -m pytest tests/ -q` — 384 tests, in-memory SQLite, all providers mocked, zero real sends. Safe anywhere, run before every deploy.
 - **DB schema / API reference:** README.md §Database Schema + live OpenAPI at `<backend>/docs`.
+- **App usage & integrations setup:** `docs/USER_GUIDE.md`.
 - **Local dev:** backend on port **8001** (`uvicorn app.main:app --port 8001`), frontend `npm run dev` on 3000.
-- **Migration level today:** `017` (`seed draft signature`).
+- **Migration level today:** `018` (`per-user signatures`).
 - **Contacts during transition:** RJ Tohay — rj@primelive.ai (current development); Nate Geraldez — nate@primelive.ai (original prototype, stages 1–2).
 
 ---

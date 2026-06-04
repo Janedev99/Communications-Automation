@@ -9,21 +9,19 @@ import { Textarea } from "@/components/ui/textarea";
 import type { SystemSetting } from "@/lib/types";
 
 const SETTINGS_ENDPOINT = "/api/v1/system-settings";
-const SIGNATURE_KEY = "draft_signature";
+const SIGNATURE_KEY = "company_signature";
 
-const PLACEHOLDER = `Thanks so much,
+const PLACEHOLDER = `Schilmoeller & Schoenfield, PC
+3131 Eastside Street, Suite 430
+Houston, Texas  77098
 
-Jane
-
-Jane M. Schilmoeller, CPA
-Business Growth and Profitability Advisor
-
-Schilmoeller & Schoenfield, PC`;
+Office:  (713) 527-9281 Ext 1`;
 
 /**
- * Admin editor for the signature the AI appends verbatim to every draft.
- * Reads/writes the `draft_signature` system setting. Leaving it blank lets the
- * AI sign off on its own (content-driven branding rule).
+ * Admin editor for the firm-level COMPANY signature. It is appended to:
+ *   - T1 auto-sent emails (no human sender), and
+ *   - emails sent by any user who hasn't set a personal signature.
+ * Reads/writes the `company_signature` system setting.
  */
 export function SignatureForm() {
   const { data, mutate } = useSWR<SystemSetting[]>(SETTINGS_ENDPOINT, swrFetcher);
@@ -48,7 +46,7 @@ export function SignatureForm() {
       });
       await mutate();
       setDirty(false);
-      toast.success("Signature saved — new AI drafts will use it.");
+      toast.success("Company signature saved.");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Could not save signature.");
     } finally {
@@ -59,29 +57,30 @@ export function SignatureForm() {
   return (
     <div className="bg-card border border-border rounded-xl p-4 space-y-3">
       <div>
-        <label htmlFor="draft-signature" className="block text-sm font-medium text-foreground">
-          Signature appended to AI drafts
+        <label htmlFor="company-signature" className="block text-sm font-medium text-foreground">
+          Company signature
         </label>
         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-          The AI ends every draft with this exact block. Leave it blank to let the AI
-          sign off on its own.
+          The firm-level block — used on automatically sent (Tier&nbsp;1) emails and as
+          the fallback for anyone who hasn&apos;t set a personal signature in
+          &ldquo;My Signature&rdquo;.
         </p>
       </div>
       <Textarea
-        id="draft-signature"
+        id="company-signature"
         value={value}
         onChange={(e) => {
           setValue(e.target.value);
           setDirty(true);
         }}
-        rows={12}
+        rows={8}
         placeholder={PLACEHOLDER}
         className="resize-y font-mono text-xs leading-relaxed whitespace-pre"
       />
       <div className="flex items-center justify-end gap-3">
         {dirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
         <Button onClick={handleSave} disabled={saving || !dirty}>
-          {saving ? "Saving…" : "Save signature"}
+          {saving ? "Saving…" : "Save company signature"}
         </Button>
       </div>
     </div>

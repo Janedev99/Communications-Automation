@@ -71,7 +71,9 @@ def list_settings(
 
 # Allowlist of settings that can be PATCH'd via the API. Anything outside
 # this set gets a 404 — defense against typos elevating arbitrary keys.
-_PATCHABLE_KEYS: set[str] = {ss.AUTO_SEND_ENABLED, ss.DRAFT_SIGNATURE}
+# Note: LEGACY_DRAFT_SIGNATURE is deliberately NOT patchable — it's the
+# frozen pre-018 text used for send-time strip matching on old drafts.
+_PATCHABLE_KEYS: set[str] = {ss.AUTO_SEND_ENABLED, ss.COMPANY_SIGNATURE}
 
 
 @router.patch("/{key}", response_model=SystemSettingResponse)

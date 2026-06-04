@@ -23,8 +23,13 @@ logger = logging.getLogger(__name__)
 
 # Known setting keys (use these constants instead of raw strings to avoid typos).
 AUTO_SEND_ENABLED = "auto_send_enabled"
-# Jane's email signature block, appended verbatim to AI drafts when set.
-DRAFT_SIGNATURE = "draft_signature"
+# Firm-level signature block: appended to T1 auto-sent mail (no human sender)
+# and used as the fallback for users without a personal signature.
+COMPANY_SIGNATURE = "company_signature"
+# The retired global signature (pre-018, was `draft_signature` — Jane's
+# personal block baked into draft bodies at generation time). Kept ONLY so the
+# send path can strip it from old drafts during the transition. Do not edit.
+LEGACY_DRAFT_SIGNATURE = "legacy_draft_signature"
 
 
 def get_setting(db: Session, key: str) -> str | None:

@@ -2239,9 +2239,13 @@ def compose_email(
             )
         )
 
-    # Append Jane's signature (same setting the AI drafter uses).
-    signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
-    final_body = f"{body_text}\n\n{signature}" if signature else body_text
+    # Per-user signatures (018): append the SENDER's signature (falls back to
+    # the company block). apply_signature is idempotent if a signature is
+    # somehow already present at the tail.
+    from app.services.signatures import apply_signature, signature_for_sender
+    final_body = apply_signature(
+        db, body_text, signature_for_sender(db, current_user)
+    )
 
     app_settings = _get_settings()
     from_address = app_settings.msgraph_mailbox or app_settings.firm_owner_email

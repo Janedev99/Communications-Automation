@@ -597,6 +597,14 @@ def send_draft(
     firm_domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
     outbound_message_id = f"<draft-{draft.id}@{firm_domain}>"
 
+    # Per-user signatures (018): append the SENDER's signature at send time
+    # (falls back to the company block). apply_signature also strips a
+    # legacy generation-time signature if one is still baked into the body.
+    from app.services.signatures import apply_signature, signature_for_sender
+    final_body = apply_signature(
+        db, draft.body_text, signature_for_sender(db, current_user)
+    )
+
     # ── Step 3: Persist outbound message record BEFORE sending ───────────────
 
     outbound_msg = EmailMessage(
@@ -604,7 +612,7 @@ def send_draft(
         message_id_header=outbound_message_id,
         sender=f"{app_settings.firm_name} <{from_address}>",
         recipient=thread.client_email,
-        body_text=draft.body_text,
+        body_text=final_body,
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,
         is_processed=True,
@@ -641,7 +649,7 @@ def send_draft(
         actual_message_id = provider.send_email(
             to=thread.client_email,
             subject=reply_subject,
-            body_text=draft.body_text,
+            body_text=final_body,
             reply_to_message_id=reply_to_message_id,
             references_header=references_header,
             message_id=outbound_message_id,

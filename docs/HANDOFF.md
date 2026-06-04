@@ -1,4 +1,5 @@
-# Jane Communication Automation — Handoff & Migration Guide
+# Schilmoeller & Schoenfield, PC — Staff Portal & AI Communications Agent
+## Handoff & Migration Guide
 
 **Prepared for:** The receiving engineer and the Schilmoeller & Schoenfield team
 **Prepared by:** PRIME (RJ Tohay — rj@primelive.ai; early phases by Nate Geraldez — nate@primelive.ai)

@@ -2182,12 +2182,11 @@ def compose_email(
     ``cc`` (comma/semicolon separated), and zero or more ``attachments`` files.
 
     Records the sent mail as a new thread + outbound EmailMessage so it shows in
-    the app, and appends Jane's configured signature (same source the AI drafter
-    uses). The real send goes through the configured provider; on failure nothing
-    is persisted. Auth + CSRF required.
+    the app, and appends the SENDER's signature (personal, or the company
+    block as fallback — see services/signatures.py). The real send goes through
+    the configured provider; on failure nothing is persisted. Auth + CSRF required.
     """
     from app.config import get_settings as _get_settings
-    from app.services import system_settings as _ss
     from app.services.email_provider import (
         MAX_TOTAL_ATTACHMENT_SIZE,
         EmailAttachment,

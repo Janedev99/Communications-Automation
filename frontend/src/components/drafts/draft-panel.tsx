@@ -137,6 +137,15 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     setSendState({ phase: "idle" });
   }, [draft?.id, draft?.body_text]);
 
+  // Attachments are scoped to the THREAD, not the draft: keyed on thread.id
+  // (NOT draft.id) so files survive edit/approve/regenerate — regenerate makes
+  // a new draft id within the same thread. They clear on thread switch here,
+  // and after a successful send inside executeSend(). Browser-only state, so a
+  // reload also drops them (accepted tradeoff).
+  useEffect(() => {
+    clearAttachments();
+  }, [thread.id, clearAttachments]);
+
   // Sync tone from thread whenever thread updates
   useEffect(() => {
     setSelectedTone(thread.suggested_reply_tone ?? "professional");
@@ -977,18 +986,19 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         ) : (
           /* Normal action buttons when not in send flow */
           <div className="space-y-2 w-full">
-            {draft.status === "approved" && (
-              <div className="space-y-2 pb-1 border-b border-border/60">
-                <AttachButton onClick={openAttachPicker} label="Attach files" />
-                <AttachmentInput inputRef={attachInputRef} onFiles={addFiles} />
-                <AttachmentChips
-                  attachments={attachments}
-                  onRemove={removeAttachment}
-                  totalBytes={totalBytes}
-                  overSizeLimit={overSizeLimit}
-                />
-              </div>
-            )}
+            {/* Attach is available in every active state (pending/edited/approved)
+                so staff can collect files WHILE writing the reply. Files ride
+                along at send time only — the approve→send gate is unchanged. */}
+            <div className="space-y-2 pb-1 border-b border-border/60">
+              <AttachButton onClick={openAttachPicker} label="Attach files" />
+              <AttachmentInput inputRef={attachInputRef} onFiles={addFiles} />
+              <AttachmentChips
+                attachments={attachments}
+                onRemove={removeAttachment}
+                totalBytes={totalBytes}
+                overSizeLimit={overSizeLimit}
+              />
+            </div>
             <div className="flex flex-wrap items-center gap-2">
             {draft.status !== "approved" && (
               <>

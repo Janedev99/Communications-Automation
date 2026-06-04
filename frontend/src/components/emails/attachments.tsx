@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Paperclip, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,7 +38,9 @@ export function useAttachments(): UseAttachmentsResult {
   const totalBytes = attachments.reduce((sum, f) => sum + f.size, 0);
   const overSizeLimit = totalBytes > MAX_TOTAL_ATTACHMENT_SIZE;
 
-  const addFiles = (files: FileList | null) => {
+  // All handlers are memoized so consumers can safely use them as effect deps
+  // (e.g. the draft panel clears attachments keyed on thread switch).
+  const addFiles = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
     setAttachments((prev) => {
       // De-dupe by name+size so re-picking the same file doesn't double it.
@@ -50,13 +52,21 @@ export function useAttachments(): UseAttachmentsResult {
     });
     // Reset the input so picking the same file again re-fires onChange.
     if (inputRef.current) inputRef.current.value = "";
-  };
+  }, []);
 
-  const removeAttachment = (index: number) =>
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  const removeAttachment = useCallback(
+    (index: number) =>
+      setAttachments((prev) => prev.filter((_, i) => i !== index)),
+    [],
+  );
 
-  const clear = () => setAttachments([]);
-  const openPicker = () => inputRef.current?.click();
+  // Bail out when already empty so a clear-on-mount effect doesn't trigger a
+  // pointless extra render.
+  const clear = useCallback(
+    () => setAttachments((prev) => (prev.length === 0 ? prev : [])),
+    [],
+  );
+  const openPicker = useCallback(() => inputRef.current?.click(), []);
 
   return {
     attachments,

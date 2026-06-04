@@ -432,6 +432,73 @@ def test_send_draft_no_attachments_still_works(logged_in_admin, mock_email_provi
     assert mock_email_provider.sent_emails[0]["attachments"] == []
 
 
+def test_send_draft_persists_attachment_metadata(
+    logged_in_admin, mock_email_provider, db_session
+):
+    """The outbound EmailMessage records {filename, size, content_type}
+    metadata so the thread view renders sent attachments exactly like inbound
+    ones, and stores the provider-returned (Exchange-assigned) Message-ID so
+    the download endpoint can resolve the sent copy in the mailbox."""
+    from sqlalchemy import select
+    from app.models.email import EmailMessage, MessageDirection
+
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+    # Unique per test — message_id_header has a UNIQUE constraint and the
+    # test DB is shared across files (test_compose_email uses its own id).
+    mock_email_provider.send_returns = "<real-graph-id-send@outlook.com>"
+
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send",
+        files=[
+            ("attachments", ("worksheet.pdf", b"%PDF-1.4 fake", "application/pdf")),
+            ("attachments", ("summary.txt", b"plain notes", "text/plain")),
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+
+    outbound = db_session.execute(
+        select(EmailMessage).where(
+            EmailMessage.thread_id == uuid.UUID(thread_id),
+            EmailMessage.direction == MessageDirection.outbound,
+        )
+    ).scalar_one()
+    assert outbound.attachments == [
+        {
+            "filename": "worksheet.pdf",
+            "size": len(b"%PDF-1.4 fake"),
+            "content_type": "application/pdf",
+            "attachment_id": None,
+        },
+        {
+            "filename": "summary.txt",
+            "size": len(b"plain notes"),
+            "content_type": "text/plain",
+            "attachment_id": None,
+        },
+    ]
+    assert outbound.message_id_header == "<real-graph-id-send@outlook.com>"
+
+
+def test_send_draft_without_attachments_stores_no_metadata(
+    logged_in_admin, mock_email_provider, db_session
+):
+    """A bare send leaves EmailMessage.attachments NULL — no empty-list rows."""
+    from sqlalchemy import select
+    from app.models.email import EmailMessage, MessageDirection
+
+    thread_id, draft_id, _ = _seed_thread_with_draft()
+    resp = logged_in_admin.post(f"/api/v1/emails/{thread_id}/drafts/{draft_id}/send")
+    assert resp.status_code == 200, resp.text
+
+    outbound = db_session.execute(
+        select(EmailMessage).where(
+            EmailMessage.thread_id == uuid.UUID(thread_id),
+            EmailMessage.direction == MessageDirection.outbound,
+        )
+    ).scalar_one()
+    assert outbound.attachments is None
+
+
 def test_send_draft_attachments_over_limit(
     logged_in_admin, mock_email_provider, monkeypatch
 ):

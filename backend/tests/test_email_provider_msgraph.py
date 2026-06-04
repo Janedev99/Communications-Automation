@@ -17,7 +17,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.config import get_settings
-from app.services.email_provider import MSGraphProvider, _html_to_text
+from app.services.email_provider import (
+    GRAPH_INLINE_ATTACHMENT_LIMIT,
+    EmailAttachment,
+    MSGraphProvider,
+    _html_to_text,
+)
 
 
 # ── _html_to_text helper ──────────────────────────────────────────────────────
@@ -400,3 +405,119 @@ class TestMsgraphSendPayload:
         )
 
         assert returned == "<draft-99@example.com>"
+
+
+# ── MSGraphProvider draft-flow routing for attachment sends ───────────────────
+
+def _json_response(payload: dict | None = None) -> MagicMock:
+    """MagicMock httpx response with a JSON body and a no-op raise_for_status."""
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = payload or {}
+    return resp
+
+
+class TestMsgraphDraftSendFlow:
+    """
+    Sends WITH attachments must use the create-draft → attach → send flow:
+    /sendMail returns 202 with no body, so the Exchange-assigned
+    internetMessageId is only learnable from the draft-create response. That
+    id is what the attachment-download endpoint later resolves in Sent Items
+    — without it, sent attachments render but can never be downloaded.
+    """
+
+    def test_no_attachments_still_uses_sendmail(self):
+        # Regression guard: the single-call path stays for bare sends.
+        provider = _make_provider()
+        provider._client.post.return_value = _json_response()
+
+        returned = provider.send_email(
+            to="client@example.com",
+            subject="hi",
+            body_text="hi",
+            message_id="<local-1@example.com>",
+        )
+
+        urls = [c.args[0] for c in provider._client.post.call_args_list]
+        assert len(urls) == 1
+        assert "/sendMail" in urls[0]
+        assert returned == "<local-1@example.com>"
+
+    def test_attachments_route_via_draft_and_return_real_id(self):
+        provider = _make_provider()
+        create_resp = _json_response(
+            {"id": "graph-draft-1", "internetMessageId": "<real-1@outlook.com>"}
+        )
+        provider._client.post.side_effect = [create_resp, _json_response()]
+
+        returned = provider.send_email(
+            to="client@example.com",
+            subject="Q3 statements",
+            body_text="Attached.",
+            message_id="<local-2@example.com>",
+            attachments=[
+                EmailAttachment(
+                    filename="worksheet.pdf",
+                    content=b"%PDF-1.4 fake",
+                    content_type="application/pdf",
+                )
+            ],
+        )
+
+        urls = [c.args[0] for c in provider._client.post.call_args_list]
+        assert urls[0].endswith("/messages"), "first call must create the draft"
+        assert urls[1].endswith("/messages/graph-draft-1/send")
+        # Small sets ride inline (base64) on the draft-create payload.
+        create_payload = provider._client.post.call_args_list[0].kwargs["json"]
+        assert create_payload["attachments"][0]["name"] == "worksheet.pdf"
+        assert (
+            create_payload["attachments"][0]["@odata.type"]
+            == "#microsoft.graph.fileAttachment"
+        )
+        # The REAL internetMessageId is returned, not the local correlation id.
+        assert returned == "<real-1@outlook.com>"
+
+    def test_large_attachments_use_upload_sessions(self):
+        provider = _make_provider()
+        create_resp = _json_response(
+            {"id": "graph-draft-2", "internetMessageId": "<real-2@outlook.com>"}
+        )
+        session_resp = _json_response({"uploadUrl": "https://upload.example/u1"})
+        provider._client.post.side_effect = [create_resp, session_resp, _json_response()]
+        provider._client.put.return_value = _json_response()
+
+        returned = provider.send_email(
+            to="client@example.com",
+            subject="big file",
+            body_text="Attached.",
+            message_id="<local-3@example.com>",
+            attachments=[
+                EmailAttachment(
+                    filename="big.bin",
+                    content=b"x" * (GRAPH_INLINE_ATTACHMENT_LIMIT + 1),
+                )
+            ],
+        )
+
+        # Bare draft create — the binary must NOT be inlined over the limit.
+        create_payload = provider._client.post.call_args_list[0].kwargs["json"]
+        assert "attachments" not in create_payload
+        assert provider._client.put.called, "binary must go via chunked upload session"
+        assert returned == "<real-2@outlook.com>"
+
+    def test_missing_internet_message_id_falls_back_to_local(self):
+        # If Graph ever omits internetMessageId on the create response, the
+        # send must still succeed and the caller keeps its correlation id.
+        provider = _make_provider()
+        create_resp = _json_response({"id": "graph-draft-3"})
+        provider._client.post.side_effect = [create_resp, _json_response()]
+
+        returned = provider.send_email(
+            to="client@example.com",
+            subject="hi",
+            body_text="hi",
+            message_id="<local-4@example.com>",
+            attachments=[EmailAttachment(filename="a.txt", content=b"x")],
+        )
+
+        assert returned == "<local-4@example.com>"

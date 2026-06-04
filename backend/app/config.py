@@ -120,8 +120,9 @@ class Settings(BaseSettings):
     daily_token_budget: int = 1_000_000
 
     # ── Shadow Mode (T2.4) ────────────────────────────────────────────────────
-    # When True, emails are categorized but no AI drafts are auto-generated.
-    # Useful for initial deployment validation without sending AI-generated replies.
+    # When True, AUTO-SEND is disabled — drafts are still generated and staff
+    # can still review/approve/send manually, but the system never sends on
+    # its own (see auto_send.maybe_auto_send). Production runs True.
     shadow_mode: bool = False
 
     # ── RunPod orchestrator ───────────────────────────────────────────────────

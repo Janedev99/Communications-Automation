@@ -58,6 +58,11 @@ class UpdateUserRequest(BaseModel):
     role: UserRole | None = None
 
 
+class UpdateMySignatureRequest(BaseModel):
+    """Set (or clear, with "" / null) the caller's personal email signature."""
+    signature: str | None = Field(default=None, max_length=2000)
+
+
 # ── Response schemas ───────────────────────────────────────────────────────────
 
 class UserResponse(BaseModel):
@@ -91,3 +96,9 @@ class MeResponse(BaseModel):
     name: str
     role: UserRole
     is_active: bool
+    # Personal signature (None if the user hasn't set one) and the signature
+    # that will actually be appended when THIS user sends (personal, or the
+    # company block as fallback). The frontend renders effective_signature as
+    # the read-only preview under draft/compose editors.
+    signature: str | None = None
+    effective_signature: str = ""

@@ -92,10 +92,11 @@ def test_compose_persists_outbound_message(logged_in_admin, mock_email_provider,
 # ── Signature enforcement ───────────────────────────────────────────────────────
 
 def test_compose_appends_configured_signature(logged_in_admin, mock_email_provider, db_session):
+    # Sender (the admin) has no personal signature → company fallback applies.
     from app.services import system_settings as ss
 
     signature = "—\nJane Schilmoeller, CPA\nSchilmoeller & Schoenfield, PC"
-    ss.set_setting(db_session, ss.DRAFT_SIGNATURE, signature)
+    ss.set_setting(db_session, ss.COMPANY_SIGNATURE, signature)
     db_session.commit()
 
     subject = _unique_subject()

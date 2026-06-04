@@ -47,6 +47,12 @@ export interface MeResponse {
   name: string;
   role: UserRole;
   is_active: boolean;
+  /** Personal email signature; null if the user hasn't set one. */
+  signature: string | null;
+  /** What will actually be appended when THIS user sends — personal
+   *  signature, or the company block as fallback. Drives the read-only
+   *  preview under draft/compose editors. */
+  effective_signature: string;
 }
 
 export interface LoginResponse {
@@ -312,6 +318,50 @@ export interface DashboardStats {
     estimated_cost_usd: number;
   };
   generated_at: string;
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+export interface DailyTokens {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface DailyCount {
+  date: string;
+  count: number;
+}
+
+export interface AnalyticsResponse {
+  days: number;
+  start_date: string;
+  token_usage: {
+    daily: DailyTokens[];
+    today_input_tokens: number;
+    today_output_tokens: number;
+    /** 0 = unlimited */
+    daily_budget: number;
+    budget_exhausted_days: number;
+  };
+  email_volume: {
+    threads_per_day: DailyCount[];
+    by_category: Record<string, number>;
+    by_tier: Record<string, number>;
+    total_threads: number;
+  };
+  draft_workflow: {
+    by_status: Record<string, number>;
+    total: number;
+    edited_count: number;
+    sent_count: number;
+    rejected_count: number;
+  };
+  escalations: {
+    created_per_day: DailyCount[];
+    by_severity: Record<string, number>;
+    by_status: Record<string, number>;
+    open_count: number;
+  };
 }
 
 // ── Activity feed ─────────────────────────────────────────────────────────────

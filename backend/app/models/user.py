@@ -3,7 +3,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,6 +28,9 @@ class User(Base):
         Enum(UserRole, name="user_role"), nullable=False, default=UserRole.staff
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Personal email signature, appended at send time when THIS user sends.
+    # NULL/empty → the company signature (system_settings) is used instead.
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

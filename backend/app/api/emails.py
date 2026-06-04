@@ -2182,12 +2182,11 @@ def compose_email(
     ``cc`` (comma/semicolon separated), and zero or more ``attachments`` files.
 
     Records the sent mail as a new thread + outbound EmailMessage so it shows in
-    the app, and appends Jane's configured signature (same source the AI drafter
-    uses). The real send goes through the configured provider; on failure nothing
-    is persisted. Auth + CSRF required.
+    the app, and appends the SENDER's signature (personal, or the company
+    block as fallback — see services/signatures.py). The real send goes through
+    the configured provider; on failure nothing is persisted. Auth + CSRF required.
     """
     from app.config import get_settings as _get_settings
-    from app.services import system_settings as _ss
     from app.services.email_provider import (
         MAX_TOTAL_ATTACHMENT_SIZE,
         EmailAttachment,
@@ -2239,9 +2238,13 @@ def compose_email(
             )
         )
 
-    # Append Jane's signature (same setting the AI drafter uses).
-    signature = (_ss.get_setting(db, _ss.DRAFT_SIGNATURE) or "").strip()
-    final_body = f"{body_text}\n\n{signature}" if signature else body_text
+    # Per-user signatures (018): append the SENDER's signature (falls back to
+    # the company block). apply_signature is idempotent if a signature is
+    # somehow already present at the tail.
+    from app.services.signatures import apply_signature, signature_for_sender
+    final_body = apply_signature(
+        db, body_text, signature_for_sender(db, current_user)
+    )
 
     app_settings = _get_settings()
     from_address = app_settings.msgraph_mailbox or app_settings.firm_owner_email

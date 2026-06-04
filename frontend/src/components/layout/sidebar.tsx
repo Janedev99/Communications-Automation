@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Mail,
   AlertTriangle,
+  BarChart3,
   BookOpen,
   Bookmark,
   GraduationCap,
@@ -108,6 +109,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     { label: "Escalations", href: "/escalations", icon: AlertTriangle, badge: hasNewEscalations },
     { label: "Saved", href: "/saved", icon: Bookmark, badge: false },
     { label: "Knowledge Base", href: "/knowledge", icon: BookOpen, badge: false },
+    { label: "Analytics", href: "/analytics", icon: BarChart3, badge: false },
     { label: "Tutorials", href: "/tutorials", icon: GraduationCap, badge: false },
   ];
 

@@ -3,7 +3,7 @@
 
 **Prepared for:** The receiving engineer and the Schilmoeller & Schoenfield team
 **Prepared by:** PRIME (RJ Tohay — rj@primelive.ai; early phases by Nate Geraldez — nate@primelive.ai)
-**Date:** 2026-06-04 (rev. 2)
+**Date:** 2026-06-04 (rev. 4)
 **Goal:** Migrate the system from PRIME's Railway environment to the firm's own server, and hand over day-to-day operation.
 
 > Companion documents: **README.md** (technical deep-dive) and
@@ -149,10 +149,11 @@ Until step 11, the Railway environment is intact (just stopped). Rollback = stop
 
 **Never run more than one backend worker/replica** — each would run its own poller.
 
-### 6.2 The two auto-send gates (IMPORTANT)
-Auto-sending of T1 drafts only happens if **both** are open:
+### 6.2 The auto-send gates (IMPORTANT)
+Auto-sending of T1 drafts only happens if **all** of these are open:
 1. `SHADOW_MODE=false` (environment variable)
 2. `auto_send_enabled=true` (Settings UI → system_settings table)
+3. The email's category has `t1_eligible=true` in Triage Rules **and** the AI's confidence beat that category's threshold. Every category defaults to OFF, and `complaint` / `urgent` / `promotional` are hard-locked at the API layer — they can never be enabled.
 
 Production today: `SHADOW_MODE=true` → nothing auto-sends, every email is human-approved. **Do not change without Jane's explicit sign-off.** Drafts still generate in shadow mode — that's by design.
 
@@ -198,7 +199,26 @@ The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthrop
 
 ---
 
-## 9. Quick reference
+## 9. Deploy helpers & troubleshooting
+
+Two scripts at the repo root support deployments (any host, not just Railway):
+
+- **`scripts/preflight_check.py`** — run locally against your populated `.env` *before* the first deploy. Validates `APP_SECRET_KEY` strength, real (non-placeholder) AI key, provider credentials matching the chosen `EMAIL_PROVIDER`, no localhost in `CORS_ORIGINS`, non-example admin password. Exits non-zero on failure.
+- **`scripts/post_deploy_verify.py --base-url <backend-url> --database-url "$DATABASE_URL"`** — run *after* every deploy. Checks `/health`, confirms `auto_send_enabled='false'`, and confirms zero categories have `t1_eligible=true`. If either safety gate is in an unexpected state, don't hand out the URL until you've confirmed the change was intentional.
+
+Common failures:
+
+| Symptom | Usual cause |
+|---|---|
+| Backend container restart-loops | `APP_SECRET_KEY` still the dev default (validator hard-fails in production); or `alembic upgrade head` can't reach the DB (`DATABASE_URL`); or `ADMIN_PASSWORD` empty (seed script exits 1) |
+| Drafts not generating | Daily token budget exhausted (check the Analytics page — resets midnight UTC); or `DRAFT_AUTO_GENERATE=false`. Note `SHADOW_MODE` does NOT stop draft generation — it only gates auto-send. |
+| No emails arriving | Graph: admin consent not granted on the application permissions, or the client secret expired. IMAP: using the account password instead of an app password. Check Settings → Integrations. |
+| Frontend "Failed to load" | `NEXT_PUBLIC_API_URL` set as a runtime variable instead of a Docker **build** variable, or `CORS_ORIGINS` missing the frontend URL |
+| Email poller suspected in an incident | Set `EMAIL_POLL_INTERVAL_SECONDS=99999` (effectively pauses polling), redeploy, diagnose without traffic, restore |
+
+---
+
+## 10. Quick reference
 
 - **Run tests:** `cd backend && venv/Scripts/python -m pytest tests/ -q` — 384 tests, in-memory SQLite, all providers mocked, zero real sends. Safe anywhere, run before every deploy.
 - **DB schema / API reference:** README.md §Database Schema + live OpenAPI at `<backend>/docs`.

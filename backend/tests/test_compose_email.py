@@ -170,6 +170,59 @@ def test_compose_with_attachments(logged_in_admin, mock_email_provider):
     assert pdf.content_type == "application/pdf"
 
 
+def test_compose_persists_attachment_metadata(
+    logged_in_admin, mock_email_provider, db_session
+):
+    """The outbound EmailMessage records {filename, size, content_type}
+    metadata so the thread view renders sent attachments exactly like inbound
+    ones, and stores the provider-returned (Exchange-assigned) Message-ID so
+    the download endpoint can resolve the sent copy in the mailbox."""
+    # Unique per test — message_id_header has a UNIQUE constraint and the
+    # test DB is shared across files (test_drafts_send uses its own id).
+    mock_email_provider.send_returns = "<real-graph-id-compose@outlook.com>"
+    subject = _unique_subject()
+    resp = logged_in_admin.post(
+        COMPOSE_URL,
+        data={"to": "client@example.com", "subject": subject, "body": "See attached."},
+        files=[
+            ("attachments", ("return.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")),
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    thread_id = uuid.UUID(resp.json()["id"])
+
+    outbound = db_session.execute(
+        select(EmailMessage).where(EmailMessage.thread_id == thread_id)
+    ).scalar_one()
+    assert outbound.attachments == [
+        {
+            "filename": "return.pdf",
+            "size": len(b"%PDF-1.4 fake pdf bytes"),
+            "content_type": "application/pdf",
+            "attachment_id": None,
+        }
+    ]
+    assert outbound.message_id_header == "<real-graph-id-compose@outlook.com>"
+
+
+def test_compose_without_attachments_stores_no_metadata(
+    logged_in_admin, mock_email_provider, db_session
+):
+    """A bare compose leaves EmailMessage.attachments NULL — no empty-list rows."""
+    subject = _unique_subject()
+    resp = logged_in_admin.post(
+        COMPOSE_URL,
+        data={"to": "client@example.com", "subject": subject, "body": "No files."},
+    )
+    assert resp.status_code == 200, resp.text
+    thread_id = uuid.UUID(resp.json()["id"])
+
+    outbound = db_session.execute(
+        select(EmailMessage).where(EmailMessage.thread_id == thread_id)
+    ).scalar_one()
+    assert outbound.attachments is None
+
+
 def test_compose_rejects_attachments_over_total_limit(
     logged_in_admin, mock_email_provider, monkeypatch
 ):

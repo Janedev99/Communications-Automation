@@ -659,10 +659,19 @@ class MSGraphProvider(EmailProvider):
         message_id: str | None = None,
     ) -> str:
         """
-        Send via Graph. Small messages use the /sendMail action; messages with
-        more than GRAPH_INLINE_ATTACHMENT_LIMIT of attachments use the
-        create-draft → upload-session → send flow (Graph rejects large sendMail
-        bodies).
+        Send via Graph. Messages WITHOUT attachments use the single-call
+        /sendMail action. Messages WITH attachments (any size) use the
+        create-draft → attach → send flow, because only the draft-create
+        response reveals the Exchange-assigned ``internetMessageId`` — the
+        value the attachment-download endpoint later needs to resolve the
+        sent copy in Sent Items (``/sendMail`` returns 202 with no body, so
+        sends through it are never resolvable). Within the draft flow, small
+        attachment sets ride inline on the create call; sets larger than
+        GRAPH_INLINE_ATTACHMENT_LIMIT use chunked upload sessions (Graph
+        rejects large request bodies).
+
+        Returns the real ``internetMessageId`` for attachment sends; the
+        local correlation id otherwise (nothing to download → never resolved).
 
         Note on threading headers: Microsoft Graph rejects any
         ``internetMessageHeaders`` entry whose name does not start with ``x-``
@@ -702,26 +711,19 @@ class MSGraphProvider(EmailProvider):
         if cc:
             message["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
 
-        # Path A — small/no attachments: single sendMail with inline base64.
-        if total <= GRAPH_INLINE_ATTACHMENT_LIMIT:
-            if attachments:
-                message["attachments"] = [
-                    {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": a.filename,
-                        "contentType": a.content_type,
-                        "contentBytes": base64.b64encode(a.content).decode("ascii"),
-                    }
-                    for a in attachments
-                ]
+        # Path A — no attachments: single /sendMail call. Graph never reveals
+        # the sent message's internetMessageId on this path, so the caller
+        # keeps the local correlation id — acceptable, because with no
+        # attachments there is nothing to download later.
+        if not attachments:
             url = f"{self.GRAPH_BASE}/users/{mailbox}/sendMail"
             payload = {"message": message, "saveToSentItems": True}
             try:
                 resp = self._client.post(url, headers=self._headers(), json=payload)
                 resp.raise_for_status()
                 logger.info(
-                    "MSGraph: sent email to %s subject=%r (%d inline attachment(s))",
-                    to, subject, len(attachments),
+                    "MSGraph: sent email to %s subject=%r (no attachments)",
+                    to, subject,
                 )
                 return message_id
             except httpx.HTTPStatusError as exc:
@@ -731,31 +733,59 @@ class MSGraphProvider(EmailProvider):
                 )
                 raise
 
-        # Path B — large attachments: draft + upload session + send.
-        self._send_via_upload_session(mailbox, message, attachments)
+        # Path B — any attachments: create-draft → attach → send. Captures the
+        # Exchange-assigned internetMessageId so the sent copy is resolvable
+        # in Sent Items for on-demand attachment download.
+        real_message_id = self._send_via_draft(mailbox, message, attachments, total)
         logger.info(
-            "MSGraph: sent email to %s subject=%r via upload session (%d attachment(s), %d bytes)",
+            "MSGraph: sent email to %s subject=%r via draft flow (%d attachment(s), %d bytes)",
             to, subject, len(attachments), total,
         )
-        return message_id
+        return real_message_id or message_id
 
-    def _send_via_upload_session(
-        self, mailbox: str, message: dict[str, Any], attachments: list[EmailAttachment]
-    ) -> None:
-        """Create a draft, upload each attachment via its own upload session,
-        then send the draft. Used when total attachment size exceeds Graph's
-        inline sendMail limit."""
+    def _send_via_draft(
+        self,
+        mailbox: str,
+        message: dict[str, Any],
+        attachments: list[EmailAttachment],
+        total: int,
+    ) -> str | None:
+        """Create a draft, attach files, send the draft. Returns the
+        Exchange-assigned internetMessageId from the draft-create response
+        (None if Graph omits it — the caller falls back to its local id).
+
+        Used for every send WITH attachments. Sets totalling at most
+        GRAPH_INLINE_ATTACHMENT_LIMIT ride inline (base64) on the create
+        call; larger sets are uploaded per-file via chunked upload sessions
+        (Graph rejects large request bodies)."""
         base = f"{self.GRAPH_BASE}/users/{mailbox}"
+        inline = total <= GRAPH_INLINE_ATTACHMENT_LIMIT
+        create_payload = dict(message)
+        if inline:
+            create_payload["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": a.filename,
+                    "contentType": a.content_type,
+                    "contentBytes": base64.b64encode(a.content).decode("ascii"),
+                }
+                for a in attachments
+            ]
         try:
-            resp = self._client.post(f"{base}/messages", headers=self._headers(), json=message)
+            resp = self._client.post(
+                f"{base}/messages", headers=self._headers(), json=create_payload
+            )
             resp.raise_for_status()
-            draft_id = resp.json()["id"]
+            created = resp.json()
+            draft_id = created["id"]
+            internet_message_id = created.get("internetMessageId")
         except httpx.HTTPStatusError as exc:
             logger.error("MSGraph create-draft failed: %s | %s", exc, exc.response.text[:500])
             raise
 
-        for a in attachments:
-            self._upload_one_attachment(base, draft_id, a)
+        if not inline:
+            for a in attachments:
+                self._upload_one_attachment(base, draft_id, a)
 
         try:
             resp = self._client.post(
@@ -765,6 +795,7 @@ class MSGraphProvider(EmailProvider):
         except httpx.HTTPStatusError as exc:
             logger.error("MSGraph send-draft failed: %s | %s", exc, exc.response.text[:500])
             raise
+        return internet_message_id
 
     def _upload_one_attachment(
         self, base: str, draft_id: str, a: EmailAttachment

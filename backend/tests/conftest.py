@@ -284,6 +284,10 @@ class RecordingEmailProvider:
         self.moved_messages: list[dict] = []  # trash/spam routing log
         self.connect_calls: int = 0
         self.raise_on_send: Exception | None = None
+        # When set, send_email returns this instead of echoing message_id —
+        # simulates MSGraph's draft flow returning the Exchange-assigned
+        # internetMessageId for sends with attachments.
+        self.send_returns: str | None = None
         self.raise_on_move: Exception | None = None
         self.raise_on_inline: Exception | None = None
         self.inline_fetches: list[dict] = []  # inline-image fetch log
@@ -323,6 +327,8 @@ class RecordingEmailProvider:
             "message_id": message_id,
         }
         self.sent_emails.append(record)
+        if self.send_returns:
+            return self.send_returns
         return message_id or f"<mock-{len(self.sent_emails)}@test.local>"
 
     def move_message(

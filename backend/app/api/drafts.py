@@ -608,6 +608,20 @@ def send_draft(
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,
         is_processed=True,
+        # Mirror the inbound metadata shape so the thread view renders the
+        # same downloadable badges under sent messages. attachment_id is
+        # unknown at send time (Graph assigns ids on the sent copy) — the
+        # download endpoint falls back to index lookup for these rows.
+        attachments=[
+            {
+                "filename": a.filename,
+                "size": a.size,
+                "content_type": a.content_type,
+                "attachment_id": None,
+            }
+            for a in email_attachments
+        ]
+        or None,
     )
     db.add(outbound_msg)
 

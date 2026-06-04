@@ -168,10 +168,11 @@ The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthrop
 
 ## 8. Open roadmap (not blocking handoff)
 
-1. **Mobile view refinement** — committed verbally in the 2026-05-27 client meeting; not yet built.
-2. Direction discussed with the firm: evolve toward Jane's primary mail client (folders parity, richer search). Discussion stage only.
-3. "What's New" release-notes surface — designed, not built.
-4. In-app practice mode for the Compose flow on the tutorials page.
+1. **Per-user signatures — IN FLIGHT (June 2026).** Each user gets their own signature (Settings → My Signature); the *sender's* signature is appended at send time; users without one fall back to an admin-managed **company signature** (`system_settings`), which is also what T1 auto-sent mail uses. This deliberately anticipates the mailbox ever moving from Jane's personal address to a general firm address (`office@`/`info@`) — staff-signed mail from a shared mailbox is the standard pattern. **One follow-up belongs with that mailbox switch:** the AI drafting persona is currently "write as Jane personally" (`draft_generator.py` system prompt); a general mailbox needs it reworded to a firm-office persona. Prompt-level change only.
+2. **Mobile view refinement** — committed verbally in the 2026-05-27 client meeting; not yet built.
+3. Direction discussed with the firm: evolve toward Jane's primary mail client (folders parity, richer search). Discussion stage only.
+4. "What's New" release-notes surface — designed, not built.
+5. In-app practice mode for the Compose flow on the tutorials page.
 
 ---
 

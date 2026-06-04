@@ -11,6 +11,7 @@ const PAGE_NAMES: Record<string, string> = {
   "/emails": "Emails",
   "/escalations": "Escalations",
   "/knowledge": "Knowledge Base",
+  "/analytics": "Analytics",
   "/settings": "Settings",
   "/settings/triage-rules": "Triage Rules",
   "/settings/integrations": "Integrations",

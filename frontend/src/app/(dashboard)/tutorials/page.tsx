@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  BarChart3,
   BookOpen,
   Check,
   ChevronLeft,
@@ -278,6 +279,14 @@ const STEPS: Step[] = [
     description:
       "The AI drafts replies using entries from the knowledge base. Add response templates (full draft examples), policies (firm rules to follow), or snippets (reusable phrases) — categorize and tag them, and the draft generator will pull the right context for each email's category.",
     link: { label: "Open knowledge base", href: "/knowledge" },
+  },
+  {
+    id: "analytics",
+    title: "Monitor Usage: Analytics",
+    icon: BarChart3,
+    description:
+      "The Analytics page tracks the system over time: AI token usage against the daily budget (so you can see when heavy days approach the cap), email volume by category and tier, how often staff edit or reject AI drafts (a proxy for how well the AI is learning), and escalation trends. Switch between 7 / 30 / 90-day views with the range picker.",
+    link: { label: "Open analytics", href: "/analytics" },
   },
   {
     id: "triage-rules",

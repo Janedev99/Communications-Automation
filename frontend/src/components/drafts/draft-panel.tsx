@@ -38,6 +38,7 @@ import {
   AttachmentInput,
   useAttachments,
 } from "@/components/emails/attachments";
+import { SignaturePreview } from "@/components/emails/signature-preview";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
 import { useSendCountdownEnabled } from "@/lib/preferences";
 import { ConfidenceMeter } from "@/components/ui/confidence-meter";
@@ -849,6 +850,11 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         {autoSaveLabel && !showOriginal && (
           <p className="text-[10px] text-muted-foreground mt-1">{autoSaveLabel}</p>
         )}
+        {/* Per-user signatures (018): the SENDER's signature is appended at
+            send time — show whoever is viewing exactly what will go out. */}
+        <div className="mt-2 flex-shrink-0">
+          <SignaturePreview />
+        </div>
       </div>
 
       {/* Version/meta bar */}

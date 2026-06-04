@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { SignaturePreview } from "@/components/emails/signature-preview";
 import { cn } from "@/lib/utils";
 import { composeEmail } from "@/lib/api";
 import { ApiError } from "@/lib/types";
@@ -290,9 +291,9 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             rows={8}
             className="resize-none text-sm"
           />
-          <p className="text-[11px] text-muted-foreground -mt-1.5">
-            Jane&apos;s signature is added automatically when the email is sent.
-          </p>
+          {/* Per-user signatures (018): show exactly what will be appended
+              for the current sender (personal, or company fallback). */}
+          <SignaturePreview />
 
           {/* Attachments list */}
           <AttachmentChips

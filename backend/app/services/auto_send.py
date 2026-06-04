@@ -140,6 +140,11 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
     firm_domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
     outbound_message_id = f"<auto-{draft.id}@{firm_domain}>"
 
+    # Per-user signatures (018): no human sender here — auto-sent mail is
+    # signed with the firm-level company block, never a person's signature.
+    from app.services.signatures import apply_signature, company_signature
+    final_body = apply_signature(db, draft.body_text, company_signature(db))
+
     # ── Mark approved + persist outbound message record (optimistic) ──────────
     draft.status = DraftStatus.approved
     draft.reviewed_by_id = None  # System
@@ -152,7 +157,7 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         message_id_header=outbound_message_id,
         sender=f"{settings.firm_name} <{from_address}>",
         recipient=thread.client_email,
-        body_text=draft.body_text,
+        body_text=final_body,
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,
         is_processed=True,
@@ -174,7 +179,7 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         actual_message_id = provider.send_email(
             to=thread.client_email,
             subject=reply_subject,
-            body_text=draft.body_text,
+            body_text=final_body,
             reply_to_message_id=reply_to_message_id,
             references_header=references_header,
             message_id=outbound_message_id,

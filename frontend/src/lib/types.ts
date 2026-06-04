@@ -47,6 +47,12 @@ export interface MeResponse {
   name: string;
   role: UserRole;
   is_active: boolean;
+  /** Personal email signature; null if the user hasn't set one. */
+  signature: string | null;
+  /** What will actually be appended when THIS user sends — personal
+   *  signature, or the company block as fallback. Drives the read-only
+   *  preview under draft/compose editors. */
+  effective_signature: string;
 }
 
 export interface LoginResponse {

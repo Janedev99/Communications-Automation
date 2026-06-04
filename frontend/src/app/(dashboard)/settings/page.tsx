@@ -10,6 +10,7 @@ import { CreateUserDialog } from "@/components/settings/create-user-dialog";
 import { ChangePasswordForm } from "@/components/settings/change-password-form";
 import { SendPreferencesForm } from "@/components/settings/send-preferences-form";
 import { SignatureForm } from "@/components/settings/signature-form";
+import { MySignatureForm } from "@/components/settings/my-signature-form";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
@@ -145,13 +146,14 @@ export default function SettingsPage() {
         </section>
       )}
 
-      {/* Email signature for AI drafts — admin only */}
-      {isAdmin && (
-        <section>
-          <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Email Signature</h2>
-          <SignatureForm />
-        </section>
-      )}
+      {/* Email signatures — personal (everyone) + company (admin only) */}
+      <section>
+        <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Email Signatures</h2>
+        <div className="space-y-4">
+          <MySignatureForm />
+          {isAdmin && <SignatureForm />}
+        </div>
+      </section>
 
       {/* User management — admin only */}
       {isAdmin && (

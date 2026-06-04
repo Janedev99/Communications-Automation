@@ -30,7 +30,7 @@ from app.api.deps import get_client_ip, get_current_user, require_admin, require
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User, UserRole
-from app.schemas.user import ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, MeResponse, UpdateUserRequest, UserResponse
+from app.schemas.user import ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, MeResponse, UpdateMySignatureRequest, UpdateUserRequest, UserResponse
 from app.services import auth as auth_service
 from app.utils.audit import log_action
 
@@ -207,9 +207,56 @@ def logout(
 
 
 @router.get("/me", response_model=MeResponse)
-def me(current_user: User = Depends(get_current_user)) -> MeResponse:
-    """Return the currently authenticated user's profile."""
-    return MeResponse.model_validate(current_user)
+def me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MeResponse:
+    """Return the currently authenticated user's profile.
+
+    Includes the personal signature and the *effective* one — what will be
+    appended if this user sends right now (personal, or company fallback) —
+    so the frontend can render the send-time signature preview.
+    """
+    from app.services.signatures import signature_for_sender
+
+    resp = MeResponse.model_validate(current_user)
+    resp.effective_signature = signature_for_sender(db, current_user)
+    return resp
+
+
+@router.patch("/me/signature", response_model=MeResponse, dependencies=[Depends(require_csrf)])
+def update_my_signature(
+    request: Request,
+    body: UpdateMySignatureRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MeResponse:
+    """
+    Set or clear the caller's personal email signature.
+
+    Empty / null clears it — the user then falls back to the company
+    signature at send time. Any authenticated user may edit their own.
+    """
+    from app.services.signatures import signature_for_sender
+
+    new_value = (body.signature or "").strip() or None
+    current_user.signature = new_value
+    db.flush()
+
+    log_action(
+        db,
+        action="user.signature_updated",
+        entity_type="user",
+        entity_id=str(current_user.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={"cleared": new_value is None, "length": len(new_value or "")},
+    )
+    db.commit()
+
+    resp = MeResponse.model_validate(current_user)
+    resp.effective_signature = signature_for_sender(db, current_user)
+    return resp
 
 
 @router.post("/change-password", status_code=status.HTTP_200_OK, dependencies=[Depends(require_csrf)])

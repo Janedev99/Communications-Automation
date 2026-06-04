@@ -320,6 +320,50 @@ export interface DashboardStats {
   generated_at: string;
 }
 
+// ── Analytics ─────────────────────────────────────────────────────────────────
+export interface DailyTokens {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface DailyCount {
+  date: string;
+  count: number;
+}
+
+export interface AnalyticsResponse {
+  days: number;
+  start_date: string;
+  token_usage: {
+    daily: DailyTokens[];
+    today_input_tokens: number;
+    today_output_tokens: number;
+    /** 0 = unlimited */
+    daily_budget: number;
+    budget_exhausted_days: number;
+  };
+  email_volume: {
+    threads_per_day: DailyCount[];
+    by_category: Record<string, number>;
+    by_tier: Record<string, number>;
+    total_threads: number;
+  };
+  draft_workflow: {
+    by_status: Record<string, number>;
+    total: number;
+    edited_count: number;
+    sent_count: number;
+    rejected_count: number;
+  };
+  escalations: {
+    created_per_day: DailyCount[];
+    by_severity: Record<string, number>;
+    by_status: Record<string, number>;
+    open_count: number;
+  };
+}
+
 // ── Activity feed ─────────────────────────────────────────────────────────────
 export interface ActivityItem {
   id: string;

@@ -1,4 +1,5 @@
-# Jane Communication Automation — User Guide & Integrations
+# Schilmoeller & Schoenfield, PC — Staff Portal & AI Communications Agent
+## User Guide & Integrations
 
 **Audience:** Jane, firm staff, and whoever administers the portal.
 **Date:** 2026-06-04

@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
+import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
 import { ComposeProvider } from "@/components/emails/compose-context";
 import { useUser } from "@/hooks/use-user";
@@ -16,14 +17,16 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const { isLoading: authLoading } = useUser();
   const router = useRouter();
   const pathname = usePathname();
 
+  // Desktop sidebar collapse on small windows (lg+ only — below lg the drawer handles nav)
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth < 1024) {
+      if (window.innerWidth >= 1024 && window.innerWidth < 1280) {
         setCollapsed(true);
       }
     };
@@ -31,6 +34,11 @@ export default function DashboardLayout({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Close mobile drawer on route change
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
 
   // Global keyboard shortcut handler
   const handleKeyDown = useCallback(
@@ -158,10 +166,25 @@ export default function DashboardLayout({
   return (
     <ComposeProvider>
       <div className="flex h-screen overflow-hidden">
+        {/* Desktop sidebar — hidden below lg, shown at lg+ */}
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+
+        {/* Mobile drawer — renders the sidebar without its desktop hide class */}
+        <MobileNavDrawer
+          open={mobileNavOpen}
+          onClose={() => setMobileNavOpen(false)}
+        >
+          <Sidebar
+            collapsed={false}
+            onToggle={() => {}}
+            inDrawer
+            onNavigate={() => setMobileNavOpen(false)}
+          />
+        </MobileNavDrawer>
+
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <Header />
-          <main className="flex-1 overflow-y-auto p-6">
+          <Header onOpenNav={() => setMobileNavOpen(true)} />
+          <main className="flex-1 overflow-y-auto p-4 lg:p-6">
             {children}
           </main>
         </div>

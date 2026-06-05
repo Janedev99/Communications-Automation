@@ -100,7 +100,6 @@ export function EmailList({
         {threads.map((thread) => {
           const isSelected = selectedIds.has(thread.id);
           const isUncategorized = thread.category === "uncategorized";
-          const wasAutoSent = !!thread.auto_sent_at;
 
           const handleRowClick = () => router.push(`/emails/${thread.id}`);
           const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -121,6 +120,7 @@ export function EmailList({
               className={cn(
                 "relative flex gap-3 px-4 py-3 cursor-pointer transition-colors outline-none",
                 "focus-visible:ring-3 focus-visible:ring-ring/50",
+                "data-[focused=true]:ring-2 data-[focused=true]:ring-inset data-[focused=true]:ring-ring/50",
                 isSelected
                   ? "bg-primary/[0.06]"
                   : isUncategorized
@@ -175,18 +175,6 @@ export function EmailList({
                 <div className="flex items-center flex-wrap gap-1.5 mt-2">
                   <ThreadStatusBadge status={thread.status} />
                   <CategoryBadge category={thread.category} />
-                  {wasAutoSent && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0">
-                      <Zap className="w-3 h-3" strokeWidth={2.25} aria-hidden="true" />
-                      AI sent
-                    </span>
-                  )}
-                  {isUncategorized && !wasAutoSent && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0">
-                      <HelpCircle className="w-3 h-3" strokeWidth={2} aria-hidden="true" />
-                      Triage
-                    </span>
-                  )}
                   {thread.message_count > 1 && (
                     <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground flex-shrink-0">
                       <Mail className="w-3 h-3" strokeWidth={1.75} aria-hidden="true" />
@@ -252,17 +240,18 @@ export function EmailList({
             // Item E: emails the AI couldn't classify confidently land here.
             // Jane explicitly asked about a "surprise box" — we mark these
             // rows so they stand out within the For Review lane.
+            // (Item C auto-sent + saved/failed indicators render via the
+            // shared SubjectIndicators component in the subject cell.)
             const isUncategorized = thread.category === "uncategorized";
-            // Item C: T1 threads where the AI sent the reply autonomously.
-            // Jane asked "where is that indication?" — make it unmistakable.
-            const wasAutoSent = !!thread.auto_sent_at;
             return (
               <TableRow
                 key={thread.id}
                 data-thread-row="true"
                 data-thread-id={thread.id}
+                tabIndex={-1}
                 className={cn(
-                  "group transition-colors",
+                  "group transition-colors outline-none",
+                  "data-[focused=true]:ring-2 data-[focused=true]:ring-inset data-[focused=true]:ring-ring/50",
                   !isLast && "border-b border-border/50",
                   isSelected
                     ? "bg-primary/[0.06] hover:bg-primary/[0.09]"
@@ -298,55 +287,7 @@ export function EmailList({
                     <span className="text-sm font-medium text-foreground truncate block max-w-[260px] group-hover:text-foreground">
                       {thread.subject}
                     </span>
-                    {thread.is_saved && (
-                      <span
-                        title={
-                          thread.saved_folder
-                            ? `Saved in "${thread.saved_folder}"`
-                            : "Saved"
-                        }
-                        className="flex-shrink-0 text-amber-600 dark:text-amber-400"
-                      >
-                        <BookmarkCheck
-                          className="w-3.5 h-3.5 fill-current"
-                          strokeWidth={1.75}
-                          aria-label="Saved"
-                        />
-                      </span>
-                    )}
-                    {wasAutoSent && (
-                      <span
-                        title="AI auto-replied — no review needed"
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
-                      >
-                        <Zap className="w-3 h-3" strokeWidth={2.25} aria-hidden="true" />
-                        AI sent
-                      </span>
-                    )}
-                    {isUncategorized && (
-                      <span
-                        title="AI couldn't classify this email — needs human triage"
-                        className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
-                      >
-                        <HelpCircle
-                          className="w-3.5 h-3.5"
-                          strokeWidth={2}
-                          aria-label="Uncategorized — needs triage"
-                        />
-                      </span>
-                    )}
-                    {thread.draft_generation_failed && (
-                      <span
-                        title="AI draft generation failed for this thread"
-                        className="flex-shrink-0"
-                      >
-                        <AlertTriangle
-                          className="w-3.5 h-3.5 text-destructive"
-                          strokeWidth={2}
-                          aria-label="Draft generation failed"
-                        />
-                      </span>
-                    )}
+                    <SubjectIndicators thread={thread} />
                   </span>
                 </TableCell>
                 <TableCell

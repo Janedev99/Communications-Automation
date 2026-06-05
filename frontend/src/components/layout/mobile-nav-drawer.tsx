@@ -9,7 +9,9 @@ interface MobileNavDrawerProps {
 }
 
 export function MobileNavDrawer({ open, onClose, children }: MobileNavDrawerProps) {
-  // Body scroll lock + Escape key listener
+  // Body scroll lock + Escape key listener + auto-close when the viewport
+  // grows past lg (the drawer becomes invisible via lg:hidden, but `open`
+  // would otherwise stay true and leave the body scroll-locked).
   useEffect(() => {
     if (!open) return;
 
@@ -24,9 +26,16 @@ export function MobileNavDrawer({ open, onClose, children }: MobileNavDrawerProp
     };
     document.addEventListener("keydown", handleKeyDown);
 
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const handleViewportChange = (e: MediaQueryListEvent) => {
+      if (e.matches) onClose();
+    };
+    desktopQuery.addEventListener("change", handleViewportChange);
+
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
+      desktopQuery.removeEventListener("change", handleViewportChange);
     };
   }, [open, onClose]);
 

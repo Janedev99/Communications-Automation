@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { ThreadDetail } from "@/components/emails/thread-detail";
@@ -31,6 +31,13 @@ export default function ThreadDetailPage({
   const { escalation } = useThreadEscalation(threadId);
 
   const [mobileTab, setMobileTab] = useState<"conversation" | "draft">("conversation");
+
+  // App Router reuses this component instance across [threadId] navigations —
+  // reset to the conversation tab so a new thread never opens on a stale
+  // (possibly draft-less) Draft tab.
+  useEffect(() => {
+    setMobileTab("conversation");
+  }, [threadId]);
 
   const handleDraftChange = () => {
     mutateDraft();

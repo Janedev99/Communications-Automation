@@ -82,18 +82,30 @@ export default function DashboardLayout({
         }
       }
 
-      // Email list shortcuts: j/k navigation + Enter to open
+      // Email list shortcuts: j/k navigation + Enter to open.
+      // Both the mobile card list and the desktop table are always in the
+      // DOM (toggled via CSS breakpoints), so filter to the visible render
+      // path — offsetParent is null for display:none subtrees.
       if (pathname === "/emails") {
-        const rows = document.querySelectorAll<HTMLElement>("[data-thread-row]");
+        const rows = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-thread-row]")
+        ).filter((el) => el.offsetParent !== null);
         if (rows.length === 0) return;
 
-        const focused = document.querySelector<HTMLElement>("[data-thread-row][data-focused='true']");
-        const currentIndex = focused ? Array.from(rows).indexOf(focused) : -1;
+        const focused = rows.find((r) => r.getAttribute("data-focused") === "true") ?? null;
+        const currentIndex = focused ? rows.indexOf(focused) : -1;
+
+        // Clear on every row (visible or hidden) so a viewport resize can't
+        // leave a stale data-focused marker on the other render path.
+        const clearFocused = () =>
+          document
+            .querySelectorAll<HTMLElement>("[data-thread-row][data-focused='true']")
+            .forEach((r) => r.removeAttribute("data-focused"));
 
         if (e.key === "j") {
           e.preventDefault();
           const nextIndex = Math.min(currentIndex + 1, rows.length - 1);
-          rows.forEach((r) => r.removeAttribute("data-focused"));
+          clearFocused();
           rows[nextIndex]?.setAttribute("data-focused", "true");
           rows[nextIndex]?.focus();
           return;
@@ -102,7 +114,7 @@ export default function DashboardLayout({
         if (e.key === "k") {
           e.preventDefault();
           const prevIndex = Math.max(currentIndex - 1, 0);
-          rows.forEach((r) => r.removeAttribute("data-focused"));
+          clearFocused();
           rows[prevIndex]?.setAttribute("data-focused", "true");
           rows[prevIndex]?.focus();
           return;

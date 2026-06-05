@@ -36,7 +36,7 @@ export function FolderTabsNav({ active, onChange }: FolderTabsNavProps) {
     <nav
       role="tablist"
       aria-label="Mail folder"
-      className="inline-flex items-center gap-0.5 mb-3 p-0.5 rounded-lg bg-muted/60"
+      className="flex sm:inline-flex items-center gap-0.5 mb-3 p-0.5 rounded-lg bg-muted/60 max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {FOLDERS.map((f) => {
         const isActive = active === f.id;
@@ -48,7 +48,7 @@ export function FolderTabsNav({ active, onChange }: FolderTabsNavProps) {
             aria-selected={isActive}
             onClick={() => onChange(f.id)}
             className={cn(
-              "inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium transition-colors duration-150 whitespace-nowrap",
+              "inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium transition-colors duration-150 whitespace-nowrap flex-shrink-0",
               isActive
                 ? "bg-card text-foreground ring-1 ring-border shadow-sm"
                 : "text-muted-foreground hover:text-foreground hover:bg-accent",

@@ -115,7 +115,7 @@ export function AttachButton({
       onClick={onClick}
       className={cn(
         "inline-flex items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors",
-        label ? "gap-1.5 px-2.5 py-1.5 text-sm font-medium" : "p-2",
+        label ? "gap-1.5 px-2.5 py-1.5 text-sm font-medium min-h-[44px] sm:min-h-0" : "p-2",
       )}
       aria-label={label ?? "Attach files"}
     >

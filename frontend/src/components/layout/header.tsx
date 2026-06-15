@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
 import { ROLE_BADGE_CLASSES, ROLE_LABELS } from "@/lib/constants";
@@ -33,15 +33,30 @@ function initialsFromName(name: string): string {
   return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
-export function Header() {
+interface HeaderProps {
+  onOpenNav?: () => void;
+  /** Whether the mobile nav drawer is currently open — drives aria-expanded. */
+  navOpen?: boolean;
+}
+
+export function Header({ onOpenNav, navOpen = false }: HeaderProps) {
   const pathname = usePathname();
   const { user, logout } = useUser();
   const pageName = getPageName(pathname);
 
   return (
-    <header className="h-14 bg-card/50 backdrop-blur-sm border-b border-border flex items-center justify-between px-6 flex-shrink-0">
-      {/* Left: page label */}
+    <header className="h-14 bg-card/50 backdrop-blur-sm border-b border-border flex items-center justify-between px-4 lg:px-6 flex-shrink-0">
+      {/* Left: hamburger (mobile) + page label */}
       <div className="flex items-center gap-2 min-w-0">
+        <button
+          onClick={onOpenNav}
+          aria-label={navOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={navOpen}
+          aria-haspopup="dialog"
+          className="lg:hidden -ml-1 mr-1 inline-flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+        >
+          <Menu className="w-5 h-5" strokeWidth={1.75} />
+        </button>
         <span className="text-sm font-medium text-foreground truncate">{pageName}</span>
       </div>
 

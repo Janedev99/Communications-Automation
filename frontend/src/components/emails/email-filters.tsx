@@ -67,9 +67,9 @@ export function EmailFilters({
   const hasFilters = !!status || !!category || !!clientEmail || !!assignedTo;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 mb-4">
+    <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 mb-4">
       <Select value={status || "all"} onValueChange={(v: string | null) => onStatusChange(!v || v === "all" ? "" : v)}>
-        <SelectTrigger className="w-[180px] h-9 text-sm">
+        <SelectTrigger className="w-full sm:w-[180px] h-9 text-sm">
           <SelectValue placeholder="All statuses" />
         </SelectTrigger>
         <SelectContent>
@@ -83,7 +83,7 @@ export function EmailFilters({
       </Select>
 
       <Select value={category || "all"} onValueChange={(v: string | null) => onCategoryChange(!v || v === "all" ? "" : v)}>
-        <SelectTrigger className="w-[180px] h-9 text-sm">
+        <SelectTrigger className="w-full sm:w-[180px] h-9 text-sm">
           <SelectValue placeholder="All categories" />
         </SelectTrigger>
         <SelectContent>
@@ -98,7 +98,7 @@ export function EmailFilters({
 
       {/* Assigned-to filter */}
       <Select value={assignedTo || "all"} onValueChange={(v: string | null) => onAssignedToChange(!v || v === "all" ? "" : v)}>
-        <SelectTrigger className="w-[160px] h-9 text-sm">
+        <SelectTrigger className="w-full sm:w-[160px] h-9 text-sm">
           <SelectValue placeholder="All assignees" />
         </SelectTrigger>
         <SelectContent>
@@ -107,13 +107,13 @@ export function EmailFilters({
         </SelectContent>
       </Select>
 
-      <div className="relative">
+      <div className="relative w-full sm:w-auto">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
         <Input
           value={inputValue}
           onChange={(e) => handleEmailInput(e.target.value)}
           placeholder="Filter by client email..."
-          className="pl-8 w-[240px] h-9 text-sm"
+          className="pl-8 w-full sm:w-[240px] h-9 text-sm"
         />
       </div>
 
@@ -122,7 +122,7 @@ export function EmailFilters({
           variant="ghost"
           size="sm"
           onClick={onClear}
-          className="text-xs text-muted-foreground hover:text-foreground h-9"
+          className="w-full sm:w-auto justify-start sm:justify-center text-xs text-muted-foreground hover:text-foreground h-9"
         >
           <X className="w-3 h-3 mr-1" />
           Clear filters

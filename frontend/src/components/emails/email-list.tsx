@@ -25,6 +25,45 @@ import { relativeTime } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import type { EmailThreadListItem } from "@/lib/types";
 
+// ── Shared indicator helpers (used by both table and card view) ───────────────
+
+function SubjectIndicators({ thread }: { thread: EmailThreadListItem }) {
+  return (
+    <>
+      {thread.is_saved && (
+        <span
+          title={thread.saved_folder ? `Saved in "${thread.saved_folder}"` : "Saved"}
+          className="flex-shrink-0 text-amber-600 dark:text-amber-400"
+        >
+          <BookmarkCheck className="w-3.5 h-3.5 fill-current" strokeWidth={1.75} aria-label="Saved" />
+        </span>
+      )}
+      {thread.auto_sent_at && (
+        <span
+          title="AI auto-replied — no review needed"
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
+        >
+          <Zap className="w-3 h-3" strokeWidth={2.25} aria-hidden="true" />
+          AI sent
+        </span>
+      )}
+      {thread.category === "uncategorized" && (
+        <span
+          title="AI couldn't classify this email — needs human triage"
+          className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
+        >
+          <HelpCircle className="w-3.5 h-3.5" strokeWidth={2} aria-label="Uncategorized — needs triage" />
+        </span>
+      )}
+      {thread.draft_generation_failed && (
+        <span title="AI draft generation failed for this thread" className="flex-shrink-0">
+          <AlertTriangle className="w-3.5 h-3.5 text-destructive" strokeWidth={2} aria-label="Draft generation failed" />
+        </span>
+      )}
+    </>
+  );
+}
+
 interface EmailListProps {
   threads: EmailThreadListItem[];
   selectedIds?: Set<string>;
@@ -55,7 +94,108 @@ export function EmailList({
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border overflow-hidden">
+    <>
+      {/* ── Mobile card list (md:hidden) ──────────────────────────────────── */}
+      <ul className="md:hidden bg-card rounded-xl border border-border divide-y divide-border/50 overflow-hidden">
+        {threads.map((thread) => {
+          const isSelected = selectedIds.has(thread.id);
+          const isUncategorized = thread.category === "uncategorized";
+
+          const handleRowClick = () => router.push(`/emails/${thread.id}`);
+          const handleKeyDown = (e: React.KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              router.push(`/emails/${thread.id}`);
+            }
+          };
+
+          return (
+            <li
+              key={thread.id}
+              data-thread-row="true"
+              data-thread-id={thread.id}
+              tabIndex={0}
+              onClick={handleRowClick}
+              onKeyDown={handleKeyDown}
+              className={cn(
+                "relative flex gap-3 px-4 py-3 cursor-pointer transition-colors outline-none",
+                "focus-visible:ring-3 focus-visible:ring-ring/50",
+                "data-[focused=true]:ring-2 data-[focused=true]:ring-inset data-[focused=true]:ring-ring/50",
+                isSelected
+                  ? "bg-primary/[0.06]"
+                  : isUncategorized
+                  ? "bg-amber-500/[0.04] border-l-2 border-l-amber-500/50"
+                  : "active:bg-accent/40"
+              )}
+            >
+              {/* Checkbox (bulk mode) */}
+              {hasBulkMode && (
+                <label
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-start pt-0.5 -m-1 p-1 flex-shrink-0"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleSelect!(thread.id)}
+                    aria-label={`Select thread: ${thread.subject}`}
+                    className="h-4 w-4 rounded border-border text-primary focus:ring-primary/30 cursor-pointer"
+                  />
+                </label>
+              )}
+
+              {/* Tier glyph */}
+              <span className="mt-0.5 flex-shrink-0">
+                <TierBadge tier={thread.tier ?? "t2_review"} variant="glyph" />
+              </span>
+
+              {/* Body */}
+              <div className="flex-1 min-w-0">
+                {/* Row 1: subject + saved/failed icons */}
+                <div className="flex items-start gap-1.5">
+                  <span className="text-sm font-medium leading-snug line-clamp-2 flex-1 min-w-0">
+                    {thread.subject}
+                  </span>
+                  <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+                    <SubjectIndicators thread={thread} />
+                  </div>
+                </div>
+
+                {/* Row 2: client + time */}
+                <div className="flex items-center justify-between gap-2 mt-0.5">
+                  <span className="text-xs text-muted-foreground truncate">
+                    {thread.client_name ?? thread.client_email}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground whitespace-nowrap flex-shrink-0">
+                    {relativeTime(thread.updated_at)}
+                  </span>
+                </div>
+
+                {/* Row 3: badges */}
+                <div className="flex items-center flex-wrap gap-1.5 mt-2">
+                  <ThreadStatusBadge status={thread.status} />
+                  <CategoryBadge category={thread.category} />
+                  {thread.message_count > 1 && (
+                    <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground flex-shrink-0">
+                      <Mail className="w-3 h-3" strokeWidth={1.75} aria-hidden="true" />
+                      {thread.message_count}
+                    </span>
+                  )}
+                  {thread.assigned_to_name && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground flex-shrink-0">
+                      <UserCircle2 className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                      <span className="truncate max-w-[80px]">{thread.assigned_to_name}</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* ── Desktop table (hidden on mobile) ───────────────────────────────── */}
+    <div className="hidden md:block bg-card rounded-xl border border-border overflow-hidden">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
@@ -100,17 +240,18 @@ export function EmailList({
             // Item E: emails the AI couldn't classify confidently land here.
             // Jane explicitly asked about a "surprise box" — we mark these
             // rows so they stand out within the For Review lane.
+            // (Item C auto-sent + saved/failed indicators render via the
+            // shared SubjectIndicators component in the subject cell.)
             const isUncategorized = thread.category === "uncategorized";
-            // Item C: T1 threads where the AI sent the reply autonomously.
-            // Jane asked "where is that indication?" — make it unmistakable.
-            const wasAutoSent = !!thread.auto_sent_at;
             return (
               <TableRow
                 key={thread.id}
                 data-thread-row="true"
                 data-thread-id={thread.id}
+                tabIndex={-1}
                 className={cn(
-                  "group transition-colors",
+                  "group transition-colors outline-none",
+                  "data-[focused=true]:ring-2 data-[focused=true]:ring-inset data-[focused=true]:ring-ring/50",
                   !isLast && "border-b border-border/50",
                   isSelected
                     ? "bg-primary/[0.06] hover:bg-primary/[0.09]"
@@ -146,55 +287,7 @@ export function EmailList({
                     <span className="text-sm font-medium text-foreground truncate block max-w-[260px] group-hover:text-foreground">
                       {thread.subject}
                     </span>
-                    {thread.is_saved && (
-                      <span
-                        title={
-                          thread.saved_folder
-                            ? `Saved in "${thread.saved_folder}"`
-                            : "Saved"
-                        }
-                        className="flex-shrink-0 text-amber-600 dark:text-amber-400"
-                      >
-                        <BookmarkCheck
-                          className="w-3.5 h-3.5 fill-current"
-                          strokeWidth={1.75}
-                          aria-label="Saved"
-                        />
-                      </span>
-                    )}
-                    {wasAutoSent && (
-                      <span
-                        title="AI auto-replied — no review needed"
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
-                      >
-                        <Zap className="w-3 h-3" strokeWidth={2.25} aria-hidden="true" />
-                        AI sent
-                      </span>
-                    )}
-                    {isUncategorized && (
-                      <span
-                        title="AI couldn't classify this email — needs human triage"
-                        className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wider flex-shrink-0"
-                      >
-                        <HelpCircle
-                          className="w-3.5 h-3.5"
-                          strokeWidth={2}
-                          aria-label="Uncategorized — needs triage"
-                        />
-                      </span>
-                    )}
-                    {thread.draft_generation_failed && (
-                      <span
-                        title="AI draft generation failed for this thread"
-                        className="flex-shrink-0"
-                      >
-                        <AlertTriangle
-                          className="w-3.5 h-3.5 text-destructive"
-                          strokeWidth={2}
-                          aria-label="Draft generation failed"
-                        />
-                      </span>
-                    )}
+                    <SubjectIndicators thread={thread} />
                   </span>
                 </TableCell>
                 <TableCell
@@ -254,5 +347,6 @@ export function EmailList({
         </TableBody>
       </Table>
     </div>
+    </>
   );
 }

@@ -27,6 +27,10 @@ import { AlphaBadge } from "@/components/ui/alpha-badge";
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  /** When true, the sidebar is rendered inside the mobile drawer (no hidden class). */
+  inDrawer?: boolean;
+  /** Fired when the user navigates via a nav link or the compose button — used by the drawer to close itself. */
+  onNavigate?: () => void;
 }
 
 const LAST_SEEN_KEY = "jane_sidebar_last_seen";
@@ -63,7 +67,7 @@ function NotificationDot({ show }: { show: boolean }) {
   );
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useUser();
   const { stats } = useDashboard();
@@ -116,8 +120,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   return (
     <aside
       className={cn(
-        "flex flex-col bg-background border-r border-border transition-all duration-200 ease-in-out flex-shrink-0",
-        collapsed ? "w-16" : "w-56"
+        "flex flex-col bg-background transition-all duration-200 ease-in-out flex-shrink-0",
+        inDrawer
+          ? // Inside the mobile drawer: fill the panel width (w-72) so there's
+            // no empty strip on the right, and skip the right border — the
+            // drawer panel already provides one.
+            "w-full"
+          : cn(
+              // Desktop: hidden below lg, fixed width that animates on collapse.
+              "hidden lg:flex border-r border-border",
+              collapsed ? "w-16" : "w-56"
+            )
       )}
     >
       {/* Brand area */}
@@ -148,7 +161,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Compose — opens the docked New Email window from any page (Gmail-style) */}
       <div className="px-2 pb-2">
         <button
-          onClick={() => openCompose()}
+          onClick={() => { openCompose(); onNavigate?.(); }}
           title={collapsed ? "New Email" : undefined}
           aria-label="New Email"
           className={cn(
@@ -171,6 +184,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               key={href}
               href={href}
               title={collapsed ? label : undefined}
+              onClick={onNavigate}
               className={cn(
                 "relative flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
@@ -228,6 +242,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <Link
               href="/audit-log"
               title={collapsed ? "Audit Log" : undefined}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",
@@ -242,6 +257,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <Link
               href="/settings"
               title={collapsed ? "Settings" : undefined}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center rounded-md text-sm font-medium transition-colors duration-150",
                 collapsed ? "px-0 py-2 justify-center" : "px-3 py-2 gap-2.5",

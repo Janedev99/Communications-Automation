@@ -375,12 +375,12 @@ export default function EmailsPage() {
 
       {/* Bulk action bar — inbox only */}
       {isInbox && selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 px-3.5 py-2 bg-primary/[0.07] border border-primary/30 rounded-lg">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3 px-3.5 py-2 bg-primary/[0.07] border border-primary/30 rounded-lg">
           <span className="text-sm font-medium text-foreground">
             <span className="tabular-nums">{selectedIds.size}</span> thread
             {selectedIds.size !== 1 ? "s" : ""} selected
           </span>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
               variant="outline"
               size="sm"

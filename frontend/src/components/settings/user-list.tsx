@@ -55,7 +55,7 @@ export function UserList({ users, currentUserId, onRefresh }: UserListProps) {
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border overflow-hidden">
+    <div className="bg-card rounded-xl border border-border overflow-hidden overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">

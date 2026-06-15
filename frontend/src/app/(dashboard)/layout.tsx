@@ -23,6 +23,11 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
 
+  // Stable callbacks so MobileNavDrawer's effect deps don't re-subscribe its
+  // keydown/matchMedia listeners on every layout re-render.
+  const openMobileNav = useCallback(() => setMobileNavOpen(true), []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+
   // Desktop sidebar collapse on small windows (lg+ only — below lg the drawer handles nav)
   useEffect(() => {
     const handleResize = () => {
@@ -182,20 +187,17 @@ export default function DashboardLayout({
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
 
         {/* Mobile drawer — renders the sidebar without its desktop hide class */}
-        <MobileNavDrawer
-          open={mobileNavOpen}
-          onClose={() => setMobileNavOpen(false)}
-        >
+        <MobileNavDrawer open={mobileNavOpen} onClose={closeMobileNav}>
           <Sidebar
             collapsed={false}
             onToggle={() => {}}
             inDrawer
-            onNavigate={() => setMobileNavOpen(false)}
+            onNavigate={closeMobileNav}
           />
         </MobileNavDrawer>
 
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <Header onOpenNav={() => setMobileNavOpen(true)} />
+          <Header onOpenNav={openMobileNav} navOpen={mobileNavOpen} />
           <main className="flex-1 overflow-y-auto p-4 lg:p-6">
             {children}
           </main>

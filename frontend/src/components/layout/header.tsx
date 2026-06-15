@@ -35,9 +35,11 @@ function initialsFromName(name: string): string {
 
 interface HeaderProps {
   onOpenNav?: () => void;
+  /** Whether the mobile nav drawer is currently open — drives aria-expanded. */
+  navOpen?: boolean;
 }
 
-export function Header({ onOpenNav }: HeaderProps) {
+export function Header({ onOpenNav, navOpen = false }: HeaderProps) {
   const pathname = usePathname();
   const { user, logout } = useUser();
   const pageName = getPageName(pathname);
@@ -48,7 +50,9 @@ export function Header({ onOpenNav }: HeaderProps) {
       <div className="flex items-center gap-2 min-w-0">
         <button
           onClick={onOpenNav}
-          aria-label="Open navigation"
+          aria-label={navOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={navOpen}
+          aria-haspopup="dialog"
           className="lg:hidden -ml-1 mr-1 inline-flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
         >
           <Menu className="w-5 h-5" strokeWidth={1.75} />

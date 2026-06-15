@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 interface MobileNavDrawerProps {
   open: boolean;
@@ -9,6 +9,17 @@ interface MobileNavDrawerProps {
 }
 
 export function MobileNavDrawer({ open, onClose, children }: MobileNavDrawerProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Keep the off-canvas panel out of the tab order while closed. It stays in
+  // the DOM (translate-x-full only moves it visually), and a CSS transform
+  // does NOT remove descendants from keyboard focus — without `inert` a
+  // keyboard user could Tab into the hidden drawer. Set imperatively because
+  // a boolean `inert` JSX prop isn't reliably applied under React 18.
+  useEffect(() => {
+    if (panelRef.current) panelRef.current.inert = !open;
+  }, [open]);
+
   // Body scroll lock + Escape key listener + auto-close when the viewport
   // grows past lg (the drawer becomes invisible via lg:hidden, but `open`
   // would otherwise stay true and leave the body scroll-locked).
@@ -53,6 +64,7 @@ export function MobileNavDrawer({ open, onClose, children }: MobileNavDrawerProp
 
       {/* Panel */}
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Navigation"

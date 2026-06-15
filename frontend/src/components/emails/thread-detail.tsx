@@ -246,8 +246,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
             </div>
           </div>
 
-          {/* Action buttons — desktop (sm+) */}
-          <div className="hidden sm:flex items-center gap-2 flex-shrink-0">
+          {/* Action buttons — desktop (lg+). Breakpoint matches the sidebar
+              and the Conversation|Draft segmented control: below lg the
+              compact mobile cluster is used so tablet portrait (640–1023px)
+              never shows this full 6-button row in a constrained header. */}
+          <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
             {thread.is_saved ? (
               // Segmented control: the folder label and the remove (✕) action
               // share one bordered pill with a divider, so the ✕ reads as part
@@ -385,8 +388,8 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
             )}
           </div>
 
-          {/* Action buttons — mobile (sm:hidden) */}
-          <div className="flex sm:hidden items-center gap-2 flex-shrink-0">
+          {/* Action buttons — mobile + tablet (below lg) */}
+          <div className="flex lg:hidden items-center gap-2 flex-shrink-0">
             {/* Resolve / Reopen */}
             {isClosed ? (
               <Button

@@ -120,11 +120,17 @@ export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: S
   return (
     <aside
       className={cn(
-        "flex flex-col bg-background border-r border-border transition-all duration-200 ease-in-out flex-shrink-0",
-        // On mobile the sidebar is hidden by default; the drawer renders it
-        // with inDrawer=true, which removes the hide class.
-        !inDrawer && "hidden lg:flex",
-        collapsed ? "w-16" : "w-56"
+        "flex flex-col bg-background transition-all duration-200 ease-in-out flex-shrink-0",
+        inDrawer
+          ? // Inside the mobile drawer: fill the panel width (w-72) so there's
+            // no empty strip on the right, and skip the right border — the
+            // drawer panel already provides one.
+            "w-full"
+          : cn(
+              // Desktop: hidden below lg, fixed width that animates on collapse.
+              "hidden lg:flex border-r border-border",
+              collapsed ? "w-16" : "w-56"
+            )
       )}
     >
       {/* Brand area */}

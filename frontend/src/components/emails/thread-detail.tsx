@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
+  ArrowRight,
   Bookmark,
   BookmarkCheck,
   BookPlus,
   CheckCircle,
+  MoreVertical,
   RotateCcw,
   ShieldAlert,
   ShieldX,
@@ -24,6 +26,13 @@ import { CategoryBadge } from "./category-badge";
 import { MessageBubble } from "./message-bubble";
 import { SaveThreadDialog } from "./save-thread-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { SEVERITY_BADGE_CLASSES, SEVERITY_LABELS } from "@/lib/constants";
 import {
   addThreadToKnowledgeBase,
@@ -41,6 +50,8 @@ interface ThreadDetailProps {
   thread: EmailThread;
   escalation?: Escalation;
   onThreadChange?: () => void;
+  /** Mobile-only: called when the user taps "Review draft →" to switch the tab panel. */
+  onReviewDraft?: () => void;
 }
 
 /**
@@ -53,7 +64,7 @@ function isSensitiveData(reason: string | null | undefined): boolean {
   return reason.toLowerCase().includes("sensitive client data");
 }
 
-export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetailProps) {
+export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft }: ThreadDetailProps) {
   const router = useRouter();
   const { user } = useUser();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -235,8 +246,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Action buttons — desktop (lg+). Breakpoint matches the sidebar
+              and the Conversation|Draft segmented control: below lg the
+              compact mobile cluster is used so tablet portrait (640–1023px)
+              never shows this full 6-button row in a constrained header. */}
+          <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
             {thread.is_saved ? (
               // Segmented control: the folder label and the remove (✕) action
               // share one bordered pill with a divider, so the ✕ reads as part
@@ -373,7 +387,125 @@ export function ThreadDetail({ thread, escalation, onThreadChange }: ThreadDetai
               </Button>
             )}
           </div>
+
+          {/* Action buttons — mobile + tablet (below lg) */}
+          <div className="flex lg:hidden items-center gap-2 flex-shrink-0">
+            {/* Resolve / Reopen */}
+            {isClosed ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReopen}
+                disabled={!!actionLoading}
+                className="h-9 text-xs gap-1.5 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
+              >
+                <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                Reopen
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleClose}
+                disabled={!!actionLoading}
+                className="h-9 text-xs gap-1.5"
+              >
+                <CheckCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+                Resolve
+              </Button>
+            )}
+
+            {/* Claim / Unassign icon button */}
+            {!isAssignedToMe ? (
+              <button
+                type="button"
+                onClick={handleClaim}
+                disabled={!!actionLoading}
+                title="Claim this thread"
+                aria-label="Claim this thread"
+                className="inline-flex items-center justify-center w-9 h-9 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <UserCircle2 className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleUnassign}
+                disabled={!!actionLoading}
+                title="Unassign"
+                aria-label="Unassign from this thread"
+                className="inline-flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <UserCircle2 className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            )}
+
+            {/* More menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="inline-flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                aria-label="More actions"
+              >
+                <MoreVertical className="w-4 h-4" strokeWidth={1.75} />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* Save / Edit saved */}
+                <DropdownMenuItem onClick={() => openSaveForThread()}>
+                  {thread.is_saved ? (
+                    <>
+                      <BookmarkCheck className="w-4 h-4" strokeWidth={1.75} />
+                      Edit saved
+                    </>
+                  ) : (
+                    <>
+                      <Bookmark className="w-4 h-4" strokeWidth={1.75} />
+                      Save
+                    </>
+                  )}
+                </DropdownMenuItem>
+
+                {/* Add to KB */}
+                <DropdownMenuItem onClick={() => setShowAddToKbConfirm(true)}>
+                  <BookPlus className="w-4 h-4" strokeWidth={1.75} />
+                  Add to KB
+                </DropdownMenuItem>
+
+                {/* Spam + Delete — hidden when closed */}
+                {!isClosed && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => setShowSpamConfirm(true)}
+                      className="py-2"
+                    >
+                      <ShieldX className="w-4 h-4" strokeWidth={1.75} />
+                      Spam
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => setShowTrashConfirm(true)}
+                      className="py-2"
+                    >
+                      <Trash2 className="w-4 h-4" strokeWidth={1.75} />
+                      Delete
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
+
+        {/* Mobile "Review draft →" affordance */}
+        {onReviewDraft && (
+          <button
+            onClick={onReviewDraft}
+            className="lg:hidden mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            Review draft
+            <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        )}
 
         {/* Metadata chip row */}
         <div className="flex items-center gap-2 mt-3 flex-wrap">

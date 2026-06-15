@@ -523,7 +523,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           {!hasDraftFailure && (
             <div className="flex flex-col gap-2 w-full max-w-[220px]">
               <Button
-                className="w-full"
+                className="w-full h-11 sm:h-8"
                 onClick={handleGenerate}
                 disabled={generating || creatingFromTemplate}
               >
@@ -538,7 +538,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               </Button>
               <Button
                 variant="outline"
-                className="w-full"
+                className="w-full h-11 sm:h-8"
                 onClick={() => setShowTemplatePicker(true)}
                 disabled={generating || creatingFromTemplate}
               >
@@ -607,7 +607,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           <div className="flex gap-2">
             {/* No confirm needed in rejected state — Regenerate proceeds directly */}
             <Button
-              className="flex-1"
+              className="flex-1 h-11 sm:h-8"
               onClick={handleGenerate}
               disabled={generating || creatingFromTemplate}
             >
@@ -622,6 +622,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
             </Button>
             <Button
               variant="outline"
+              className="h-11 sm:h-8"
               onClick={() => setShowTemplatePicker(true)}
               disabled={generating || creatingFromTemplate}
               title="Use a template"
@@ -767,7 +768,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="flex-shrink-0"
+                    className="flex-shrink-0 h-9 sm:h-8"
                     onClick={executeSend}
                   >
                     Retry
@@ -776,11 +777,11 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               )}
             </>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Button
                 onClick={handleRetrySend}
                 disabled={generating}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                className="h-11 sm:h-8 w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
               >
                 <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
                 Retry send
@@ -789,6 +790,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 variant="outline"
                 onClick={handleRegenerateClick}
                 disabled={generating}
+                className="h-11 sm:h-8 w-full sm:w-auto"
                 title="Discard this draft and ask the AI for a new response"
               >
                 <RefreshCw className="w-4 h-4 mr-1.5" />
@@ -945,6 +947,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   size="sm"
                   onClick={cancelSend}
                   aria-label="Cancel send"
+                  className="h-9 sm:h-8"
                 >
                   Cancel send
                 </Button>
@@ -1011,7 +1014,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 <Button
                   onClick={handleApprove}
                   disabled={approving}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                  className="h-11 sm:h-8 w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600"
                   data-shortcut="approve"
                 >
                   <Check className="w-4 h-4 mr-1.5" />
@@ -1021,6 +1024,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   variant="destructive"
                   onClick={() => setShowRejectionDialog(true)}
                   disabled={rejecting}
+                  className="h-11 sm:h-8 w-full sm:w-auto"
                   data-shortcut="reject"
                 >
                   <X className="w-4 h-4 mr-1.5" />
@@ -1031,6 +1035,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   variant="outline"
                   onClick={handleRegenerateClick}
                   disabled={generating}
+                  className="h-11 sm:h-8 w-full sm:w-auto"
                   title="Regenerate draft with AI"
                 >
                   <RefreshCw className="w-4 h-4 mr-1.5" />
@@ -1044,6 +1049,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                 <Button
                   onClick={() => setShowSendConfirm(true)}
                   disabled={sendState.phase !== "idle" || reverting || overSizeLimit}
+                  className="h-11 sm:h-8 w-full sm:w-auto"
                 >
                   <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
                   Send
@@ -1054,6 +1060,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   variant="outline"
                   onClick={handleRevert}
                   disabled={reverting || generating}
+                  className="h-11 sm:h-8 w-full sm:w-auto"
                   title="Un-approve so you can edit this draft again — keeps the text"
                 >
                   <Undo2 className="w-4 h-4 mr-1.5" />
@@ -1064,6 +1071,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
                   variant="outline"
                   onClick={handleRegenerateClick}
                   disabled={generating || reverting}
+                  className="h-11 sm:h-8 w-full sm:w-auto"
                   title="Reject this draft and generate a new one with AI"
                 >
                   <RefreshCw className="w-4 h-4 mr-1.5" />

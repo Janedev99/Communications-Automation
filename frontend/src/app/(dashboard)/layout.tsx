@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
+import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
 import { ComposeProvider } from "@/components/emails/compose-context";
 import { useUser } from "@/hooks/use-user";
@@ -16,14 +17,21 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const { isLoading: authLoading } = useUser();
   const router = useRouter();
   const pathname = usePathname();
 
+  // Stable callbacks so MobileNavDrawer's effect deps don't re-subscribe its
+  // keydown/matchMedia listeners on every layout re-render.
+  const openMobileNav = useCallback(() => setMobileNavOpen(true), []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+
+  // Desktop sidebar collapse on small windows (lg+ only — below lg the drawer handles nav)
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth < 1024) {
+      if (window.innerWidth >= 1024 && window.innerWidth < 1280) {
         setCollapsed(true);
       }
     };
@@ -31,6 +39,11 @@ export default function DashboardLayout({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Close mobile drawer on route change
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
 
   // Global keyboard shortcut handler
   const handleKeyDown = useCallback(
@@ -74,18 +87,30 @@ export default function DashboardLayout({
         }
       }
 
-      // Email list shortcuts: j/k navigation + Enter to open
+      // Email list shortcuts: j/k navigation + Enter to open.
+      // Both the mobile card list and the desktop table are always in the
+      // DOM (toggled via CSS breakpoints), so filter to the visible render
+      // path — offsetParent is null for display:none subtrees.
       if (pathname === "/emails") {
-        const rows = document.querySelectorAll<HTMLElement>("[data-thread-row]");
+        const rows = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-thread-row]")
+        ).filter((el) => el.offsetParent !== null);
         if (rows.length === 0) return;
 
-        const focused = document.querySelector<HTMLElement>("[data-thread-row][data-focused='true']");
-        const currentIndex = focused ? Array.from(rows).indexOf(focused) : -1;
+        const focused = rows.find((r) => r.getAttribute("data-focused") === "true") ?? null;
+        const currentIndex = focused ? rows.indexOf(focused) : -1;
+
+        // Clear on every row (visible or hidden) so a viewport resize can't
+        // leave a stale data-focused marker on the other render path.
+        const clearFocused = () =>
+          document
+            .querySelectorAll<HTMLElement>("[data-thread-row][data-focused='true']")
+            .forEach((r) => r.removeAttribute("data-focused"));
 
         if (e.key === "j") {
           e.preventDefault();
           const nextIndex = Math.min(currentIndex + 1, rows.length - 1);
-          rows.forEach((r) => r.removeAttribute("data-focused"));
+          clearFocused();
           rows[nextIndex]?.setAttribute("data-focused", "true");
           rows[nextIndex]?.focus();
           return;
@@ -94,7 +119,7 @@ export default function DashboardLayout({
         if (e.key === "k") {
           e.preventDefault();
           const prevIndex = Math.max(currentIndex - 1, 0);
-          rows.forEach((r) => r.removeAttribute("data-focused"));
+          clearFocused();
           rows[prevIndex]?.setAttribute("data-focused", "true");
           rows[prevIndex]?.focus();
           return;
@@ -158,10 +183,22 @@ export default function DashboardLayout({
   return (
     <ComposeProvider>
       <div className="flex h-screen overflow-hidden">
+        {/* Desktop sidebar — hidden below lg, shown at lg+ */}
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+
+        {/* Mobile drawer — renders the sidebar without its desktop hide class */}
+        <MobileNavDrawer open={mobileNavOpen} onClose={closeMobileNav}>
+          <Sidebar
+            collapsed={false}
+            onToggle={() => {}}
+            inDrawer
+            onNavigate={closeMobileNav}
+          />
+        </MobileNavDrawer>
+
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <Header />
-          <main className="flex-1 overflow-y-auto p-6">
+          <Header onOpenNav={openMobileNav} navOpen={mobileNavOpen} />
+          <main className="flex-1 overflow-y-auto p-4 lg:p-6">
             {children}
           </main>
         </div>

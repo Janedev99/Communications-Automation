@@ -397,7 +397,7 @@ export default function AuditLogPage() {
         </div>
       ) : (
         <>
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="bg-card border border-border rounded-xl overflow-hidden overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="bg-muted/40 border-b border-border">

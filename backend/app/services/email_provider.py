@@ -748,6 +748,22 @@ class MSGraphProvider(EmailProvider):
             logger.error(
                 "MSGraph forward send failed: %s | %s", exc, exc.response.text[:500]
             )
+            # createForward succeeded but send didn't — an orphaned draft
+            # would otherwise sit in Jane's Drafts folder forever (and could
+            # be accidentally sent later by anyone with mailbox access).
+            # Best-effort cleanup: never let a delete failure mask the
+            # original send error the caller needs to see.
+            try:
+                cleanup = self._client.delete(
+                    f"{self.GRAPH_BASE}/users/{mailbox}/messages/{draft_id}",
+                    headers=self._headers(),
+                )
+                cleanup.raise_for_status()
+            except Exception as cleanup_exc:
+                logger.error(
+                    "MSGraph: failed to delete orphaned forward draft %s: %s",
+                    draft_id, cleanup_exc,
+                )
             raise
 
         logger.info("MSGraph: forwarded message %s to %s", internet_message_id, to)

@@ -163,6 +163,15 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
   // Sync recipient inputs when the draft changes. Legacy null to_recipients
   // prefills with the thread's client_email (matches the send path's fallback).
+  //
+  // Deps intentionally narrowed to draft?.id only. Depending on
+  // to_recipients/cc_recipients (or the whole draft object) re-ran this on
+  // EVERY SWR revalidation — including a body-text autosave completing, or a
+  // tone change — and reset whatever the user was mid-typing back to the
+  // last-saved server value, sometimes collapsing the Cc field entirely.
+  // Re-sync only on an actual draft swap (new id, e.g. thread switch or
+  // regenerate); reply-all and the save handlers update these inputs
+  // directly once their own request succeeds.
   useEffect(() => {
     const toList =
       draft?.to_recipients && draft.to_recipients.length > 0
@@ -176,7 +185,8 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     setCcVisible(ccList.length > 0);
     setToInvalid(false);
     setCcInvalid(false);
-  }, [draft?.id, draft?.to_recipients, draft?.cc_recipients, thread.client_email, draft]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.id]);
 
   // Attachments are scoped to the THREAD, not the draft: keyed on thread.id
   // (NOT draft.id) so files survive edit/approve/regenerate — regenerate makes
@@ -313,34 +323,61 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   const handleReplyAll = useCallback(async () => {
     if (!draft || replyAllLoading) return;
     setReplyAllLoading(true);
+
+    let result: { to: string[]; cc: string[] };
     try {
-      const result = await getReplyAllRecipients(thread.id, draft.id);
-      const currentTo = splitRecipients(toInput).map((a) => a.toLowerCase());
-      const currentCc = splitRecipients(ccInput).map((a) => a.toLowerCase());
-      const nextTo = result.to.map((a) => a.toLowerCase());
-      const nextCc = result.cc.map((a) => a.toLowerCase());
-      const sameTo =
-        currentTo.length === nextTo.length && currentTo.every((a) => nextTo.includes(a));
-      const sameCc =
-        currentCc.length === nextCc.length && currentCc.every((a) => nextCc.includes(a));
+      result = await getReplyAllRecipients(thread.id, draft.id);
+    } catch {
+      toast.error("Couldn't load the full recipient list. Please try again.");
+      setReplyAllLoading(false);
+      return;
+    }
 
-      if (sameTo && sameCc) {
-        toast.info("No additional recipients found.");
-        return;
-      }
+    const currentTo = splitRecipients(toInput).map((a) => a.toLowerCase());
+    const currentCc = splitRecipients(ccInput).map((a) => a.toLowerCase());
+    const nextTo = result.to.map((a) => a.toLowerCase());
+    const nextCc = result.cc.map((a) => a.toLowerCase());
+    const sameTo =
+      currentTo.length === nextTo.length && currentTo.every((a) => nextTo.includes(a));
+    const sameCc =
+      currentCc.length === nextCc.length && currentCc.every((a) => nextCc.includes(a));
 
+    // Never apply an empty To (e.g. a self-only thread where every original
+    // recipient is the firm's own mailbox) or a set identical to what's
+    // already there — no-op, and definitely never write an empty To.
+    if (result.to.length === 0 || (sameTo && sameCc)) {
+      toast.info("No additional recipients found.");
+      setReplyAllLoading(false);
+      return;
+    }
+
+    // Persist immediately — NOT the keystroke debounce — so the success
+    // toast only fires once the save has actually happened. The fetched set
+    // could still 422 (e.g. a malformed legacy address), so don't touch the
+    // visible fields until the PUT confirms.
+    if (toSaveTimer.current) clearTimeout(toSaveTimer.current);
+    if (ccSaveTimer.current) clearTimeout(ccSaveTimer.current);
+    setAutoSaveState("saving");
+    try {
+      await updateDraftRecipients(thread.id, draft.id, {
+        to_recipients: result.to,
+        cc_recipients: result.cc,
+      });
       setToInput(result.to.join(", "));
       setCcInput(result.cc.join(", "));
       if (result.cc.length > 0) setCcVisible(true);
-      saveToRecipients(result.to);
-      saveCcRecipients(result.cc);
+      setToInvalid(false);
+      setCcInvalid(false);
+      setAutoSaveState("saved");
+      onDraftChange();
       toast.success("Recipients updated from the full thread — review before sending.");
     } catch {
-      toast.error("Couldn't load the full recipient list. Please try again.");
+      setAutoSaveState("unsaved");
+      toast.error("Couldn't save recipients — check the email addresses.");
     } finally {
       setReplyAllLoading(false);
     }
-  }, [draft, replyAllLoading, thread.id, toInput, ccInput, saveToRecipients, saveCcRecipients]);
+  }, [draft, replyAllLoading, thread.id, toInput, ccInput, onDraftChange]);
 
   const handleGenerate = async () => {
     setGenerating(true);

@@ -372,6 +372,11 @@ export interface ForwardMessageInput {
   /** Comma/semicolon-separated Cc recipients. */
   cc?: string;
   note?: string;
+  /** Client-supplied idempotency key — same shape/purpose as sendDraft's.
+   *  Generate once per dialog-open and reuse it across retries within that
+   *  session so a resubmit after a timeout/error returns the original
+   *  result instead of forwarding a second time. */
+  idempotencyKey?: string;
 }
 
 /**
@@ -391,6 +396,7 @@ export async function forwardMessage(
   form.set("to", input.to);
   if (input.cc) form.set("cc", input.cc);
   if (input.note) form.set("note", input.note);
+  if (input.idempotencyKey) form.set("idempotency_key", input.idempotencyKey);
 
   const headers: Record<string, string> = {};
   const csrfToken = getCsrfToken();

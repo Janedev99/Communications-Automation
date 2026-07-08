@@ -65,7 +65,7 @@ function MessageRecipientsLine({
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        aria-label="Show recipients for this message"
+        aria-label={expanded ? "Hide recipients for this message" : "Show recipients for this message"}
         title={fullTitle}
         className={cn(
           "inline-flex items-center gap-1 text-[10px] hover:underline",

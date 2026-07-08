@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -53,6 +53,10 @@ export function ForwardMessageDialog({
   const [note, setNote] = useState("");
   const [toInvalid, setToInvalid] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // One idempotency key per dialog-open, reused across retries within that
+  // session (mirrors sendDraft's key contract) — a resubmit after a timeout
+  // or error returns the original forward instead of sending a second copy.
+  const idempotencyKeyRef = useRef<string>("");
 
   // Reset on every open so a re-opened dialog never carries a stale draft.
   useEffect(() => {
@@ -62,6 +66,7 @@ export function ForwardMessageDialog({
     setCc("");
     setNote("");
     setToInvalid(false);
+    idempotencyKeyRef.current = `fwd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }, [open]);
 
   const latestInbound = [...thread.messages]
@@ -78,6 +83,7 @@ export function ForwardMessageDialog({
         to: to.trim(),
         cc: cc.trim() || undefined,
         note: note.trim() || undefined,
+        idempotencyKey: idempotencyKeyRef.current,
       });
       const addresses = splitRecipients(to);
       const label =
@@ -113,9 +119,9 @@ export function ForwardMessageDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Forward this conversation</DialogTitle>
+          <DialogTitle>Forward this message</DialogTitle>
           <DialogDescription>
-            The original messages and their attachments are included automatically.
+            The most recent message and its attachments are included automatically.
           </DialogDescription>
         </DialogHeader>
 

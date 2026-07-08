@@ -99,6 +99,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
   const isClosed = thread.status === "closed";
   const isAssignedToMe = !!user && thread.assigned_to_id === user.id;
+  // Forward operates on the latest INBOUND message — with none, the dialog
+  // would open but could never submit. Disable both triggers up front.
+  const hasInboundMessage = thread.messages.some((m) => m.direction === "inbound");
 
   const handleClaim = async () => {
     if (!user || actionLoading) return;
@@ -340,9 +343,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               variant="ghost"
               size="sm"
               onClick={() => setShowForwardDialog(true)}
-              disabled={!!actionLoading}
+              disabled={!!actionLoading || !hasInboundMessage}
               className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              title="Forward this conversation to someone else"
+              title={hasInboundMessage ? "Forward this message to someone else" : "Nothing to forward yet"}
             >
               <Forward className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
               Forward
@@ -486,7 +489,11 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
                 </DropdownMenuItem>
 
                 {/* Forward */}
-                <DropdownMenuItem onClick={() => setShowForwardDialog(true)}>
+                <DropdownMenuItem
+                  onClick={() => setShowForwardDialog(true)}
+                  disabled={!hasInboundMessage}
+                  title={hasInboundMessage ? undefined : "Nothing to forward yet"}
+                >
                   <Forward className="w-4 h-4" strokeWidth={1.75} />
                   Forward
                 </DropdownMenuItem>

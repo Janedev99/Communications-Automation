@@ -70,6 +70,7 @@ from app.models.email import (
     ThreadTier,
 )
 from app.services.tier_engine import decide_tier
+from app.models.audit import AuditLog
 from app.models.escalation import Escalation, EscalationStatus
 from app.models.user import User
 from app.schemas.email import (
@@ -933,6 +934,71 @@ def get_inline_image(
     )
 
 
+# Same shape as SendDraftRequest.idempotency_key — kept as a plain regex here
+# (rather than importing that schema) since a forward isn't a draft send;
+# the constraint is identical (alphanumeric/hyphen/underscore, 1-128 chars).
+_FORWARD_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+
+
+def _find_prior_forward(
+    db: Session,
+    *,
+    thread_id: uuid.UUID,
+    source_message_id: uuid.UUID,
+    idempotency_key: str,
+) -> EmailMessage | None:
+    """
+    Look up a previously-recorded forward for this exact (source message,
+    idempotency key) pair via the ``thread.forwarded`` audit trail, and
+    return the outbound EmailMessage it created (or None if no match).
+
+    EmailMessage has no dedicated idempotency column of its own (unlike
+    DraftResponse.send_idempotency_key), so dedup piggybacks on the audit
+    log instead — a small per-thread scan, filtered in Python rather than
+    via a JSON-path query so the same code works against both SQLite (tests)
+    and Postgres (prod) without dialect-specific JSON operators.
+
+    This guards against retry-driven double sends (a client resubmitting
+    after a timeout, or a double-click racing a slow request) with the same
+    key. It is NOT a row-level lock — two truly concurrent requests with the
+    same key could both miss this lookup and both forward. That's an
+    accepted, narrower guarantee than send_draft's SELECT FOR UPDATE (there
+    is no pre-existing row to lock for a forward that hasn't happened yet);
+    the sequential-retry case this fixes is the one that matters in practice.
+    """
+    candidates = db.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.action == "thread.forwarded",
+            AuditLog.entity_type == "email_thread",
+            AuditLog.entity_id == str(thread_id),
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(200)
+    ).scalars().all()
+
+    for entry in candidates:
+        details = entry.details or {}
+        if (
+            details.get("source_message_id") != str(source_message_id)
+            or details.get("idempotency_key") != idempotency_key
+        ):
+            continue
+        outbound_id = details.get("outbound_message_id")
+        if not outbound_id:
+            continue
+        try:
+            outbound_uuid = uuid.UUID(outbound_id)
+        except ValueError:
+            continue
+        existing = db.execute(
+            select(EmailMessage).where(EmailMessage.id == outbound_uuid)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+    return None
+
+
 @router.post(
     "/{thread_id}/messages/{message_id}/forward",
     response_model=EmailMessageResponse,
@@ -945,6 +1011,7 @@ def forward_message(
     to: str = Form(...),
     cc: str | None = Form(None),
     note: str | None = Form(None),
+    idempotency_key: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> EmailMessageResponse:
@@ -955,7 +1022,10 @@ def forward_message(
     multipart/form-data: ``to`` (required, comma/semicolon-separated),
     optional ``cc``, optional ``note`` (prepended above a quoted-original
     marker for in-app display — the provider handles the real quoting for
-    the outgoing email itself).
+    the outgoing email itself), optional ``idempotency_key`` (client-supplied,
+    same shape as the draft-send key) — a repeat request with the same key
+    for the same source message returns the original result without calling
+    the provider again (see _find_prior_forward).
 
     Records the forwarded copy as a new OUTBOUND EmailMessage on the SAME
     thread (so it shows up in the conversation view), audits
@@ -969,6 +1039,22 @@ def forward_message(
     ).scalar_one_or_none()
     if thread is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    if idempotency_key is not None and not _FORWARD_IDEMPOTENCY_KEY_RE.match(idempotency_key):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="idempotency_key must match ^[A-Za-z0-9_-]{1,128}$.",
+        )
+
+    if idempotency_key:
+        prior = _find_prior_forward(
+            db,
+            thread_id=thread.id,
+            source_message_id=msg.id,
+            idempotency_key=idempotency_key,
+        )
+        if prior is not None:
+            return EmailMessageResponse.model_validate(prior)
 
     to_list = _parse_recipients_or_422(to)
     if not to_list:
@@ -1055,6 +1141,8 @@ def forward_message(
             "to": to_list,
             "cc": cc_list,
             "source_message_id": str(msg.id),
+            "idempotency_key": idempotency_key,
+            "outbound_message_id": str(outbound_msg.id),
         },
     )
 

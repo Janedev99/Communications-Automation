@@ -105,6 +105,11 @@ def compute_reply_all(latest_inbound_message, settings) -> tuple[list[str], list
     other; order preserved (sender first, then original To order, then
     original Cc order).
 
+    Any stored address that doesn't pass EMAIL_RE (malformed legacy data —
+    the columns were populated by provider-side parsing, not our own
+    validation) is silently dropped rather than propagated into a 200
+    response that would only 422 later at the PUT that tries to save it.
+
     Raises InvalidRecipient if the combined result exceeds MAX_RECIPIENTS.
     """
     from app.services.email_intake import _extract_sender_parts
@@ -115,13 +120,13 @@ def compute_reply_all(latest_inbound_message, settings) -> tuple[list[str], list
 
     to_list: list[str] = []
     seen_to: set[str] = set()
-    if sender_email and sender_email.lower() not in self_addrs:
+    if sender_email and EMAIL_RE.match(sender_email) and sender_email.lower() not in self_addrs:
         to_list.append(sender_email)
         seen_to.add(sender_email.lower())
 
     for addr in latest_inbound_message.to_recipients or []:
         addr = (addr or "").strip()
-        if not addr:
+        if not addr or not EMAIL_RE.match(addr):
             continue
         key = addr.lower()
         if key in self_addrs or key in seen_to:
@@ -133,7 +138,7 @@ def compute_reply_all(latest_inbound_message, settings) -> tuple[list[str], list
     seen_cc: set[str] = set()
     for addr in latest_inbound_message.cc_recipients or []:
         addr = (addr or "").strip()
-        if not addr:
+        if not addr or not EMAIL_RE.match(addr):
             continue
         key = addr.lower()
         if key in self_addrs or key in seen_to or key in seen_cc:

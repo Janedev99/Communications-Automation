@@ -291,6 +291,10 @@ class RecordingEmailProvider:
         self.raise_on_move: Exception | None = None
         self.raise_on_inline: Exception | None = None
         self.inline_fetches: list[dict] = []  # inline-image fetch log
+        self.forwarded_messages: list[dict] = []  # forward-message log
+        self.raise_on_forward: Exception | None = None
+        # When set, forward_message returns this instead of a generated id.
+        self.forward_returns: str | None = None
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -344,6 +348,26 @@ class RecordingEmailProvider:
             "destination": destination,
         })
 
+    def forward_message(
+        self,
+        *,
+        internet_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        comment: str | None = None,
+    ) -> str:
+        if self.raise_on_forward:
+            raise self.raise_on_forward
+        self.forwarded_messages.append({
+            "internet_message_id": internet_message_id,
+            "to": to,
+            "cc": cc or [],
+            "comment": comment,
+        })
+        if self.forward_returns:
+            return self.forward_returns
+        return f"<mock-fwd-{len(self.forwarded_messages)}@test.local>"
+
     def fetch_inline_attachment(self, *, internet_message_id: str, content_id: str):
         if self.raise_on_inline:
             raise self.raise_on_inline
@@ -390,6 +414,8 @@ def make_raw_email(
     in_reply_to: str | None = None,
     references: str | None = None,
     provider_thread_id: str | None = None,
+    to_recipients: list[str] | None = None,
+    cc_recipients: list[str] | None = None,
 ):
     """Convenience factory for RawEmail test instances."""
     from app.services.email_provider import RawEmail
@@ -404,4 +430,6 @@ def make_raw_email(
         in_reply_to=in_reply_to,
         references=references,
         provider_thread_id=provider_thread_id,
+        to_recipients=to_recipients if to_recipients is not None else [],
+        cc_recipients=cc_recipients if cc_recipients is not None else [],
     )

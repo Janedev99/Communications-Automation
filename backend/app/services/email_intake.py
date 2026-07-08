@@ -192,6 +192,8 @@ def _store_message(db: Session, thread: EmailThread, raw: RawEmail) -> EmailMess
         message_id_header=raw.message_id,
         sender=raw.sender,
         recipient=raw.recipient,
+        to_recipients=raw.to_recipients or None,
+        cc_recipients=raw.cc_recipients or None,
         body_text=raw.body_text,
         body_html=raw.body_html,
         received_at=raw.received_at,

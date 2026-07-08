@@ -652,6 +652,11 @@ class DraftGeneratorService:
             ai_prompt_tokens=prompt_tokens,
             ai_completion_tokens=completion_tokens,
             knowledge_entry_ids=knowledge_entry_ids,
+            # Reply-all support (FEAT/reply-recipients): default the draft's
+            # effective recipients to a plain reply. Staff can widen these
+            # via reply-all or manual edit before the draft is approved.
+            to_recipients=[thread.client_email],
+            cc_recipients=[],
         )
         db.add(draft)
 

@@ -152,11 +152,18 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
     draft.send_idempotency_key = draft.send_idempotency_key or secrets.token_hex(32)
     draft.send_attempts = (draft.send_attempts or 0) + 1
 
+    # Plain-reply behavior only, per FEAT/reply-recipients scope — auto-send
+    # never widens beyond the client's own address. The draft's to/cc
+    # columns are already [thread.client_email] / [] from draft_generator's
+    # creation-time defaults; mirror that onto the outbound message too so
+    # every outbound EmailMessage row carries these fields consistently.
     outbound_msg = EmailMessage(
         thread_id=thread.id,
         message_id_header=outbound_message_id,
         sender=f"{settings.firm_name} <{from_address}>",
         recipient=thread.client_email,
+        to_recipients=[thread.client_email],
+        cc_recipients=[],
         body_text=final_body,
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,

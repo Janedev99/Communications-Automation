@@ -184,6 +184,32 @@ class TestComputeReplyAll:
         with pytest.raises(InvalidRecipient):
             compute_reply_all(msg, settings)
 
+    def test_filters_malformed_stored_addresses(self):
+        """
+        to_recipients/cc_recipients are populated by provider-side header
+        parsing (Graph/IMAP), not our own validation — a malformed legacy
+        address must never flow into a 200 response that would only 422
+        later when the UI tries to PUT it onto the draft.
+        """
+        settings = _FakeSettings(msgraph_mailbox="firm@example.com")
+        msg = _FakeInboundMessage(
+            sender="Client <client@example.com>",
+            to_recipients=["firm@example.com", "not-an-email", "other@example.com"],
+            cc_recipients=["also-not-an-email", "cc1@example.com"],
+        )
+        to, cc = compute_reply_all(msg, settings)
+        assert to == ["client@example.com", "other@example.com"]
+        assert cc == ["cc1@example.com"]
+
+    def test_filters_malformed_sender(self):
+        """A malformed From header (rare, but seen from broken auto-mailers)
+        must not produce an unvalidated address in the To list."""
+        settings = _FakeSettings(msgraph_mailbox="firm@example.com")
+        msg = _FakeInboundMessage(sender="not-a-valid-sender")
+        to, cc = compute_reply_all(msg, settings)
+        assert to == []
+        assert cc == []
+
 
 # ===========================================================================
 # 2. Ingest — Graph + IMAP capture To/CC
@@ -840,3 +866,229 @@ class TestForwardEndpoint:
         )
         assert resp.status_code == 404, resp.text
         assert mock_email_provider.forwarded_messages == []
+
+    # ── Idempotency (double-send guard) ────────────────────────────────────
+    #
+    # RecordingEmailProvider.forward_message defaults to a call-count-based
+    # id ("<mock-fwd-N@test.local>") that starts fresh for every test (the
+    # provider fixture is function-scoped) — fine for a single successful
+    # call per test, but the in-memory DB is shared across the WHOLE test
+    # session (StaticPool), so two tests that each make exactly one default
+    # call would both try to insert the literal id "<mock-fwd-1@test.local>"
+    # and collide on the unique constraint. Tests below either give the
+    # provider a unique `forward_returns`, or (when a test needs more than
+    # one successful call) install a uuid-based generator via
+    # _install_unique_forward so every call in the whole run is unique.
+
+    def _install_unique_forward(self, provider) -> None:
+        """Patch forward_message to always return a fresh, collision-free id
+        while still recording the call the same way RecordingEmailProvider does."""
+        def _unique_forward(*, internet_message_id, to, cc=None, comment=None):
+            if provider.raise_on_forward:
+                raise provider.raise_on_forward
+            provider.forwarded_messages.append({
+                "internet_message_id": internet_message_id,
+                "to": to,
+                "cc": cc or [],
+                "comment": comment,
+            })
+            return f"<{uuid.uuid4()}@test.local>"
+
+        provider.forward_message = _unique_forward
+
+    def test_repeated_forward_with_same_key_calls_provider_once(
+        self, logged_in_admin, mock_email_provider,
+    ):
+        mock_email_provider.forward_returns = "<repeat-key-test1@test.local>"
+        thread_id, message_id = self._seed_message()
+        key = "fwd-idem-test-key-1"
+
+        resp1 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com", "idempotency_key": key},
+        )
+        assert resp1.status_code == 200, resp1.text
+
+        resp2 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com", "idempotency_key": key},
+        )
+        assert resp2.status_code == 200, resp2.text
+
+        assert resp1.json()["id"] == resp2.json()["id"], (
+            "Repeat request with the same key must return the original "
+            "outbound message, not create a new one"
+        )
+        assert len(mock_email_provider.forwarded_messages) == 1, (
+            "Provider must be called exactly once when the idempotency key is reused"
+        )
+
+    def test_repeated_forward_with_same_key_creates_one_outbound_row(
+        self, logged_in_admin, mock_email_provider, db_session,
+    ):
+        from sqlalchemy import select
+        from app.models.email import EmailMessage, MessageDirection
+
+        mock_email_provider.forward_returns = "<repeat-key-test2@test.local>"
+        thread_id, message_id = self._seed_message()
+        key = "fwd-idem-test-key-2"
+
+        for _ in range(2):
+            resp = logged_in_admin.post(
+                f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+                data={"to": "forward-to@example.com", "idempotency_key": key},
+            )
+            assert resp.status_code == 200, resp.text
+
+        outbound_rows = db_session.execute(
+            select(EmailMessage).where(
+                EmailMessage.thread_id == uuid.UUID(thread_id),
+                EmailMessage.direction == MessageDirection.outbound,
+            )
+        ).scalars().all()
+        assert len(outbound_rows) == 1
+
+    def test_different_keys_both_forward(self, logged_in_admin, mock_email_provider):
+        """Sanity check the dedup is scoped to (message, key) — a
+        deliberately distinct key must still forward normally."""
+        self._install_unique_forward(mock_email_provider)
+        thread_id, message_id = self._seed_message()
+
+        resp1 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com", "idempotency_key": "fwd-key-a"},
+        )
+        resp2 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com", "idempotency_key": "fwd-key-b"},
+        )
+        assert resp1.status_code == 200 and resp2.status_code == 200
+        assert resp1.json()["id"] != resp2.json()["id"]
+        assert len(mock_email_provider.forwarded_messages) == 2
+
+    def test_malformed_idempotency_key_returns_422(self, logged_in_admin, mock_email_provider):
+        thread_id, message_id = self._seed_message()
+        resp = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com", "idempotency_key": "bad key with spaces"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert mock_email_provider.forwarded_messages == []
+
+    def test_forward_without_key_is_not_deduped(self, logged_in_admin, mock_email_provider):
+        """No idempotency_key supplied -> no dedup guard; two identical
+        requests both forward (matches the pre-fix baseline behavior)."""
+        self._install_unique_forward(mock_email_provider)
+        thread_id, message_id = self._seed_message()
+
+        resp1 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com"},
+        )
+        resp2 = logged_in_admin.post(
+            f"/api/v1/emails/{thread_id}/messages/{message_id}/forward",
+            data={"to": "forward-to@example.com"},
+        )
+        assert resp1.status_code == 200 and resp2.status_code == 200
+        assert len(mock_email_provider.forwarded_messages) == 2
+
+
+# ===========================================================================
+# 7. Orphaned Graph draft cleanup on partial forward failure
+# ===========================================================================
+
+class TestGraphForwardOrphanCleanup:
+    """
+    MSGraphProvider.forward_message uses createForward (drafts a forward
+    copy) then a separate /send call. If /send fails after createForward
+    already succeeded, the draft would otherwise sit orphaned in the
+    mailbox's Drafts folder forever (and could later be sent by mistake).
+    """
+
+    def _make_provider(self):
+        from app.services.email_provider import MSGraphProvider
+
+        provider = MSGraphProvider(get_settings())
+        provider._access_token = "test-token"
+        provider._token_expires_at = datetime.now(timezone.utc).replace(year=2099)
+        provider._client = MagicMock()
+        return provider
+
+    def _resolve_response(self) -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {"value": [{"id": "graph-msg-1"}]}
+        resp.raise_for_status.return_value = None
+        return resp
+
+    def _create_forward_response(self, draft_id: str = "draft-123") -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {"id": draft_id, "internetMessageId": "<fwd@test.local>"}
+        resp.raise_for_status.return_value = None
+        return resp
+
+    def _failing_send_response(self) -> MagicMock:
+        import httpx
+
+        mock_response = MagicMock(status_code=500, text="send failed upstream")
+        http_error = httpx.HTTPStatusError(
+            "send failed", request=MagicMock(), response=mock_response
+        )
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = http_error
+        return resp
+
+    def test_send_failure_deletes_orphaned_draft_and_still_raises(self):
+        import httpx
+
+        provider = self._make_provider()
+        provider._client.get.return_value = self._resolve_response()
+        provider._client.post.side_effect = [
+            self._create_forward_response("draft-123"),
+            self._failing_send_response(),
+        ]
+        provider._client.delete.return_value = MagicMock(raise_for_status=lambda: None)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            provider.forward_message(
+                internet_message_id="<orig@example.com>",
+                to=["someone@example.com"],
+            )
+
+        provider._client.delete.assert_called_once()
+        delete_url = provider._client.delete.call_args[0][0]
+        assert "draft-123" in delete_url
+
+    def test_delete_failure_does_not_mask_original_send_error(self):
+        import httpx
+
+        provider = self._make_provider()
+        provider._client.get.return_value = self._resolve_response()
+        provider._client.post.side_effect = [
+            self._create_forward_response("draft-999"),
+            self._failing_send_response(),
+        ]
+        provider._client.delete.side_effect = RuntimeError("delete also failed")
+
+        with pytest.raises(httpx.HTTPStatusError):
+            provider.forward_message(
+                internet_message_id="<orig@example.com>",
+                to=["someone@example.com"],
+            )
+
+        provider._client.delete.assert_called_once()
+
+    def test_successful_send_never_calls_delete(self):
+        provider = self._make_provider()
+        provider._client.get.return_value = self._resolve_response()
+        ok_send = MagicMock(raise_for_status=lambda: None)
+        provider._client.post.side_effect = [
+            self._create_forward_response("draft-ok"),
+            ok_send,
+        ]
+
+        provider.forward_message(
+            internet_message_id="<orig@example.com>",
+            to=["someone@example.com"],
+        )
+
+        provider._client.delete.assert_not_called()

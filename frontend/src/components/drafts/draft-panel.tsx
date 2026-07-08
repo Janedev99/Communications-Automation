@@ -13,9 +13,11 @@ import {
   AlertTriangle,
   CheckCircle,
   Undo2,
+  ReplyAll,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -30,7 +32,7 @@ import { TemplatePickerDialog } from "./template-picker-dialog";
 import { FeedbackIndicator } from "./feedback-indicator";
 import { FeedbackOnboarding } from "./feedback-onboarding";
 import { DRAFT_STATUS_BADGE_CLASSES, DRAFT_STATUS_LABELS } from "@/lib/constants";
-import { api, sendDraft } from "@/lib/api";
+import { api, getReplyAllRecipients, sendDraft, updateDraftRecipients } from "@/lib/api";
 import { ApiError } from "@/lib/types";
 import {
   AttachButton,
@@ -44,6 +46,14 @@ import { useSendCountdownEnabled } from "@/lib/preferences";
 import { ConfidenceMeter } from "@/components/ui/confidence-meter";
 import { SourcePill } from "@/components/ui/source-pill";
 import type { DraftResponse, EmailThread, KnowledgeEntry } from "@/lib/types";
+
+/** Split a comma-separated recipient input into trimmed, non-empty addresses. */
+function splitRecipients(value: string): string[] {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 interface DraftPanelProps {
   thread: EmailThread;
@@ -95,6 +105,17 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     thread.suggested_reply_tone ?? "professional"
   );
 
+  // Recipients block (FEAT/reply-recipients) — comma-joined input strings,
+  // debounce-saved through the same autoSaveState indicator as body_text.
+  const [toInput, setToInput] = useState("");
+  const [ccInput, setCcInput] = useState("");
+  const [ccVisible, setCcVisible] = useState(false);
+  const [toInvalid, setToInvalid] = useState(false);
+  const [ccInvalid, setCcInvalid] = useState(false);
+  const [replyAllLoading, setReplyAllLoading] = useState(false);
+  const toSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ccSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Per-user preference (browser-local): whether to run the 10s undo countdown
   // after Send is confirmed, or send immediately.
   const [countdownEnabled] = useSendCountdownEnabled();
@@ -126,6 +147,8 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   useEffect(() => {
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      if (toSaveTimer.current) clearTimeout(toSaveTimer.current);
+      if (ccSaveTimer.current) clearTimeout(ccSaveTimer.current);
       if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
       if (sendIntervalRef.current) clearInterval(sendIntervalRef.current);
     };
@@ -137,6 +160,23 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     setAutoSaveState("idle");
     setSendState({ phase: "idle" });
   }, [draft?.id, draft?.body_text]);
+
+  // Sync recipient inputs when the draft changes. Legacy null to_recipients
+  // prefills with the thread's client_email (matches the send path's fallback).
+  useEffect(() => {
+    const toList =
+      draft?.to_recipients && draft.to_recipients.length > 0
+        ? draft.to_recipients
+        : draft
+        ? [thread.client_email]
+        : [];
+    const ccList = draft?.cc_recipients ?? [];
+    setToInput(toList.join(", "));
+    setCcInput(ccList.join(", "));
+    setCcVisible(ccList.length > 0);
+    setToInvalid(false);
+    setCcInvalid(false);
+  }, [draft?.id, draft?.to_recipients, draft?.cc_recipients, thread.client_email, draft]);
 
   // Attachments are scoped to the THREAD, not the draft: keyed on thread.id
   // (NOT draft.id) so files survive edit/approve/regenerate — regenerate makes
@@ -196,6 +236,111 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     },
     [draft, thread.id, onDraftChange]
   );
+
+  // ── Recipients (FEAT/reply-recipients) ─────────────────────────────────────
+  // Separate debounce timers for To/Cc so an edit to one field can never
+  // clobber a still-pending save on the other — each PUT patches only its
+  // own column, and both share the single autoSaveState indicator.
+
+  const saveToRecipients = useCallback(
+    (value: string[]) => {
+      setAutoSaveState("unsaved");
+      if (toSaveTimer.current) clearTimeout(toSaveTimer.current);
+      toSaveTimer.current = setTimeout(async () => {
+        if (!draft) return;
+        setAutoSaveState("saving");
+        try {
+          await updateDraftRecipients(thread.id, draft.id, { to_recipients: value });
+          setAutoSaveState("saved");
+          setToInvalid(false);
+          onDraftChange();
+        } catch {
+          setAutoSaveState("unsaved");
+          setToInvalid(true);
+          toast.error("Couldn't save recipients — check the email addresses.");
+        }
+      }, 1000);
+    },
+    [draft, thread.id, onDraftChange]
+  );
+
+  const saveCcRecipients = useCallback(
+    (value: string[]) => {
+      setAutoSaveState("unsaved");
+      if (ccSaveTimer.current) clearTimeout(ccSaveTimer.current);
+      ccSaveTimer.current = setTimeout(async () => {
+        if (!draft) return;
+        setAutoSaveState("saving");
+        try {
+          await updateDraftRecipients(thread.id, draft.id, { cc_recipients: value });
+          setAutoSaveState("saved");
+          setCcInvalid(false);
+          onDraftChange();
+        } catch {
+          setAutoSaveState("unsaved");
+          setCcInvalid(true);
+          toast.error("Couldn't save recipients — check the email addresses.");
+        }
+      }, 1000);
+    },
+    [draft, thread.id, onDraftChange]
+  );
+
+  const handleToInputChange = useCallback(
+    (value: string) => {
+      setToInput(value);
+      saveToRecipients(splitRecipients(value));
+    },
+    [saveToRecipients]
+  );
+
+  const handleCcInputChange = useCallback(
+    (value: string) => {
+      setCcInput(value);
+      saveCcRecipients(splitRecipients(value));
+    },
+    [saveCcRecipients]
+  );
+
+  const handleShowCc = useCallback(() => {
+    setCcVisible(true);
+    // Input isn't a forwardRef component, so focus by id after it mounts.
+    setTimeout(() => {
+      document.getElementById("draft-cc")?.focus();
+    }, 0);
+  }, []);
+
+  const handleReplyAll = useCallback(async () => {
+    if (!draft || replyAllLoading) return;
+    setReplyAllLoading(true);
+    try {
+      const result = await getReplyAllRecipients(thread.id, draft.id);
+      const currentTo = splitRecipients(toInput).map((a) => a.toLowerCase());
+      const currentCc = splitRecipients(ccInput).map((a) => a.toLowerCase());
+      const nextTo = result.to.map((a) => a.toLowerCase());
+      const nextCc = result.cc.map((a) => a.toLowerCase());
+      const sameTo =
+        currentTo.length === nextTo.length && currentTo.every((a) => nextTo.includes(a));
+      const sameCc =
+        currentCc.length === nextCc.length && currentCc.every((a) => nextCc.includes(a));
+
+      if (sameTo && sameCc) {
+        toast.info("No additional recipients found.");
+        return;
+      }
+
+      setToInput(result.to.join(", "));
+      setCcInput(result.cc.join(", "));
+      if (result.cc.length > 0) setCcVisible(true);
+      saveToRecipients(result.to);
+      saveCcRecipients(result.cc);
+      toast.success("Recipients updated from the full thread — review before sending.");
+    } catch {
+      toast.error("Couldn't load the full recipient list. Please try again.");
+    } finally {
+      setReplyAllLoading(false);
+    }
+  }, [draft, replyAllLoading, thread.id, toInput, ccInput, saveToRecipients, saveCcRecipients]);
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -341,6 +486,14 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
 
   /** Called when user confirms the Send confirm dialog */
   const handleSendWithCountdown = useCallback(() => {
+    // Empty-To guard — defense in depth alongside the disabled Send button
+    // (belt-and-suspenders: the button already gates this, but the confirm
+    // handler is the last line of defense before a network call).
+    if (splitRecipients(toInput).length === 0) {
+      toast.error("Add at least one recipient before sending.");
+      return;
+    }
+
     setShowSendConfirm(false);
     // Fresh idempotency key per send attempt
     sendIdempotencyKeyRef.current = `${draft?.id ?? "unknown"}-${Date.now()}`;
@@ -366,7 +519,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         setSendState({ phase: "pending_send", countdown: remaining });
       }
     }, 1000);
-  }, [draft?.id, clearSendTimers, executeSend, attachments, countdownEnabled]);
+  }, [draft?.id, clearSendTimers, executeSend, attachments, countdownEnabled, toInput]);
 
   // ── Template handling ──────────────────────────────────────────────────────
 
@@ -568,6 +721,107 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     );
   }
 
+  // ── Recipients block (FEAT/reply-recipients) ───────────────────────────────
+  // Rendered in States B/D/E (omitted in C — a rejected draft is about to be
+  // discarded). Editable in pending/edited; read-only pills once approved,
+  // sent, or send_failed.
+  const toList = splitRecipients(toInput);
+  const ccList = splitRecipients(ccInput);
+  const recipientsEditable = draft.status === "pending" || draft.status === "edited";
+
+  const recipientsSection = (
+    <section className="px-5 py-3 border-b border-border space-y-2" aria-label="Recipients">
+      {recipientsEditable ? (
+        <>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Recipients
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleReplyAll}
+              disabled={replyAllLoading}
+              aria-label="Reply all — add everyone on this thread to the recipients"
+              className="h-6 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
+            >
+              {replyAllLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <ReplyAll className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+              Reply all
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 border-b border-border pb-2">
+            <label htmlFor="draft-to" className="text-xs text-muted-foreground w-10 shrink-0">
+              To
+            </label>
+            <Input
+              id="draft-to"
+              value={toInput}
+              onChange={(e) => handleToInputChange(e.target.value)}
+              aria-invalid={toInvalid || undefined}
+              className="h-7 border-0 shadow-none focus-visible:ring-0 px-0 text-sm"
+            />
+            {!ccVisible && (
+              <button
+                type="button"
+                onClick={handleShowCc}
+                aria-expanded={ccVisible}
+                aria-controls="draft-cc"
+                className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+              >
+                Cc
+              </button>
+            )}
+          </div>
+          {ccVisible && (
+            <div className="flex items-center gap-2 border-b border-border pb-2">
+              <label htmlFor="draft-cc" className="text-xs text-muted-foreground w-10 shrink-0">
+                Cc
+              </label>
+              <Input
+                id="draft-cc"
+                value={ccInput}
+                onChange={(e) => handleCcInputChange(e.target.value)}
+                aria-invalid={ccInvalid || undefined}
+                className="h-7 border-0 shadow-none focus-visible:ring-0 px-0 text-sm"
+              />
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] font-medium text-muted-foreground">To</span>
+            {toList.map((addr) => (
+              <span
+                key={addr}
+                className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground"
+              >
+                {addr}
+              </span>
+            ))}
+          </div>
+          {ccList.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-medium text-muted-foreground">Cc</span>
+              {ccList.map((addr) => (
+                <span
+                  key={addr}
+                  className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground"
+                >
+                  {addr}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+
   // ── State C: Draft rejected ────────────────────────────────────────────────
   if (draft.status === "rejected") {
     return (
@@ -647,6 +901,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     return (
       <div className="bg-card flex flex-col h-full">
         {panelHeader}
+        {recipientsSection}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-emerald-500/10 border border-emerald-500/30">
             <p className="text-sm text-emerald-700 dark:text-emerald-300 font-medium">Draft sent successfully</p>
@@ -696,6 +951,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
     return (
       <div className="bg-card flex flex-col h-full">
         {panelHeader}
+        {recipientsSection}
         <div className="flex-1 overflow-y-auto">
           <div className="mx-5 mt-4 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30">
             <div className="flex items-start gap-2">
@@ -830,6 +1086,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
   return (
     <div className="bg-card flex flex-col h-full">
       {panelHeader}
+      {recipientsSection}
 
       {/* Editor */}
       <div className="flex-1 px-5 py-4 overflow-hidden flex flex-col">
@@ -1048,7 +1305,12 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
               <>
                 <Button
                   onClick={() => setShowSendConfirm(true)}
-                  disabled={sendState.phase !== "idle" || reverting || overSizeLimit}
+                  disabled={
+                    sendState.phase !== "idle" ||
+                    reverting ||
+                    overSizeLimit ||
+                    toList.length === 0
+                  }
                   className="h-11 sm:h-8 w-full sm:w-auto"
                 >
                   <Send className="w-4 h-4 mr-1.5" aria-hidden="true" />
@@ -1108,13 +1370,51 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         open={showSendConfirm}
         onOpenChange={setShowSendConfirm}
         title="Send this email?"
-        description={
-          countdownEnabled
-            ? `Send this email to ${thread.client_email}? You'll have 10 seconds to cancel.`
-            : `Send this email to ${thread.client_email}? It will be sent immediately.`
+        description="Confirm the full recipient list before this email goes out."
+        details={
+          <div className="max-h-40 overflow-y-auto space-y-2 px-1">
+            <div>
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                To
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {toList.map((addr) => (
+                  <span
+                    key={addr}
+                    className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground"
+                  >
+                    {addr}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {ccList.length > 0 && (
+              <div>
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                  Cc
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {ccList.map((addr) => (
+                    <span
+                      key={addr}
+                      className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-[11px] font-medium text-muted-foreground"
+                    >
+                      {addr}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground pt-1">
+              {countdownEnabled
+                ? "You'll have 10 seconds to cancel."
+                : "It will be sent immediately."}
+            </p>
+          </div>
         }
         confirmLabel="Send"
         confirmVariant="default"
+        confirmDisabled={toList.length === 0}
         onConfirm={handleSendWithCountdown}
       />
     </div>

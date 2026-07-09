@@ -99,8 +99,13 @@ text it never treats as a signature (exact-suffix match on known blocks only).
   line (e.g. `…\n\nThanks so much,`) + a name/title/firm signature yields
   exactly ONE signature, the closing line is preserved in the body, and the
   name is not duplicated. Re-applying is idempotent.
-- **Migration 020:** up strips the closing for a seeded Jane row; up is a no-op
-  when the signature was already customized; down restores; both idempotent.
+- **Migration 020:** the repo has no alembic test-runner harness (017/018/019
+  are untested), so 020 is verified two ways: (a) unit tests — the new value is
+  exactly the old minus the closing prefix (drift guard), the guarded transform
+  fires only on an exact-seed match, it is idempotent, and it leaves a
+  customized signature untouched; (b) at apply time, an inspector / `SELECT`
+  check against the target DB confirms the closing is gone and the
+  name/title/firm block remains (same verify-don't-trust step used for 019).
 
 ## Not changing
 

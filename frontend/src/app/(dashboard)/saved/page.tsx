@@ -42,6 +42,7 @@ import {
   saveMessage,
   saveThread,
   useEmails,
+  useOutlookFolders,
   useSavedFolders,
   useSavedMessages,
   type SavedMessageSort,
@@ -89,7 +90,13 @@ export default function SavedPage() {
     isLoading: foldersLoading,
     mutate: mutateFolders,
   } = useSavedFolders();
+  // Jane's own Outlook folders share the same rail list. SWR dedupes this
+  // identical request with the one inside <OutlookFolderTree/> — no extra
+  // fetch — we read it here only to decide whether to show the Folders header.
+  const { folders: outlookFolders } = useOutlookFolders(undefined, true);
   const [activeFolder, setActiveFolder] = useState<string>(ALL_FOLDERS);
+  // Shared filter text for the unified Folders list (app folders + Outlook).
+  const [folderQuery, setFolderQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SavedTab>("threads");
   const [threadSort, setThreadSort] = useState<ThreadSort>("updated_desc");
   const [messageSort, setMessageSort] = useState<SavedMessageSort>("saved_desc");
@@ -211,23 +218,44 @@ export default function SavedPage() {
               muted
             />
           )}
-          {namedFolders.length > 0 && (
+          {/* One unified Folders list: the app's own saved folders and Jane's
+              Outlook folders (custom, nested) share a single header and a
+              single filter box. Clicking any folder filters the saved list by
+              that folder name. */}
+          {(namedFolders.length > 0 || outlookFolders.length > 0) && (
             <div className="pt-2 mt-2 border-t border-border/60">
               <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Folders
               </p>
+              <input
+                value={folderQuery}
+                onChange={(e) => setFolderQuery(e.target.value)}
+                placeholder="Filter folders…"
+                className="mb-1 mx-1 h-6 w-[calc(100%-0.5rem)] rounded-md border border-border bg-card px-2 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              />
               <div className="space-y-0.5">
-                {namedFolders.map((f) => (
-                  <FolderRailItem
-                    key={f.name}
-                    label={f.name}
-                    icon={Folder}
-                    count={f.count}
-                    active={activeFolder === f.name}
-                    onClick={() => setActiveFolder(f.name)}
-                    onDelete={() => setPendingDelete(f.name)}
-                  />
-                ))}
+                {namedFolders
+                  .filter(
+                    (f) =>
+                      !folderQuery.trim() ||
+                      f.name.toLowerCase().includes(folderQuery.trim().toLowerCase()),
+                  )
+                  .map((f) => (
+                    <FolderRailItem
+                      key={f.name}
+                      label={f.name}
+                      icon={Folder}
+                      count={f.count}
+                      active={activeFolder === f.name}
+                      onClick={() => setActiveFolder(f.name)}
+                      onDelete={() => setPendingDelete(f.name)}
+                    />
+                  ))}
+                <OutlookFolderTree
+                  activeFolder={activeFolder}
+                  onSelectFolder={(name) => setActiveFolder(name)}
+                  query={folderQuery}
+                />
               </div>
             </div>
           )}
@@ -236,14 +264,6 @@ export default function SavedPage() {
               Loading folders…
             </p>
           )}
-
-          {/* Jane's own Outlook folders (custom, nested) — same rail as the
-              app's saved folders. Clicking one filters saved items by that
-              folder name (they populate once Outlook folder-sync is enabled). */}
-          <OutlookFolderTree
-            activeFolder={activeFolder}
-            onSelectFolder={(name) => setActiveFolder(name)}
-          />
         </aside>
 
         {/* Tabs + sort + list */}

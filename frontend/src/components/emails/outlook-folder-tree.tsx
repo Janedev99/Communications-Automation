@@ -7,57 +7,53 @@ import { cn } from "@/lib/utils";
 import type { OutlookFolder } from "@/lib/types";
 
 /**
- * Jane's own Outlook folders, shown in the Saved-page folder rail beneath the
- * app's saved folders. Custom mode hides Outlook's built-in system folders and
- * surfaces the client folders she created (Inbox children), nested. Read-only:
- * nothing here mutates the mailbox. Clicking a folder filters the saved list by
- * that folder name (`onSelectFolder`).
+ * Jane's own Outlook folders, rendered inline in the Saved-page folder rail as
+ * part of the single unified "Folders" list (alongside the app's saved
+ * folders). Custom mode hides Outlook's built-in system folders and surfaces
+ * the folders she created, nested. Read-only: nothing here mutates the mailbox.
+ * Clicking a folder filters the saved list by that folder name
+ * (`onSelectFolder`). The `query` prop is the shared filter text owned by the
+ * rail — this component renders no heading or filter box of its own.
  */
 export function OutlookFolderTree({
   activeFolder,
   onSelectFolder,
+  query = "",
 }: {
   activeFolder: string | null;
   onSelectFolder: (name: string) => void;
+  query?: string;
 }) {
-  const [query, setQuery] = useState("");
   const { folders, isLoading, isError } = useOutlookFolders(undefined, true);
 
-  if (!isLoading && !isError && folders.length === 0) return null;
+  if (isError) {
+    return (
+      <p className="px-3 py-1.5 text-[11px] text-muted-foreground">
+        Couldn&apos;t load Outlook folders.
+      </p>
+    );
+  }
+  if (isLoading) {
+    return (
+      <p className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground">
+        <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+      </p>
+    );
+  }
+  if (folders.length === 0) return null;
 
   return (
-    <div className="pt-2 mt-2 border-t border-border/60">
-      <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Outlook folders
-      </p>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Filter…"
-        className="mb-1 mx-1 h-6 w-[calc(100%-0.5rem)] rounded-md border border-border bg-card px-2 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-      />
-      {isError ? (
-        <p className="px-3 py-1.5 text-[11px] text-muted-foreground">
-          Couldn&apos;t load Outlook folders.
-        </p>
-      ) : isLoading ? (
-        <p className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground">
-          <Loader2 className="w-3 h-3 animate-spin" /> Loading…
-        </p>
-      ) : (
-        <div className="space-y-0.5">
-          {folders.map((f) => (
-            <FolderNode
-              key={f.id}
-              folder={f}
-              depth={0}
-              filter={query.trim().toLowerCase()}
-              activeFolder={activeFolder}
-              onSelectFolder={onSelectFolder}
-            />
-          ))}
-        </div>
-      )}
+    <div className="space-y-0.5">
+      {folders.map((f) => (
+        <FolderNode
+          key={f.id}
+          folder={f}
+          depth={0}
+          filter={query.trim().toLowerCase()}
+          activeFolder={activeFolder}
+          onSelectFolder={onSelectFolder}
+        />
+      ))}
     </div>
   );
 }

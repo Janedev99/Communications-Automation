@@ -116,6 +116,55 @@ def test_import_excludes_builtin_top_level_but_keeps_inbox_children(db_session, 
     assert "Inbox" not in names
     assert "Sent Items" not in names
 
+    promoted = db_session.execute(
+        select(SavedFolderRow).where(SavedFolderRow.name == "Inbox Custom Child")
+    ).scalar_one()
+    assert promoted.parent_id is None  # Inbox children are promoted to top level
+
+
+def test_import_is_best_effort_per_level(db_session, monkeypatch):
+    """A Graph failure while listing one folder's children must not abort the
+    whole import (get_db would otherwise roll back the session and the caller
+    gets a 500, per the design doc's Error handling section). The top-level
+    custom folder that was already upserted before the failure must survive,
+    and the call must return partial success rather than raising."""
+    fi = _cfg(monkeypatch)
+
+    def _f(fid, name, children=0, count=0):
+        return {"id": fid, "display_name": name, "child_folder_count": children,
+                "total_item_count": count, "unread_item_count": 0}
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            if parent_id is None:
+                return [_f("R1", "Resilient Client", 1, 1)]
+            if parent_id == "R1":
+                raise RuntimeError("Graph 503")
+            return []
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+
+    result = fi.import_outlook_folders(db_session)
+    assert result["imported"] >= 1
+
+    row = db_session.execute(
+        select(SavedFolderRow).where(SavedFolderRow.name == "Resilient Client")
+    ).scalar_one()
+    assert row.outlook_folder_id == "R1"
+
+
+def test_import_top_level_list_failure_returns_empty(db_session, monkeypatch):
+    """If even the root-level Graph call fails, the whole import is a no-op
+    best-effort result — it must not raise or corrupt the registry."""
+    fi = _cfg(monkeypatch)
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            raise RuntimeError("Graph down")
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+
+    result = fi.import_outlook_folders(db_session)
+    assert result == {"imported": 0, "updated": 0, "total": 0}
+
 
 def test_import_noop_when_not_msgraph(db_session, monkeypatch):
     fi = _cfg(monkeypatch, provider_name="imap")

@@ -24,12 +24,21 @@ def _top_level_custom_folders(provider) -> list[dict]:
     live as siblings of Inbox and sometimes as children of it. Without this,
     a plain top-level walk would import Inbox/Drafts/Sent Items/etc. as if
     they were Jane's own folders."""
-    root = provider.list_mail_folders(parent_id=None)
+    try:
+        root = provider.list_mail_folders(parent_id=None)
+    except Exception as exc:  # noqa: BLE001 — best effort per folder
+        logger.warning("folder import: list failed under %s: %s", None, exc)
+        return []
     out = [f for f in root if f["display_name"].strip().lower() not in _DEFAULT_FOLDER_NAMES]
     inbox = next((f for f in root if f["display_name"].strip().lower() == "inbox"), None)
     if inbox:
+        try:
+            children = provider.list_mail_folders(parent_id=inbox["id"])
+        except Exception as exc:  # noqa: BLE001 — best effort per folder
+            logger.warning("folder import: list failed under %s: %s", inbox["id"], exc)
+            children = []
         out += [
-            c for c in provider.list_mail_folders(parent_id=inbox["id"])
+            c for c in children
             if c["display_name"].strip().lower() not in _DEFAULT_FOLDER_NAMES
         ]
     return out
@@ -57,7 +66,14 @@ def import_outlook_folders(db: Session) -> dict:
         if depth > _MAX_DEPTH:
             logger.warning("folder import: depth cap %s hit under %s", _MAX_DEPTH, parent_graph_id)
             return
-        folders = _top_level_custom_folders(provider) if depth == 0 else provider.list_mail_folders(parent_id=parent_graph_id)
+        if depth == 0:
+            folders = _top_level_custom_folders(provider)
+        else:
+            try:
+                folders = provider.list_mail_folders(parent_id=parent_graph_id)
+            except Exception as exc:  # noqa: BLE001 — best effort per folder
+                logger.warning("folder import: list failed under %s: %s", parent_graph_id, exc)
+                return
         for f in folders:
             name = f["display_name"].strip()
             row = existing.get(name.lower())

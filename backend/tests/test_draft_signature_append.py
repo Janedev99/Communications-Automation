@@ -3,10 +3,11 @@ Tests for signature handling in draft GENERATION (per-user signatures, 018).
 
 History: pre-018, the global `draft_signature` was appended verbatim at
 generation time. Since 018 the signature belongs to whoever SENDS — and the
-sender is unknown while the background poller generates — so generation must
-produce a signature-LESS body and the system prompt must always tell the
-model to write no closing of its own. The send-time half (sender resolution,
-company fallback, legacy strip) is covered in test_per_user_signatures.py.
+sender is unknown while the background poller generates — so generation
+produces a body that carries only an editable closing line (no name/title);
+the name/title/firm signature is appended at send. The send-time half (sender
+resolution, company fallback, legacy strip) is covered in
+test_per_user_signatures.py.
 
 These tests exercise the real generate() path with a mocked Anthropic client
 (the test conftest pins LLM_PROVIDER=anthropic).
@@ -84,16 +85,23 @@ def test_generation_never_appends_a_signature(db_session, mock_anthropic):
     assert "Schilmoeller & Schoenfield" not in draft.body_text
 
 
-def test_system_prompt_always_forbids_model_closings(db_session, mock_anthropic):
-    """The no-closing rule is unconditional now — there is no branding branch."""
+def test_system_prompt_instructs_a_tone_appropriate_closing(db_session, mock_anthropic):
+    """The model is now told to write ONE brief tone-appropriate closing line,
+    while still writing no name/title/signature of its own (that is appended
+    at send)."""
     _, system_prompt = _run_generate(
         db_session,
         mock_anthropic,
         "Dear Tony, thanks for reaching out — we'll follow up shortly.",
     )
 
-    assert "Do NOT write any closing" in system_prompt
+    # New contract: a closing line IS expected...
+    assert "closing line" in system_prompt
+    # ...but never a name/title/signature block.
+    assert "Do NOT write any name, title" in system_prompt
     assert "appended automatically when the email is sent" in system_prompt
+    # The retired no-closing rule must be gone.
+    assert "Do NOT write any closing" not in system_prompt
     # The retired content-driven branding rule must be gone.
     assert "SIGN-OFF / BRANDING (decide from the conversation content)" not in system_prompt
 

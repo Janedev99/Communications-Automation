@@ -156,6 +156,35 @@ The **Analytics** page (sidebar) shows, over a 7/30/90-day range:
 | Integrations | admin | Live health of database, AI provider, email provider, notifications — plus the setup guides below. |
 | RunPod | admin | Self-hosted GPU controls (dormant — the firm runs on Anthropic). |
 
+### 1.11 Outlook sync — what mirrors, and what doesn't
+
+The portal works directly on the live Microsoft 365 mailbox, but the two
+sides are **not** fully two-way. Knowing the direction of each action avoids
+surprises when you also work in Outlook.
+
+**App → Outlook (these actions DO mirror to Outlook):**
+
+| In the portal | In Outlook |
+|---|---|
+| **Delete** a conversation | Its incoming messages move to **Deleted Items** |
+| **Spam** a conversation | Messages move to **Junk Email** (and train the junk filter) |
+| **Send** a reply or a new email | The sent message appears in **Sent Items** |
+
+**Outlook → App (currently one-directional):**
+
+- **New incoming mail is picked up.** The poller checks the inbox about every
+  minute and pulls in unread messages automatically.
+- **Deletions, moves, and read-state changes made in Outlook are NOT reflected
+  back in the portal.** The poller only *adds* new inbox mail — it does not
+  reconcile messages you delete or move on the Outlook side. If you delete an
+  email in Outlook, it can still appear in the portal (and vice-versa is
+  covered — deleting in the portal *does* reach Outlook).
+
+**Practical guidance:** for anything you want mirrored, act **in the portal**
+(its delete/spam/send all reach Outlook). Treat Outlook-side cleanup as
+portal-invisible for now. (Saved folders are currently in-app organization
+only; mirroring folders to real Outlook folders is a planned enhancement.)
+
 ---
 
 ## Part 2 — Integrations Setup (admin)

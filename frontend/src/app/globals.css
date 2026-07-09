@@ -87,6 +87,15 @@
   .text-balance {
     text-wrap: balance;
   }
+
+  /* Auto-grow a textarea with its content (Chromium field-sizing). Used by the
+     compose dock so the message + AI-instruction boxes expand as you type
+     instead of forcing a drag-resize inside the scrolling dock (where the grip
+     fights the scroll). No-op on browsers without field-sizing support, where
+     the textarea falls back to its rows/min-height + resize-y. */
+  .textarea-autogrow {
+    field-sizing: content;
+  }
 }
 
 /* Print — isolate the email conversation.

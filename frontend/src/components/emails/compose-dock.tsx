@@ -260,7 +260,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
                 placeholder="e.g. Ask the Johnsons to send their 2024 1099s by Friday."
                 rows={3}
                 maxLength={4000}
-                className="resize-y min-h-[4.5rem] text-sm bg-card"
+                className="textarea-autogrow resize-y shrink-0 min-h-[4.5rem] max-h-[40vh] text-sm bg-card"
               />
               <Button
                 type="button"
@@ -289,7 +289,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             onChange={(e) => setBody(e.target.value)}
             placeholder="Write your message…"
             rows={12}
-            className="resize-y min-h-[18rem] text-sm"
+            className="textarea-autogrow resize-y shrink-0 min-h-[18rem] max-h-[60vh] text-sm"
           />
           {/* Per-user signatures (018): show exactly what will be appended
               for the current sender (personal, or company fallback). */}

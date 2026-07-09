@@ -73,3 +73,62 @@ def test_create_folder_rejects_missing_parent(logged_in_admin):
         json={"name": "Orphan Child", "parent_id": str(_u.uuid4())},
     )
     assert resp.status_code == 422, resp.text
+
+
+def _mk_folder(db, name, parent_id=None, outlook_id=None):
+    row = SavedFolderRow(name=name, parent_id=parent_id, source="app",
+                         outlook_folder_id=outlook_id)
+    db.add(row); db.commit(); db.refresh(row); return row
+
+
+def test_delete_folder_removes_row_and_descendants_and_unfiles(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    from app.models.email import EmailThread, EmailCategory, EmailStatus
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", False, raising=False)
+    parent = _mk_folder(db_session, "P")
+    child = _mk_folder(db_session, "C", parent_id=parent.id)
+    t = EmailThread(id=uuid.uuid4(), client_email="c@x.com", subject="s",
+                    category=EmailCategory.general_inquiry, status=EmailStatus.categorized,
+                    is_saved=True, saved_folder="P")
+    db_session.add(t); db_session.commit()
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/P")
+    assert resp.status_code == 204, resp.text
+    # registry row + child gone; item unfiled; NO graph delete (flag off).
+    # The endpoint runs in a separate request-scoped session; detach these
+    # already-loaded rows from this session's identity map first so .get()
+    # issues a fresh SELECT instead of returning the (now stale) cached
+    # objects from _mk_folder() above — expiring them instead would raise
+    # ObjectDeletedError since the underlying rows are actually gone.
+    db_session.expunge(parent)
+    db_session.expunge(child)
+    assert db_session.get(SavedFolderRow, parent.id) is None
+    assert db_session.get(SavedFolderRow, child.id) is None
+    db_session.refresh(t)
+    assert t.saved_folder is None and t.is_saved is True
+    assert called == []
+
+
+def test_delete_folder_reflects_to_outlook_when_flag_on(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    f = _mk_folder(db_session, "SyncMe", outlook_id="OF9")
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/SyncMe")
+    assert resp.status_code == 204, resp.text
+    assert called == ["OF9"]  # reflected to Outlook

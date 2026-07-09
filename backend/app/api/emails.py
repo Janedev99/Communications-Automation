@@ -40,6 +40,8 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
+from app.config import get_settings
+from app.services.email_provider import get_email_provider
 
 logger = logging.getLogger(__name__)
 
@@ -1529,26 +1531,34 @@ def delete_saved_folder(
     """
     Delete a named saved folder.
 
-    Folders aren't first-class entities — they're just distinct values of
-    the ``saved_folder`` column on email_threads and email_messages. So
-    "deleting a folder" follows the Outlook / Gmail-label model: the
-    folder *label* goes away, but every item that was filed under it
-    stays saved (it just becomes unfiled).
+    Folders are first-class registry rows (``SavedFolderRow``) that can be
+    nested, but "deleting a folder" still follows the Outlook / Gmail-label
+    model for the *items* filed under it: the folder goes away, but every
+    item that was filed under it stays saved (it just becomes unfiled).
 
     Atomically:
-      - Sets saved_folder = NULL on every saved thread that referenced
-        this folder.
-      - Sets saved_folder = NULL on every saved message that referenced
-        this folder.
-      - is_saved stays true on every affected row, so users keep their
-        items in the Saved view — they just move into the "No folder"
-        bucket on the rail.
-      - The folder name disappears from /saved/folders the next time
-        it's read, since folders are derived from distinct column values.
+      - Walks the registry to collect this folder AND every descendant
+        (recursive, in-Python BFS over parent_id) so deleting a parent
+        cascades to its whole subtree.
+      - When ``settings.outlook_folder_sync`` is on and a collected row
+        has an ``outlook_folder_id``, calls ``provider.delete_folder`` to
+        reflect the deletion in Outlook. This is best-effort/recoverable:
+        a provider failure is logged and swallowed, never blocking the
+        in-app delete.
+      - Sets saved_folder = NULL on every saved thread/message filed under
+        the requested name OR any collected descendant's name (covers both
+        registry-backed folders and legacy label-only folders sharing the
+        same name space). is_saved stays true, so users keep their items
+        in the Saved view — they just move into the "No folder" bucket.
+      - Removes the collected registry rows.
+      - The folder name(s) disappear from /saved/folders the next time
+        it's read, since folders are derived from the registry ∪ distinct
+        column values.
 
     Always returns 204 (idempotent — deleting a never-existed folder
-    name is a no-op). Audit log captures the count of items that were
-    moved out so admins can reconstruct the action later.
+    name is a no-op). Audit log captures the descendants removed and the
+    count of items that were moved out so admins can reconstruct the
+    action later.
     """
     if not folder_name.strip():
         raise HTTPException(
@@ -1558,22 +1568,51 @@ def delete_saved_folder(
 
     now = datetime.now(timezone.utc)
 
+    # Collect this folder + all descendants from the registry (recursive).
+    rows = db.execute(select(SavedFolderRow)).scalars().all()
+    by_parent: dict[uuid.UUID | None, list[SavedFolderRow]] = {}
+    for r in rows:
+        by_parent.setdefault(r.parent_id, []).append(r)
+    root = next((r for r in rows if r.name.lower() == folder_name.lower()), None)
+
+    to_delete: list[SavedFolderRow] = []
+    if root is not None:
+        stack = [root]
+        while stack:
+            cur = stack.pop()
+            to_delete.append(cur)
+            stack.extend(by_parent.get(cur.id, []))
+
+    names_to_unfile = {folder_name} | {r.name for r in to_delete}
+
+    # Reflect deletion to Outlook (recoverable) when enabled and synced.
+    settings = get_settings()
+    if settings.outlook_folder_sync and settings.email_provider.lower() == "msgraph":
+        provider = get_email_provider()
+        for r in to_delete:
+            if r.outlook_folder_id:
+                try:
+                    provider.delete_folder(r.outlook_folder_id)
+                except Exception as exc:  # noqa: BLE001 — never block the in-app delete
+                    logger.warning("Outlook folder delete failed for %s: %s", r.name, exc)
+
+    # Unfile every saved item under any of the affected names.
     threads_unfiled = db.execute(
         update(EmailThread)
-        .where(
-            EmailThread.is_saved == True,  # noqa: E712
-            EmailThread.saved_folder == folder_name,
-        )
+        .where(EmailThread.is_saved == True,  # noqa: E712
+               EmailThread.saved_folder.in_(names_to_unfile))
         .values(saved_folder=None, updated_at=now)
     ).rowcount or 0
     messages_unfiled = db.execute(
         update(EmailMessage)
-        .where(
-            EmailMessage.is_saved == True,  # noqa: E712
-            EmailMessage.saved_folder == folder_name,
-        )
+        .where(EmailMessage.is_saved == True,  # noqa: E712
+               EmailMessage.saved_folder.in_(names_to_unfile))
         .values(saved_folder=None)
     ).rowcount or 0
+
+    # Drop the registry rows (children first isn't required — collected set).
+    for r in to_delete:
+        db.delete(r)
 
     db.flush()
 
@@ -1584,13 +1623,11 @@ def delete_saved_folder(
         entity_id=folder_name[:64],  # entity_id is a string column
         user_id=current_user.id,
         ip_address=get_client_ip(request),
-        details={
-            "folder": folder_name,
-            "threads_unfiled": threads_unfiled,
-            "messages_unfiled": messages_unfiled,
-        },
+        details={"folder": folder_name,
+                 "descendants": [r.name for r in to_delete if r.name != folder_name],
+                 "threads_unfiled": threads_unfiled,
+                 "messages_unfiled": messages_unfiled},
     )
-
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

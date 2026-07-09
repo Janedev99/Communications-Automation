@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
 import {
   ArrowUpDown,
@@ -855,6 +855,16 @@ function MoveToFolderDialog({
   // folders post-Outlook-import, so this is a search-filtered, height-capped
   // list rather than a plain dropdown.
   const [folderQuery, setFolderQuery] = useState("");
+  // Combobox-style keyboard nav: index into "No folder" + filtered folders +
+  // "New folder…", driven entirely from the search input so keyboard users
+  // never have to tab through every row.
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  // Reset the active option whenever the query changes so a fresh search
+  // doesn't leave the highlight pointing at a now-hidden row.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [folderQuery]);
 
   const isNewFolder = picked === NEW_FOLDER_VALUE;
   const targetFolder = isNewFolder
@@ -867,6 +877,47 @@ function MoveToFolderDialog({
   const filteredFolders = folderFilter
     ? existingFolders.filter((name) => name.toLowerCase().includes(folderFilter))
     : existingFolders;
+
+  // Option 0 = "No folder", options 1..N = filteredFolders, option N+1 =
+  // "+ New folder…" — this is the same order the list renders in.
+  const optionCount = filteredFolders.length + 2;
+  const safeActiveIndex = Math.min(activeIndex, optionCount - 1);
+  const optionId = (index: number) => `move-folder-option-${index}`;
+
+  // Always-visible selection line — the old SelectTrigger always showed the
+  // chosen folder; a filtered search can hide the selected row entirely, so
+  // this keeps the current pick visible regardless of the query.
+  const selectedFolderLabel = isNewFolder
+    ? newFolderName.trim() || "New folder…"
+    : picked === NO_FOLDER_VALUE
+    ? "No folder"
+    : picked;
+
+  useEffect(() => {
+    document
+      .getElementById(optionId(safeActiveIndex))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [safeActiveIndex]);
+
+  const handleFolderSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, optionCount - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (safeActiveIndex === 0) {
+        setPicked(NO_FOLDER_VALUE);
+      } else if (safeActiveIndex === optionCount - 1) {
+        setPicked(NEW_FOLDER_VALUE);
+      } else {
+        const folder = filteredFolders[safeActiveIndex - 1];
+        if (folder) setPicked(folder);
+      }
+    }
+  };
 
   const noChange =
     !isNewFolder &&
@@ -934,33 +985,55 @@ function MoveToFolderDialog({
             type="text"
             value={folderQuery}
             onChange={(e) => setFolderQuery(e.target.value)}
+            onKeyDown={handleFolderSearchKeyDown}
             placeholder="Search folders…"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="move-folder-listbox"
+            aria-activedescendant={optionId(safeActiveIndex)}
             className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
           />
-          <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1">
+          <p className="text-xs text-muted-foreground truncate">
+            Selected: {selectedFolderLabel}
+          </p>
+          <div
+            id="move-folder-listbox"
+            role="listbox"
+            aria-label="Folders"
+            className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1"
+          >
             <FolderOptionRow
+              id={optionId(0)}
               label="No folder"
               muted
               selected={picked === NO_FOLDER_VALUE}
+              active={safeActiveIndex === 0}
               onClick={() => setPicked(NO_FOLDER_VALUE)}
             />
-            {filteredFolders.map((name) => (
+            {filteredFolders.map((name, i) => (
               <FolderOptionRow
                 key={name}
+                id={optionId(i + 1)}
                 label={name}
                 selected={picked === name}
+                active={safeActiveIndex === i + 1}
                 onClick={() => setPicked(name)}
               />
             ))}
             {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+              <p
+                className="px-2 py-1.5 text-xs text-muted-foreground"
+                aria-live="polite"
+              >
                 No folders match &quot;{folderQuery}&quot;.
               </p>
             )}
             <FolderOptionRow
+              id={optionId(filteredFolders.length + 1)}
               label="+ New folder…"
               accent
               selected={isNewFolder}
+              active={safeActiveIndex === filteredFolders.length + 1}
               onClick={() => setPicked(NEW_FOLDER_VALUE)}
             />
           </div>
@@ -995,14 +1068,18 @@ function MoveToFolderDialog({
  * surfaces read as the same control.
  */
 function FolderOptionRow({
+  id,
   label,
   selected,
+  active,
   muted,
   accent,
   onClick,
 }: {
+  id?: string;
   label: string;
   selected: boolean;
+  active?: boolean;
   muted?: boolean;
   accent?: boolean;
   onClick: () => void;
@@ -1010,10 +1087,17 @@ function FolderOptionRow({
   return (
     <button
       type="button"
+      id={id}
+      role="option"
+      aria-selected={selected}
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
-        selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+        selected
+          ? "bg-accent text-accent-foreground"
+          : active
+          ? "bg-accent/60"
+          : "hover:bg-accent/60",
       )}
     >
       <span

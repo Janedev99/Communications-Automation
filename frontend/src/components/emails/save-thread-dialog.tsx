@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Bookmark } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -85,6 +85,10 @@ export function SaveThreadDialog({
   // Registry can hold hundreds of folders post-Outlook-import, so the picker
   // is a search-filtered, height-capped list rather than a plain dropdown.
   const [folderQuery, setFolderQuery] = useState("");
+  // Combobox-style keyboard nav: index into "No folder" + filtered folders +
+  // "New folder…", driven entirely from the search input so keyboard users
+  // never have to tab through every row.
+  const [activeIndex, setActiveIndex] = useState(0);
 
   // Pre-fill from current state when dialog opens (re-saves edit metadata)
   useEffect(() => {
@@ -97,7 +101,14 @@ export function SaveThreadDialog({
     setNewFolderName("");
     setNote(current.note ?? "");
     setFolderQuery("");
+    setActiveIndex(0);
   }, [open, current.isSaved, current.folder, current.note]);
+
+  // Reset the active option whenever the query changes so a fresh search
+  // doesn't leave the highlight pointing at a now-hidden row.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [folderQuery]);
 
   const isNewFolder = pickedFolder === NEW_FOLDER_VALUE;
   const folderToSubmit = isNewFolder
@@ -158,6 +169,48 @@ export function SaveThreadDialog({
   const titleAction = current.isSaved ? "Update saved" : "Save this";
   const titleSubject = isMessageTarget ? "email" : "thread";
 
+  // Option 0 = "No folder", options 1..N = filteredFolders, option N+1 =
+  // "+ New folder…" — this is the same order the list renders in.
+  const optionCount = filteredFolders.length + 2;
+  const safeActiveIndex = Math.min(activeIndex, optionCount - 1);
+  const optionId = (index: number) => `save-folder-option-${index}`;
+
+  // Always-visible selection line — the old SelectTrigger always showed the
+  // chosen folder; a filtered search can hide the selected row entirely, so
+  // this keeps the current pick visible regardless of the query.
+  const selectedFolderLabel = isNewFolder
+    ? newFolderName.trim() || "New folder…"
+    : pickedFolder === NO_FOLDER_VALUE
+    ? "No folder"
+    : pickedFolder;
+
+  useEffect(() => {
+    if (!open) return;
+    document
+      .getElementById(optionId(safeActiveIndex))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [safeActiveIndex, open]);
+
+  const handleFolderSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, optionCount - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (safeActiveIndex === 0) {
+        setPickedFolder(NO_FOLDER_VALUE);
+      } else if (safeActiveIndex === optionCount - 1) {
+        setPickedFolder(NEW_FOLDER_VALUE);
+      } else {
+        const folder = filteredFolders[safeActiveIndex - 1];
+        if (folder) setPickedFolder(folder.name);
+      }
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -183,34 +236,56 @@ export function SaveThreadDialog({
               type="text"
               value={folderQuery}
               onChange={(e) => setFolderQuery(e.target.value)}
+              onKeyDown={handleFolderSearchKeyDown}
               placeholder="Search folders…"
+              role="combobox"
+              aria-expanded="true"
+              aria-controls="save-folder-listbox"
+              aria-activedescendant={optionId(safeActiveIndex)}
               className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
             />
-            <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1">
+            <p className="text-xs text-muted-foreground truncate">
+              Selected: {selectedFolderLabel}
+            </p>
+            <div
+              id="save-folder-listbox"
+              role="listbox"
+              aria-label="Folders"
+              className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1"
+            >
               <FolderOptionRow
+                id={optionId(0)}
                 label="No folder (just save)"
                 muted
                 selected={pickedFolder === NO_FOLDER_VALUE}
+                active={safeActiveIndex === 0}
                 onClick={() => setPickedFolder(NO_FOLDER_VALUE)}
               />
-              {filteredFolders.map((folder) => (
+              {filteredFolders.map((folder, i) => (
                 <FolderOptionRow
                   key={folder.name}
+                  id={optionId(i + 1)}
                   label={folder.name}
                   count={folder.count}
                   selected={pickedFolder === folder.name}
+                  active={safeActiveIndex === i + 1}
                   onClick={() => setPickedFolder(folder.name)}
                 />
               ))}
               {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                <p
+                  className="px-2 py-1.5 text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
                   No folders match &quot;{folderQuery}&quot;.
                 </p>
               )}
               <FolderOptionRow
+                id={optionId(filteredFolders.length + 1)}
                 label="+ New folder…"
                 accent
                 selected={isNewFolder}
+                active={safeActiveIndex === filteredFolders.length + 1}
                 onClick={() => setPickedFolder(NEW_FOLDER_VALUE)}
               />
             </div>
@@ -262,16 +337,20 @@ export function SaveThreadDialog({
  * doesn't change how the picker reads visually.
  */
 function FolderOptionRow({
+  id,
   label,
   count,
   selected,
+  active,
   muted,
   accent,
   onClick,
 }: {
+  id?: string;
   label: string;
   count?: number;
   selected: boolean;
+  active?: boolean;
   muted?: boolean;
   accent?: boolean;
   onClick: () => void;
@@ -279,11 +358,16 @@ function FolderOptionRow({
   return (
     <button
       type="button"
+      id={id}
+      role="option"
+      aria-selected={selected}
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
         selected
           ? "bg-accent text-accent-foreground"
+          : active
+          ? "bg-accent/60"
           : "hover:bg-accent/60",
       )}
     >

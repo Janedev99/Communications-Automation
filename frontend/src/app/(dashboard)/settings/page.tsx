@@ -11,6 +11,7 @@ import { ChangePasswordForm } from "@/components/settings/change-password-form";
 import { SendPreferencesForm } from "@/components/settings/send-preferences-form";
 import { SignatureForm } from "@/components/settings/signature-form";
 import { MySignatureForm } from "@/components/settings/my-signature-form";
+import { FoldersSettings } from "@/components/settings/folders-settings";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
@@ -143,6 +144,14 @@ export default function SettingsPage() {
               </span>
             </Link>
           </div>
+        </section>
+      )}
+
+      {/* Outlook folder registry — admin only (shared, mailbox-wide data) */}
+      {isAdmin && (
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">Folders</h2>
+          <FoldersSettings />
         </section>
       )}
 

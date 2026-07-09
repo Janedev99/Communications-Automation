@@ -168,7 +168,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
       </div>
 
       {!minimized && (
-        <div className="flex flex-col gap-3 p-4 max-h-[82vh] overflow-y-auto">
+        <div className="flex flex-col gap-3 p-4 max-h-[88vh] overflow-y-auto">
           {/* Mode toggle */}
           <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/60 self-start">
             {(
@@ -289,7 +289,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             onChange={(e) => setBody(e.target.value)}
             placeholder="Write your message…"
             rows={12}
-            className="resize-y min-h-[14rem] text-sm"
+            className="resize-y min-h-[18rem] text-sm"
           />
           {/* Per-user signatures (018): show exactly what will be appended
               for the current sender (personal, or company fallback). */}

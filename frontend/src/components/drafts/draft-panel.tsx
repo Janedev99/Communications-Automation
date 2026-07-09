@@ -1169,8 +1169,10 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       )}
 
       {/* FEAT/draft-feedback-loop — show what historical signals shaped the AI's output.
-          Renders nothing during bootstrap (no approvals / saves / rejections yet). */}
-      <div className="px-5 pt-3 pb-1 flex-shrink-0 space-y-2">
+          Renders nothing during bootstrap (no approvals / saves / rejections yet).
+          empty:hidden collapses the wrapper's padding when both children return
+          null, so it reserves no vertical space until there's something to show. */}
+      <div className="px-5 pt-3 pb-1 flex-shrink-0 space-y-2 empty:hidden">
         <FeedbackOnboarding />
         <FeedbackIndicator category={thread.category} />
       </div>

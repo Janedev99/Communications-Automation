@@ -7,7 +7,6 @@ import type {
   BulkActionResponse,
   EmailThread,
   EmailThreadListItem,
-  OutlookFolder,
   PaginatedResponse,
   SavedFolder,
   SavedMessageItem,
@@ -214,22 +213,6 @@ export function saveThread(threadId: string, body: SaveThreadBody): Promise<Emai
 
 export function unsaveThread(threadId: string): Promise<EmailThread> {
   return api.post<EmailThread>(`/api/v1/emails/${threadId}/unsave`, {});
-}
-
-/** One level of Outlook folders. Omit parentId for the top level; pass a
- *  folder id to fetch its children (lazy expand). `custom` hides Outlook's
- *  built-in system folders and surfaces Jane's own folder tree. */
-export function useOutlookFolders(parentId?: string, custom = false) {
-  const sp = new URLSearchParams();
-  if (parentId) sp.set("parent", parentId);
-  if (custom) sp.set("custom", "true");
-  const qs = sp.toString();
-  const key = qs ? `/api/v1/mailbox/folders?${qs}` : "/api/v1/mailbox/folders";
-  const { data, error, isLoading } = useSWR<{ folders: OutlookFolder[] }>(
-    key,
-    swrFetcher,
-  );
-  return { folders: data?.folders ?? [], isLoading, isError: !!error };
 }
 
 export function useSavedFolders() {

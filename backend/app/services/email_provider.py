@@ -744,17 +744,20 @@ class MSGraphProvider(EmailProvider):
             raise
 
     def find_or_create_folder(self, name: str) -> str | None:
-        """Find an Inbox child folder named `name` (case-insensitive) or create
-        it under Inbox. READ + create only — never deletes."""
+        """Find a mailbox root folder named `name` (case-insensitive) or create
+        it at the root. Root — a sibling of Inbox — is where Outlook users
+        create their own folders (e.g. Jane's per-client folders), so matching
+        there reuses her existing folders instead of spawning a duplicate under
+        Inbox. READ + create only — never deletes."""
         target = (name or "").strip()
         if not target:
             return None
-        for f in self.list_mail_folders(parent_id="inbox"):
+        for f in self.list_mail_folders(parent_id=None):
             if f["display_name"].strip().lower() == target.lower():
                 return f["id"]
         mailbox = self._settings.msgraph_mailbox
         resp = self._client.post(
-            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/inbox/childFolders",
+            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders",
             headers=self._headers(),
             json={"displayName": target},
         )

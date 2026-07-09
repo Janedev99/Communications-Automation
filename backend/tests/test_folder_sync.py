@@ -106,3 +106,97 @@ def test_base_provider_write_methods_are_noops():
     p = IMAPProvider.__new__(IMAPProvider)
     assert p.find_or_create_folder("X") is None
     assert p.move_message_to_folder("<a@x.com>", "F1") is None
+
+
+# ── Service tests ─────────────────────────────────────────────────────────────
+import uuid
+from datetime import datetime, timezone
+
+from app.models.email import EmailMessage, EmailThread, EmailCategory, EmailStatus, MessageDirection
+
+
+class _FakeProvider:
+    def __init__(self):
+        self.created: list[str] = []
+        self.moved: list[tuple[str, str]] = []
+
+    def find_or_create_folder(self, name):
+        self.created.append(name)
+        return "FID"
+
+    def move_message_to_folder(self, internet_message_id, folder_id):
+        self.moved.append((internet_message_id, folder_id))
+
+
+def _thread_with_messages(db):
+    # Unique message_id_header per call — the test DB is shared without
+    # per-test rollback and message_id_header carries a UNIQUE constraint.
+    tag = uuid.uuid4().hex
+    thread = EmailThread(
+        id=uuid.uuid4(), client_email="c@x.com", client_name="Client X",
+        subject="Hi", category=EmailCategory.general_inquiry,
+        status=EmailStatus.categorized,
+    )
+    thread._in_id = f"<in-{tag}@x.com>"
+    inbound = EmailMessage(
+        id=uuid.uuid4(), thread_id=thread.id, direction=MessageDirection.inbound,
+        sender="c@x.com", recipient="jane@schilcpa.com", body_text="hi",
+        message_id_header=thread._in_id, received_at=datetime.now(timezone.utc),
+    )
+    outbound = EmailMessage(
+        id=uuid.uuid4(), thread_id=thread.id, direction=MessageDirection.outbound,
+        sender="jane@schilcpa.com", recipient="c@x.com", body_text="re",
+        message_id_header=f"<out-{tag}@x.com>", received_at=datetime.now(timezone.utc),
+    )
+    db.add_all([thread, inbound, outbound])
+    db.commit()
+    db.refresh(thread)
+    return thread
+
+
+def _patch(monkeypatch, *, flag, provider_name="msgraph", provider=None):
+    import app.services.folder_sync as fs
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", flag, raising=False)
+    monkeypatch.setattr(s, "email_provider", provider_name, raising=False)
+    monkeypatch.setattr(fs, "get_settings", lambda: s)
+    if provider is not None:
+        monkeypatch.setattr(fs, "get_email_provider", lambda: provider)
+    return fs
+
+
+def test_sync_noop_when_flag_off(db_session, monkeypatch):
+    prov = _FakeProvider()
+    fs = _patch(monkeypatch, flag=False, provider=prov)
+    thread = _thread_with_messages(db_session)
+    fs.sync_thread_to_outlook_folder(db_session, thread=thread, folder_name="Client X")
+    assert prov.created == [] and prov.moved == []
+
+
+def test_sync_noop_when_not_msgraph(db_session, monkeypatch):
+    prov = _FakeProvider()
+    fs = _patch(monkeypatch, flag=True, provider_name="imap", provider=prov)
+    thread = _thread_with_messages(db_session)
+    fs.sync_thread_to_outlook_folder(db_session, thread=thread, folder_name="Client X")
+    assert prov.created == [] and prov.moved == []
+
+
+def test_sync_creates_and_moves_inbound_only(db_session, monkeypatch):
+    prov = _FakeProvider()
+    fs = _patch(monkeypatch, flag=True, provider=prov)
+    thread = _thread_with_messages(db_session)
+    fs.sync_thread_to_outlook_folder(db_session, thread=thread, folder_name="Client X")
+    assert prov.created == ["Client X"]
+    # Only the inbound message is moved — outbound stays in Sent Items.
+    assert prov.moved == [(thread._in_id, "FID")]
+
+
+def test_sync_swallows_provider_error(db_session, monkeypatch):
+    class _Boom(_FakeProvider):
+        def find_or_create_folder(self, name):
+            raise RuntimeError("graph down")
+    fs = _patch(monkeypatch, flag=True, provider=_Boom())
+    thread = _thread_with_messages(db_session)
+    # Must not raise — the send/save that triggered it must survive.
+    fs.sync_thread_to_outlook_folder(db_session, thread=thread, folder_name="Client X")

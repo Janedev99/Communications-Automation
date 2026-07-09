@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # its own (see auto_send.maybe_auto_send). Production runs True.
     shadow_mode: bool = False
 
+    # ── Outlook folder sync (folder routing iteration B) ──────────────────────
+    # When True, filing a thread in the app (auto-file on send, or manual
+    # Save/Move) also creates a real Outlook folder under Inbox and moves the
+    # thread's inbound messages into it. Default False = DB label only, no
+    # mailbox writes. Enable only after a supervised live test.
+    outlook_folder_sync: bool = False
+
     # ── RunPod orchestrator ───────────────────────────────────────────────────
     # The orchestrator wraps the runpod_client REST primitives in a service
     # that auto-starts the pod before a draft generation and auto-stops it

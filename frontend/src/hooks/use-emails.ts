@@ -7,6 +7,7 @@ import type {
   BulkActionResponse,
   EmailThread,
   EmailThreadListItem,
+  OutlookFolder,
   PaginatedResponse,
   SavedFolder,
   SavedMessageItem,
@@ -213,6 +214,19 @@ export function saveThread(threadId: string, body: SaveThreadBody): Promise<Emai
 
 export function unsaveThread(threadId: string): Promise<EmailThread> {
   return api.post<EmailThread>(`/api/v1/emails/${threadId}/unsave`, {});
+}
+
+/** One level of Outlook folders. Omit parentId for the top level; pass a
+ *  folder id to fetch its children (lazy expand). */
+export function useOutlookFolders(parentId?: string) {
+  const key = parentId
+    ? `/api/v1/mailbox/folders?parent=${encodeURIComponent(parentId)}`
+    : "/api/v1/mailbox/folders";
+  const { data, error, isLoading } = useSWR<{ folders: OutlookFolder[] }>(
+    key,
+    swrFetcher,
+  );
+  return { folders: data?.folders ?? [], isLoading, isError: !!error };
 }
 
 export function useSavedFolders() {

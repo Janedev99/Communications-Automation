@@ -185,3 +185,19 @@ def test_sync_creates_and_stores_id(db_session, monkeypatch):
         select(SavedFolderRow).where(SavedFolderRow.name == "Push Me")
     ).scalar_one()
     assert row.outlook_folder_id == "NEWID"
+
+
+# =============================================================================
+# Admin-gating tests for the HTTP endpoints
+# =============================================================================
+
+def test_import_endpoint_requires_admin(logged_in_staff):
+    """Non-admin staff should get 403 when hitting the import endpoint."""
+    resp = logged_in_staff.post("/api/v1/emails/saved/folders/import-from-outlook")
+    assert resp.status_code == 403, resp.text
+
+
+def test_sync_endpoint_requires_admin(logged_in_staff):
+    """Non-admin staff should get 403 when hitting the sync endpoint."""
+    resp = logged_in_staff.post("/api/v1/emails/saved/folders/sync-to-outlook")
+    assert resp.status_code == 403, resp.text

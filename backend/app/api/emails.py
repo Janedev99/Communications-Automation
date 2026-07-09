@@ -39,7 +39,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_client_ip, get_current_user, require_csrf
+from app.api.deps import get_client_ip, get_current_user, require_admin, require_csrf
 from app.config import get_settings
 from app.services.email_provider import get_email_provider
 
@@ -1460,7 +1460,7 @@ def create_saved_folder(
 @router.post("/saved/folders/import-from-outlook", response_model=FolderImportResult,
              dependencies=[Depends(require_csrf)])
 def import_folders_from_outlook(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FolderImportResult:
     """One-time (re-runnable) import of all custom Outlook folders."""
@@ -1470,7 +1470,7 @@ def import_folders_from_outlook(
 @router.post("/saved/folders/sync-to-outlook", response_model=FolderSyncResult,
              dependencies=[Depends(require_csrf)])
 def sync_folders_to_outlook_endpoint(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FolderSyncResult:
     """Create app folders in Outlook (additive; never deletes)."""

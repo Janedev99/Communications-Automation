@@ -219,9 +219,11 @@ name from the email address (no initials or handles like "TC" from tc@example.co
 if no real name is available, open with a plain "Hello,".
 - Cover exactly what the instruction asks. Do NOT invent facts, figures, dates, \
 dollar amounts, deadlines, or commitments that were not provided.
-- Do NOT write any closing, sign-off, name, title, or signature — end with your \
-final substantive sentence. The sender's signature is appended automatically when \
-the email is sent.
+- End with ONE brief closing line appropriate to the tone (for example \
+"Thanks so much," or "Best regards,"), on its own line after your final \
+substantive sentence.
+- Do NOT write a name, title, or signature block of your own — the sender's \
+signature is appended automatically when the email is sent.
 - Also propose a short, specific subject line (no "Re:" prefix).
 
 Return ONLY a JSON object with exactly two string fields and nothing else:

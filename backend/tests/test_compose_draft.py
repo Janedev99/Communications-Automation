@@ -92,3 +92,19 @@ def test_compose_draft_requires_instruction(logged_in_admin, mock_anthropic):
 def test_compose_draft_requires_auth(client, mock_anthropic):
     resp = client.post(DRAFT_URL, json={"instruction": "Write something."})
     assert resp.status_code in (401, 403), resp.text
+
+
+def test_compose_prompt_instructs_a_closing(logged_in_admin, mock_anthropic):
+    """Compose drafts now end with an editable tone-appropriate closing line,
+    still without a name/title/signature (appended at send)."""
+    _arm_llm(mock_anthropic, '{"subject": "Hi", "body": "Hi Sam, quick note."}')
+    resp = logged_in_admin.post(
+        DRAFT_URL,
+        json={"instruction": "Send Sam a quick note.", "recipient": "sam@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    system_prompt = mock_anthropic.messages.create.call_args.kwargs["system"]
+    assert "closing line" in system_prompt
+    assert "Do NOT write a name, title, or signature" in system_prompt
+    assert "Do NOT write any closing" not in system_prompt

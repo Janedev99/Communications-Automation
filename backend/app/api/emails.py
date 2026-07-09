@@ -89,6 +89,8 @@ from app.schemas.email import (
     EmailThreadListItem,
     EmailThreadListResponse,
     EmailThreadResponse,
+    FolderImportResult,
+    FolderSyncResult,
     ManualDraftRequest,
     SaveThreadRequest,
     SavedFolder,
@@ -99,6 +101,7 @@ from app.schemas.email import (
 from app.models.email import KnowledgeEntry
 from app.schemas.knowledge import KnowledgeEntryResponse
 from app.schemas.escalation import EscalationResponse
+from app.services import folder_import
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
 from app.services.folder_sync import sync_thread_to_outlook_folder
@@ -1452,6 +1455,26 @@ def create_saved_folder(
     return SavedFolder(id=row.id, name=row.name, parent_id=row.parent_id,
                        source=row.source, outlook_item_count=None,
                        count=0, thread_count=0, message_count=0)
+
+
+@router.post("/saved/folders/import-from-outlook", response_model=FolderImportResult,
+             dependencies=[Depends(require_csrf)])
+def import_folders_from_outlook(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FolderImportResult:
+    """One-time (re-runnable) import of all custom Outlook folders."""
+    return FolderImportResult(**folder_import.import_outlook_folders(db))
+
+
+@router.post("/saved/folders/sync-to-outlook", response_model=FolderSyncResult,
+             dependencies=[Depends(require_csrf)])
+def sync_folders_to_outlook_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FolderSyncResult:
+    """Create app folders in Outlook (additive; never deletes)."""
+    return FolderSyncResult(**folder_import.sync_folders_to_outlook(db))
 
 
 @router.get("/saved/folders", response_model=list[SavedFolder])

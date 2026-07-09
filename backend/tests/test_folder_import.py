@@ -1,5 +1,8 @@
 from __future__ import annotations
+from sqlalchemy import select
+
 from app.services.email_provider import MSGraphProvider, IMAPProvider
+from app.models.email import SavedFolderRow
 
 
 class _FakeResp:
@@ -37,3 +40,99 @@ def test_delete_folder_issues_graph_delete(monkeypatch):
 def test_delete_folder_base_noop():
     p = IMAPProvider.__new__(IMAPProvider)
     assert p.delete_folder("FID") is None
+
+
+def _cfg(monkeypatch, provider_name="msgraph"):
+    import app.services.folder_import as fi
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "email_provider", provider_name, raising=False)
+    monkeypatch.setattr(fi, "get_settings", lambda: s)
+    return fi
+
+
+def test_import_upserts_and_is_idempotent(db_session, monkeypatch):
+    fi = _cfg(monkeypatch)
+
+    def _f(fid, name, children=0, count=0):
+        return {"id": fid, "display_name": name, "child_folder_count": children,
+                "total_item_count": count, "unread_item_count": 0}
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            if parent_id is None:
+                return [_f("P1", "Client A", 1, 5)]
+            if parent_id == "P1":
+                return [_f("C1", "2024 Returns", 0, 3)]
+            return []
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+
+    r1 = fi.import_outlook_folders(db_session)
+    assert r1["imported"] == 2 and r1["total"] == 2
+    parent = db_session.execute(
+        select(SavedFolderRow).where(SavedFolderRow.name == "Client A")
+    ).scalar_one()
+    child = db_session.execute(
+        select(SavedFolderRow).where(SavedFolderRow.name == "2024 Returns")
+    ).scalar_one()
+    assert parent.source == "outlook" and parent.outlook_item_count == 5
+    assert child.parent_id == parent.id
+
+    r2 = fi.import_outlook_folders(db_session)
+    assert r2["imported"] == 0 and r2["updated"] == 2  # idempotent, updates in place
+
+
+def test_import_excludes_builtin_top_level_but_keeps_inbox_children(db_session, monkeypatch):
+    """Mirrors /mailbox/folders?custom=true: built-in defaults (Inbox, Sent
+    Items, ...) never become registry rows at the top level, but a custom
+    folder living under Inbox (a common spot for Jane's per-client folders)
+    is imported as if it were a root folder. A plain custom root folder is
+    also imported."""
+    fi = _cfg(monkeypatch)
+
+    def _f(fid, name, children=0, count=0):
+        return {"id": fid, "display_name": name, "child_folder_count": children,
+                "total_item_count": count, "unread_item_count": 0}
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            if parent_id is None:
+                return [
+                    _f("INBOX_ID", "Inbox", 1, 0),
+                    _f("SENT_ID", "Sent Items", 0, 0),
+                    _f("ROOT_ID", "Root Custom", 0, 0),
+                ]
+            if parent_id == "INBOX_ID":
+                return [_f("ICHILD_ID", "Inbox Custom Child", 0, 0)]
+            return []
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+
+    result = fi.import_outlook_folders(db_session)
+    assert result["imported"] == 2  # Root Custom + Inbox Custom Child only
+
+    names = {r.name for r in db_session.execute(select(SavedFolderRow)).scalars().all()}
+    assert "Root Custom" in names
+    assert "Inbox Custom Child" in names
+    assert "Inbox" not in names
+    assert "Sent Items" not in names
+
+
+def test_import_noop_when_not_msgraph(db_session, monkeypatch):
+    fi = _cfg(monkeypatch, provider_name="imap")
+    assert fi.import_outlook_folders(db_session) == {"imported": 0, "updated": 0, "total": 0}
+
+
+def test_sync_creates_and_stores_id(db_session, monkeypatch):
+    fi = _cfg(monkeypatch)
+    db_session.add(SavedFolderRow(name="Push Me", source="app")); db_session.commit()
+
+    class _Prov:
+        def find_or_create_folder(self, name): return "NEWID"
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+
+    res = fi.sync_folders_to_outlook(db_session)
+    assert res["total"] >= 1
+    row = db_session.execute(
+        select(SavedFolderRow).where(SavedFolderRow.name == "Push Me")
+    ).scalar_one()
+    assert row.outlook_folder_id == "NEWID"

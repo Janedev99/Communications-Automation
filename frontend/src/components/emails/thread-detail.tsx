@@ -229,8 +229,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-card">
       {/* Thread metadata header */}
       <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
+        {/* Stack the subject above the action toolbar below xl so the subject
+            gets full width — the 7-button toolbar is fixed-width and would
+            otherwise squeeze the subject to one-word-per-line at 1024–1280px.
+            Side-by-side returns at xl+. */}
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between xl:gap-4">
+          <div className="min-w-0 xl:flex-1">
             <h2 className="text-lg font-semibold text-foreground leading-snug tracking-tight">
               {thread.subject}
             </h2>
@@ -257,7 +261,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               and the Conversation|Draft segmented control: below lg the
               compact mobile cluster is used so tablet portrait (640–1023px)
               never shows this full 6-button row in a constrained header. */}
-          <div className="hidden lg:flex items-center gap-2 flex-shrink-0 print:hidden">
+          <div className="hidden lg:flex flex-wrap items-center gap-2 flex-shrink-0 print:hidden">
             {thread.is_saved ? (
               // Segmented control: the folder label and the remove (✕) action
               // share one bordered pill with a divider, so the ✕ reads as part

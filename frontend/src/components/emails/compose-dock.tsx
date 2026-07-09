@@ -127,7 +127,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
     <div
       className={cn(
         "fixed bottom-0 right-4 sm:right-6 z-50 flex flex-col",
-        "w-[min(28rem,calc(100vw-2rem))] rounded-t-xl bg-card",
+        "w-[min(34rem,calc(100vw-2rem))] rounded-t-xl bg-card",
         "ring-1 ring-foreground/10 shadow-2xl shadow-foreground/10",
       )}
       role="dialog"
@@ -168,7 +168,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
       </div>
 
       {!minimized && (
-        <div className="flex flex-col gap-3 p-4 max-h-[70vh] overflow-y-auto">
+        <div className="flex flex-col gap-3 p-4 max-h-[82vh] overflow-y-auto">
           {/* Mode toggle */}
           <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/60 self-start">
             {(
@@ -258,9 +258,9 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
                 placeholder="e.g. Ask the Johnsons to send their 2024 1099s by Friday."
-                rows={2}
+                rows={3}
                 maxLength={4000}
-                className="resize-none text-sm bg-card"
+                className="resize-y min-h-[4.5rem] text-sm bg-card"
               />
               <Button
                 type="button"
@@ -288,8 +288,8 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="Write your message…"
-            rows={8}
-            className="resize-none text-sm"
+            rows={12}
+            className="resize-y min-h-[14rem] text-sm"
           />
           {/* Per-user signatures (018): show exactly what will be appended
               for the current sender (personal, or company fallback). */}

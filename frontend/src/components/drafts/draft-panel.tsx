@@ -610,7 +610,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
         <ConfidenceMeter
           value={thread.category_confidence}
           compact
-          className="flex-1 max-w-xs"
+          className="flex-1"
         />
       </div>
     </div>

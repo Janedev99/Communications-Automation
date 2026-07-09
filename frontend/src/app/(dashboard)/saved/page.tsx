@@ -19,8 +19,8 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
-import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { CategoryBadge } from "@/components/emails/category-badge";
+import { FolderDeleteDialog } from "@/components/emails/folder-delete-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,7 +40,6 @@ import {
 } from "@/components/ui/select";
 import {
   createFolder,
-  deleteSavedFolder,
   saveMessage,
   saveThread,
   useEmails,
@@ -125,6 +124,27 @@ function subtreeMatches(node: FolderNodeData, filter: string): boolean {
   if (!filter) return true;
   if ((node.folder.name ?? "").toLowerCase().includes(filter)) return true;
   return node.children.some((c) => subtreeMatches(c, filter));
+}
+
+/**
+ * Finds a folder's node in the tree so its direct children can be listed
+ * (for the "subfolders will be deleted too" note in the delete dialog).
+ * Matches by id when both sides have one; falls back to name for legacy
+ * label-only folders that never got an id migrated.
+ */
+function findNodeByFolder(
+  nodes: FolderNodeData[],
+  folder: SavedFolder,
+): FolderNodeData | undefined {
+  for (const node of nodes) {
+    const sameFolder = folder.id
+      ? node.folder.id === folder.id
+      : node.folder.name === folder.name;
+    if (sameFolder) return node;
+    const found = findNodeByFolder(node.children, folder);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /**
@@ -251,11 +271,11 @@ export default function SavedPage() {
   const [threadSort, setThreadSort] = useState<ThreadSort>("updated_desc");
   const [messageSort, setMessageSort] = useState<SavedMessageSort>("saved_desc");
 
-  // Folder-deletion confirm state — we use a single ConfirmDialog driven by
-  // a "pendingDelete" string (folder name to delete) rather than one
-  // dialog per folder, which would render N dialogs in the DOM.
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  // Folder-deletion confirm state — a single dialog driven by the folder
+  // pending deletion (not just its name), so the dialog can read
+  // `outlook_item_count` for the Outlook-impact warning, rather than one
+  // dialog per folder rendered in the DOM.
+  const [pendingFolderDelete, setPendingFolderDelete] = useState<SavedFolder | null>(null);
 
   // Move-to-folder dialog state — shared between thread cards and message cards.
   const [moveTarget, setMoveTarget] = useState<MoveTarget | null>(null);
@@ -318,32 +338,6 @@ export default function SavedPage() {
   const folderTree = buildFolderTree(namedFolders);
   const folderFilter = folderQuery.trim().toLowerCase();
 
-  // Confirm + execute folder deletion. The backend rejects with 409 if the
-  // folder still has items — we surface that message verbatim so the user
-  // gets the "move them first" prompt without us re-implementing the rule.
-  const handleDeleteFolder = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    try {
-      await deleteSavedFolder(pendingDelete);
-      toast.success(`Deleted folder "${pendingDelete}".`);
-      // If the deleted folder was the active one, pop back to All saved
-      // so we don't render an empty filtered view.
-      if (activeFolder === pendingDelete) {
-        setActiveFolder(ALL_FOLDERS);
-      }
-      mutateFolders();
-      mutateThreads();
-      mutateMessages();
-      setPendingDelete(null);
-    } catch (err: unknown) {
-      // The 409 detail tells the user exactly what to do — pass through.
-      toast.error(err instanceof Error ? err.message : "Could not delete folder.");
-    } finally {
-      setDeleting(false);
-    }
-  };
-
   return (
     <div>
       <PageHeader
@@ -396,7 +390,7 @@ export default function SavedPage() {
                     activeFolder={activeFolder}
                     filter={folderFilter}
                     onSelect={(name) => setActiveFolder(name)}
-                    onDelete={(f) => f.name && setPendingDelete(f.name)}
+                    onDelete={(f) => setPendingFolderDelete(f)}
                     onAddChild={(parent) => setNewSubfolderParent(parent)}
                   />
                 ))}
@@ -496,40 +490,32 @@ export default function SavedPage() {
       {/* Folder-delete confirm. The backend follows the Outlook /
           Gmail-label model: deleting a folder unfiles every item that
           was in it (sets saved_folder = NULL) but keeps them saved.
-          Items survive — they just move to the "No folder" bucket. */}
-      <ConfirmDialog
-        open={!!pendingDelete}
-        onOpenChange={(o) => !o && setPendingDelete(null)}
-        title={`Delete folder "${pendingDelete ?? ""}"?`}
-        description={
-          (() => {
-            const folder = namedFolders.find((f) => f.name === pendingDelete);
-            if (!folder || folder.count === 0) {
-              return "This folder is empty. It will be removed from your folder list.";
+          Items survive — they just move to the "No folder" bucket. This
+          is the single folder-delete confirmation path (dedicated
+          component, not the generic <ConfirmDialog> used elsewhere on
+          this page) so it can read `outlook_item_count` for the
+          Outlook-impact warning and note affected subfolders. */}
+      {pendingFolderDelete && (
+        <FolderDeleteDialog
+          folder={pendingFolderDelete}
+          childNames={
+            findNodeByFolder(folderTree, pendingFolderDelete)
+              ?.children.map((c) => c.folder.name)
+              .filter((n): n is string => n != null) ?? []
+          }
+          onClose={() => setPendingFolderDelete(null)}
+          onDeleted={() => {
+            mutateFolders();
+            mutateThreads();
+            mutateMessages();
+            // If the deleted folder was the active one, pop back to All
+            // saved so we don't render an empty filtered view.
+            if (activeFolder === pendingFolderDelete.name) {
+              setActiveFolder(ALL_FOLDERS);
             }
-            const parts: string[] = [];
-            if (folder.thread_count > 0) {
-              parts.push(
-                `${folder.thread_count} thread${folder.thread_count === 1 ? "" : "s"}`,
-              );
-            }
-            if (folder.message_count > 0) {
-              parts.push(
-                `${folder.message_count} email${folder.message_count === 1 ? "" : "s"}`,
-              );
-            }
-            return (
-              `${parts.join(" and ")} in this folder will stay saved — ` +
-              "they'll just move to \"No folder.\" The folder label is " +
-              "removed from your folder list."
-            );
-          })()
-        }
-        confirmLabel="Delete folder"
-        confirmVariant="destructive"
-        onConfirm={handleDeleteFolder}
-        loading={deleting}
-      />
+          }}
+        />
+      )}
 
       {/* Move-to-folder dialog. Reuses saveThread / saveMessage internally
           since "move" is just a save with a different folder. */}

@@ -49,3 +49,18 @@ def test_list_folders_merges_registry_and_counts(logged_in_admin, db_session):
     assert by_name["Empty Client"]["outlook_item_count"] == 147
     assert by_name["Legacy Label"]["count"] == 1  # defensive union
     assert by_name["Legacy Label"]["source"] == "app"
+
+
+def test_create_folder_and_subfolder_and_conflict(logged_in_admin, db_session):
+    r1 = logged_in_admin.post("/api/v1/emails/saved/folders", json={"name": "Parent"})
+    assert r1.status_code == 201, r1.text
+    parent_id = r1.json()["id"]
+
+    r2 = logged_in_admin.post("/api/v1/emails/saved/folders",
+                              json={"name": "Child", "parent_id": parent_id})
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["parent_id"] == str(parent_id)
+
+    # Case-insensitive duplicate -> 409.
+    r3 = logged_in_admin.post("/api/v1/emails/saved/folders", json={"name": "parent"})
+    assert r3.status_code == 409, r3.text

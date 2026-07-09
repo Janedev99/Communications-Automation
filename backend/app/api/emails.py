@@ -81,6 +81,7 @@ from app.schemas.email import (
     BulkActionResponse,
     ComposeDraftRequest,
     ComposeDraftResponse,
+    CreateFolderRequest,
     DraftResponseResponse,
     EmailMessageResponse,
     EmailThreadListItem,
@@ -1420,6 +1421,31 @@ def unsave_thread(
 
     db.refresh(thread)
     return EmailThreadResponse.from_thread(thread)
+
+
+@router.post("/saved/folders", response_model=SavedFolder,
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
+def create_saved_folder(
+    body: CreateFolderRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SavedFolder:
+    """Create a first-class folder (optionally nested under parent_id)."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Folder name cannot be empty.")
+    exists = db.execute(
+        select(SavedFolderRow).where(func.lower(SavedFolderRow.name) == name.lower())
+    ).scalar_one_or_none()
+    if exists is not None:
+        raise HTTPException(status_code=409, detail=f'A folder named "{name}" already exists.')
+    row = SavedFolderRow(name=name, parent_id=body.parent_id, source="app")
+    db.add(row)
+    db.flush()
+    return SavedFolder(id=row.id, name=row.name, parent_id=row.parent_id,
+                       source=row.source, outlook_item_count=None,
+                       count=0, thread_count=0, message_count=0)
 
 
 @router.get("/saved/folders", response_model=list[SavedFolder])

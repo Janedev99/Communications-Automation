@@ -851,6 +851,10 @@ function MoveToFolderDialog({
   const [picked, setPicked] = useState<string>(currentFolder ?? NO_FOLDER_VALUE);
   const [newFolderName, setNewFolderName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Same rationale as SaveThreadDialog: the registry can hold hundreds of
+  // folders post-Outlook-import, so this is a search-filtered, height-capped
+  // list rather than a plain dropdown.
+  const [folderQuery, setFolderQuery] = useState("");
 
   const isNewFolder = picked === NEW_FOLDER_VALUE;
   const targetFolder = isNewFolder
@@ -858,6 +862,11 @@ function MoveToFolderDialog({
     : picked === NO_FOLDER_VALUE
     ? null
     : picked;
+
+  const folderFilter = folderQuery.trim().toLowerCase();
+  const filteredFolders = folderFilter
+    ? existingFolders.filter((name) => name.toLowerCase().includes(folderFilter))
+    : existingFolders;
 
   const noChange =
     !isNewFolder &&
@@ -917,25 +926,44 @@ function MoveToFolderDialog({
         </DialogHeader>
 
         <div className="space-y-1.5 py-2">
-          <label className="text-xs font-medium text-foreground">Folder</label>
-          <Select value={picked} onValueChange={(v: string | null) => v && setPicked(v)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="No folder" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NO_FOLDER_VALUE}>
-                <span className="text-muted-foreground">No folder</span>
-              </SelectItem>
-              {existingFolders.map((name) => (
-                <SelectItem key={name} value={name}>
-                  <span className="truncate">{name}</span>
-                </SelectItem>
-              ))}
-              <SelectItem value={NEW_FOLDER_VALUE}>
-                <span className="text-primary">+ New folder…</span>
-              </SelectItem>
-            </SelectContent>
-          </Select>
+          <label className="text-xs font-medium text-foreground" htmlFor="move-folder-search">
+            Folder
+          </label>
+          <input
+            id="move-folder-search"
+            type="text"
+            value={folderQuery}
+            onChange={(e) => setFolderQuery(e.target.value)}
+            placeholder="Search folders…"
+            className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+          />
+          <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1">
+            <FolderOptionRow
+              label="No folder"
+              muted
+              selected={picked === NO_FOLDER_VALUE}
+              onClick={() => setPicked(NO_FOLDER_VALUE)}
+            />
+            {filteredFolders.map((name) => (
+              <FolderOptionRow
+                key={name}
+                label={name}
+                selected={picked === name}
+                onClick={() => setPicked(name)}
+              />
+            ))}
+            {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                No folders match &quot;{folderQuery}&quot;.
+              </p>
+            )}
+            <FolderOptionRow
+              label="+ New folder…"
+              accent
+              selected={isNewFolder}
+              onClick={() => setPicked(NEW_FOLDER_VALUE)}
+            />
+          </div>
           {isNewFolder && (
             <Input
               autoFocus
@@ -958,6 +986,46 @@ function MoveToFolderDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One row in the search-filtered folder list used by MoveToFolderDialog.
+ * Mirrors SaveThreadDialog's `FolderOptionRow` so the two "pick a folder"
+ * surfaces read as the same control.
+ */
+function FolderOptionRow({
+  label,
+  selected,
+  muted,
+  accent,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  muted?: boolean;
+  accent?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
+        selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+      )}
+    >
+      <span
+        className={cn(
+          "flex-1 truncate",
+          muted && "text-muted-foreground",
+          accent && "text-primary",
+        )}
+      >
+        {label}
+      </span>
+    </button>
   );
 }
 

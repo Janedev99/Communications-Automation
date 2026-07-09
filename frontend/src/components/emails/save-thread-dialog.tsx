@@ -15,17 +15,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   saveMessage,
   saveThread,
   useSavedFolders,
 } from "@/hooks/use-emails";
+import { cn } from "@/lib/utils";
 import type { EmailThread } from "@/lib/types";
 
 /**
@@ -88,6 +82,9 @@ export function SaveThreadDialog({
   const [newFolderName, setNewFolderName] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+  // Registry can hold hundreds of folders post-Outlook-import, so the picker
+  // is a search-filtered, height-capped list rather than a plain dropdown.
+  const [folderQuery, setFolderQuery] = useState("");
 
   // Pre-fill from current state when dialog opens (re-saves edit metadata)
   useEffect(() => {
@@ -99,6 +96,7 @@ export function SaveThreadDialog({
     }
     setNewFolderName("");
     setNote(current.note ?? "");
+    setFolderQuery("");
   }, [open, current.isSaved, current.folder, current.note]);
 
   const isNewFolder = pickedFolder === NEW_FOLDER_VALUE;
@@ -149,6 +147,13 @@ export function SaveThreadDialog({
     count: number;
   }>;
 
+  // Case-insensitive name filter — "No folder" and "New folder…" stay
+  // visible regardless of the query so the escape hatches are never hidden.
+  const folderFilter = folderQuery.trim().toLowerCase();
+  const filteredFolders = folderFilter
+    ? existingFolders.filter((f) => f.name.toLowerCase().includes(folderFilter))
+    : existingFolders;
+
   const isMessageTarget = target.kind === "message";
   const titleAction = current.isSaved ? "Update saved" : "Save this";
   const titleSubject = isMessageTarget ? "email" : "thread";
@@ -170,34 +175,45 @@ export function SaveThreadDialog({
 
         <div className="space-y-4 py-2">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-foreground" htmlFor="save-folder">
+            <label className="text-xs font-medium text-foreground" htmlFor="save-folder-search">
               Folder
             </label>
-            <Select value={pickedFolder} onValueChange={(v: string | null) => v && setPickedFolder(v)}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="No folder" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_FOLDER_VALUE}>
-                  <span className="text-muted-foreground">No folder (just save)</span>
-                </SelectItem>
-                {existingFolders.length > 0 && (
-                  <>
-                    {existingFolders.map((folder) => (
-                      <SelectItem key={folder.name} value={folder.name}>
-                        <span className="truncate">{folder.name}</span>
-                        <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
-                          {folder.count}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </>
-                )}
-                <SelectItem value={NEW_FOLDER_VALUE}>
-                  <span className="text-primary">+ New folder…</span>
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <input
+              id="save-folder-search"
+              type="text"
+              value={folderQuery}
+              onChange={(e) => setFolderQuery(e.target.value)}
+              placeholder="Search folders…"
+              className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+            />
+            <div className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1">
+              <FolderOptionRow
+                label="No folder (just save)"
+                muted
+                selected={pickedFolder === NO_FOLDER_VALUE}
+                onClick={() => setPickedFolder(NO_FOLDER_VALUE)}
+              />
+              {filteredFolders.map((folder) => (
+                <FolderOptionRow
+                  key={folder.name}
+                  label={folder.name}
+                  count={folder.count}
+                  selected={pickedFolder === folder.name}
+                  onClick={() => setPickedFolder(folder.name)}
+                />
+              ))}
+              {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                  No folders match &quot;{folderQuery}&quot;.
+                </p>
+              )}
+              <FolderOptionRow
+                label="+ New folder…"
+                accent
+                selected={isNewFolder}
+                onClick={() => setPickedFolder(NEW_FOLDER_VALUE)}
+              />
+            </div>
             {isNewFolder && (
               <Input
                 autoFocus
@@ -236,5 +252,55 @@ export function SaveThreadDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One row in the search-filtered folder list. Mirrors the look of the old
+ * `SelectItem` rows (rounded, padded, accent-highlighted when
+ * selected/hovered) so swapping the dropdown for a plain scrollable list
+ * doesn't change how the picker reads visually.
+ */
+function FolderOptionRow({
+  label,
+  count,
+  selected,
+  muted,
+  accent,
+  onClick,
+}: {
+  label: string;
+  count?: number;
+  selected: boolean;
+  muted?: boolean;
+  accent?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
+        selected
+          ? "bg-accent text-accent-foreground"
+          : "hover:bg-accent/60",
+      )}
+    >
+      <span
+        className={cn(
+          "flex-1 truncate",
+          muted && "text-muted-foreground",
+          accent && "text-primary",
+        )}
+      >
+        {label}
+      </span>
+      {count !== undefined && (
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {count}
+        </span>
+      )}
+    </button>
   );
 }

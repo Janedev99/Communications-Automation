@@ -1573,13 +1573,25 @@ def delete_saved_folder(
     by_parent: dict[uuid.UUID | None, list[SavedFolderRow]] = {}
     for r in rows:
         by_parent.setdefault(r.parent_id, []).append(r)
-    root = next((r for r in rows if r.name.lower() == folder_name.lower()), None)
+    # Prefer an exact-name match; fall back to case-insensitive only when
+    # exactly one row matches. If multiple case-variant rows exist and none
+    # matches the requested name exactly, treat as not-found rather than
+    # guessing which mailbox folder to delete (the in-app unfile of the raw
+    # folder_name still runs below).
+    root = next((r for r in rows if r.name == folder_name), None)
+    if root is None:
+        ci_matches = [r for r in rows if r.name.lower() == folder_name.lower()]
+        root = ci_matches[0] if len(ci_matches) == 1 else None
 
     to_delete: list[SavedFolderRow] = []
     if root is not None:
+        seen_ids: set[uuid.UUID] = set()
         stack = [root]
         while stack:
             cur = stack.pop()
+            if cur.id in seen_ids:
+                continue
+            seen_ids.add(cur.id)
             to_delete.append(cur)
             stack.extend(by_parent.get(cur.id, []))
 

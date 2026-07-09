@@ -132,3 +132,42 @@ def test_delete_folder_reflects_to_outlook_when_flag_on(logged_in_admin, db_sess
     resp = logged_in_admin.delete("/api/v1/emails/saved/folders/SyncMe")
     assert resp.status_code == 204, resp.text
     assert called == ["OF9"]  # reflected to Outlook
+
+
+def test_delete_folder_case_variants_prefers_exact_match(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    a = _mk_folder(db_session, "CaseTest", outlook_id="OF-EXACT")
+    b = _mk_folder(db_session, "casetest2", outlook_id="OF-OTHER")  # nearby, not a variant
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/CaseTest")
+    assert resp.status_code == 204, resp.text
+    assert called == ["OF-EXACT"]
+
+
+def test_delete_folder_ambiguous_case_variants_deletes_neither_in_outlook(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    _mk_folder(db_session, "Ambig Folder", outlook_id="OF-A")
+    _mk_folder(db_session, "ambig folder", outlook_id="OF-B")
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    # Request uses a THIRD casing that matches neither exactly and both case-insensitively.
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/AMBIG FOLDER")
+    assert resp.status_code == 204, resp.text
+    assert called == []  # ambiguous -> touch nothing in Outlook

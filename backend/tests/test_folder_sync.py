@@ -200,3 +200,34 @@ def test_sync_swallows_provider_error(db_session, monkeypatch):
     thread = _thread_with_messages(db_session)
     # Must not raise — the send/save that triggered it must survive.
     fs.sync_thread_to_outlook_folder(db_session, thread=thread, folder_name="Client X")
+
+
+# ── Wiring tests ──────────────────────────────────────────────────────────────
+
+def test_auto_folder_invokes_sync(db_session, monkeypatch):
+    import app.services.auto_folder as af
+    recorded = {}
+    monkeypatch.setattr(
+        af, "sync_thread_to_outlook_folder",
+        lambda db, **kw: recorded.update(kw),
+    )
+    thread = _thread_with_messages(db_session)
+    thread.is_saved = False
+    af.auto_save_to_client_folder(db_session, thread=thread, actor_id=None, request_ip=None)
+    assert recorded.get("folder_name") == "Client X"  # resolves from client_name
+
+
+def test_save_thread_endpoint_invokes_sync(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    calls = []
+    monkeypatch.setattr(
+        emails_api, "sync_thread_to_outlook_folder",
+        lambda db, **kw: calls.append(kw),
+    )
+    thread = _thread_with_messages(db_session)
+    resp = logged_in_admin.post(
+        f"/api/v1/emails/{thread.id}/save",
+        json={"folder": "Manual Folder", "note": None},
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls and calls[0]["folder_name"] == "Manual Folder"

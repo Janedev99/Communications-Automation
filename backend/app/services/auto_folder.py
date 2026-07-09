@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models.email import EmailThread
+from app.services.folder_sync import sync_thread_to_outlook_folder
 from app.utils.audit import log_action
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,13 @@ def auto_save_to_client_folder(
                 "folder": folder_name,
                 "trigger": "send",
             },
+        )
+        # Reflect the filing into the real Outlook mailbox (create folder under
+        # Inbox + move inbound messages). No-op unless OUTLOOK_FOLDER_SYNC is on;
+        # never raises. Sits inside this try as a second safety layer.
+        sync_thread_to_outlook_folder(
+            db, thread=thread, folder_name=folder_name,
+            actor_id=actor_id, request_ip=request_ip,
         )
         return True
     except Exception as exc:  # noqa: BLE001

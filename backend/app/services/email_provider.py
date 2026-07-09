@@ -290,6 +290,19 @@ class EmailProvider(ABC):
             f"{type(self).__name__} does not support forward_message"
         )
 
+    def list_mail_folders(self, parent_id: str | None = None) -> list[dict]:
+        """
+        List one level of mail folders (read-only). ``parent_id=None`` = top
+        level; otherwise the children of that folder. Returns dicts:
+        ``{id, display_name, child_folder_count, total_item_count,
+        unread_item_count}``.
+
+        Default is an empty list so non-Graph providers (IMAP, etc.) degrade
+        cleanly — the folder feature simply shows nothing. Read-only: no
+        implementation may create, move, or DELETE a folder.
+        """
+        return []
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -458,6 +471,42 @@ class MSGraphProvider(EmailProvider):
         resp.raise_for_status()
         msgs = resp.json().get("value", [])
         return msgs[0]["id"] if msgs else None
+
+    def list_mail_folders(self, parent_id: str | None = None) -> list[dict]:
+        """List one level of Outlook mail folders (READ-ONLY — GET only).
+
+        Follows @odata.nextLink pagination. parent_id=None -> top-level
+        /mailFolders; otherwise /mailFolders/{parent_id}/childFolders.
+        """
+        mailbox = self._settings.msgraph_mailbox
+        if parent_id:
+            url: str | None = (
+                f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/{parent_id}/childFolders"
+            )
+        else:
+            url = f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders"
+        params: dict | None = {
+            "$select": "id,displayName,childFolderCount,totalItemCount,unreadItemCount",
+            "$top": 100,
+        }
+        out: list[dict] = []
+        while url:
+            resp = self._client.get(url, headers=self._headers(), params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            for f in body.get("value", []):
+                out.append({
+                    "id": f["id"],
+                    "display_name": f.get("displayName") or "(unnamed)",
+                    "child_folder_count": f.get("childFolderCount") or 0,
+                    "total_item_count": f.get("totalItemCount") or 0,
+                    "unread_item_count": f.get("unreadItemCount") or 0,
+                })
+            # nextLink is a fully-formed URL and already carries the query;
+            # drop params so we don't double-append them.
+            url = body.get("@odata.nextLink")
+            params = None
+        return out
 
     def mark_as_read(self, message_id: str) -> None:
         # message_id here is the internetMessageId we stored at poll time.

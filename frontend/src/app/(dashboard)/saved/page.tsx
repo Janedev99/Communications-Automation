@@ -644,20 +644,23 @@ function FolderRailItem({
           : "text-muted-foreground hover:text-foreground hover:bg-accent",
       )}
     >
+      {/* Leading spacer matches the Outlook nodes' expand-chevron column so the
+          folder icons line up across the whole unified list. */}
+      <span className="w-4 shrink-0" aria-hidden="true" />
       <button
         onClick={onClick}
-        className="flex-1 flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-left min-w-0"
+        className="flex-1 flex items-center gap-1.5 py-1 pr-2 text-sm text-left min-w-0"
       >
         <Icon
           className={cn(
-            "w-4 h-4 shrink-0",
+            "w-3.5 h-3.5 shrink-0",
             muted && !active && "text-muted-foreground/70",
           )}
           strokeWidth={1.75}
           aria-hidden="true"
         />
         <span className="flex-1 truncate">{label}</span>
-        <span className="text-[11px] font-semibold tabular-nums text-muted-foreground">
+        <span className="text-[10px] tabular-nums text-muted-foreground">
           {count}
         </span>
       </button>
@@ -668,14 +671,14 @@ function FolderRailItem({
             onDelete();
           }}
           className={cn(
-            "shrink-0 mr-1 p-1 rounded transition-colors",
+            "shrink-0 mr-1 p-0.5 rounded transition-colors",
             "text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10",
             "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
           )}
           title={`Delete folder "${label}"`}
           aria-label={`Delete folder ${label}`}
         >
-          <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+          <Trash2 className="w-3 h-3" strokeWidth={1.75} />
         </button>
       )}
     </div>

@@ -105,3 +105,55 @@ def test_non_graph_provider_returns_empty():
     # IMAP (and the base default) never talk to Graph — return [].
     p = IMAPProvider.__new__(IMAPProvider)
     assert p.list_mail_folders() == []
+
+
+# ── Endpoint tests ────────────────────────────────────────────────────────────
+
+def test_folders_endpoint_requires_auth(client):
+    resp = client.get("/api/v1/mailbox/folders")
+    assert resp.status_code in (401, 403), resp.text
+
+
+def test_folders_endpoint_returns_shape(logged_in_admin, monkeypatch):
+    import app.api.mailbox as mailbox_api
+    mailbox_api._FOLDER_CACHE.clear()
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            return [{"id": "AAA", "display_name": "Inbox", "child_folder_count": 427,
+                     "total_item_count": 682, "unread_item_count": 12}]
+    monkeypatch.setattr(mailbox_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.get("/api/v1/mailbox/folders")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["folders"][0]["display_name"] == "Inbox"
+    assert data["folders"][0]["child_folder_count"] == 427
+
+
+def test_folders_endpoint_passes_parent(logged_in_admin, monkeypatch):
+    import app.api.mailbox as mailbox_api
+    mailbox_api._FOLDER_CACHE.clear()
+    seen = {}
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            seen["parent"] = parent_id
+            return []
+    monkeypatch.setattr(mailbox_api, "get_email_provider", lambda: _Prov())
+
+    logged_in_admin.get("/api/v1/mailbox/folders?parent=XYZ")
+    assert seen["parent"] == "XYZ"
+
+
+def test_folders_endpoint_graph_error_returns_502(logged_in_admin, monkeypatch):
+    import app.api.mailbox as mailbox_api
+    mailbox_api._FOLDER_CACHE.clear()
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            raise RuntimeError("graph down")
+    monkeypatch.setattr(mailbox_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.get("/api/v1/mailbox/folders")
+    assert resp.status_code == 502, resp.text

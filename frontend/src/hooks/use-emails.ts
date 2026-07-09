@@ -217,11 +217,14 @@ export function unsaveThread(threadId: string): Promise<EmailThread> {
 }
 
 /** One level of Outlook folders. Omit parentId for the top level; pass a
- *  folder id to fetch its children (lazy expand). */
-export function useOutlookFolders(parentId?: string) {
-  const key = parentId
-    ? `/api/v1/mailbox/folders?parent=${encodeURIComponent(parentId)}`
-    : "/api/v1/mailbox/folders";
+ *  folder id to fetch its children (lazy expand). `custom` hides Outlook's
+ *  built-in system folders and surfaces Jane's own folder tree. */
+export function useOutlookFolders(parentId?: string, custom = false) {
+  const sp = new URLSearchParams();
+  if (parentId) sp.set("parent", parentId);
+  if (custom) sp.set("custom", "true");
+  const qs = sp.toString();
+  const key = qs ? `/api/v1/mailbox/folders?${qs}` : "/api/v1/mailbox/folders";
   const { data, error, isLoading } = useSWR<{ folders: OutlookFolder[] }>(
     key,
     swrFetcher,

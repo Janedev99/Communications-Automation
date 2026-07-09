@@ -236,6 +236,14 @@ export default function SavedPage() {
               Loading folders…
             </p>
           )}
+
+          {/* Jane's own Outlook folders (custom, nested) — same rail as the
+              app's saved folders. Clicking one filters saved items by that
+              folder name (they populate once Outlook folder-sync is enabled). */}
+          <OutlookFolderTree
+            activeFolder={activeFolder}
+            onSelectFolder={(name) => setActiveFolder(name)}
+          />
         </aside>
 
         {/* Tabs + sort + list */}
@@ -319,12 +327,6 @@ export default function SavedPage() {
             </ul>
           )}
         </section>
-      </div>
-
-      {/* Jane's real Outlook folder structure (read-only). Separate from the
-          app's own saved folders above — this reflects the actual mailbox. */}
-      <div className="mt-6">
-        <OutlookFolderTree />
       </div>
 
       {/* Folder-delete confirm. The backend follows the Outlook /

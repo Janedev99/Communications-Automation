@@ -35,8 +35,8 @@ _FOLDER_CACHE: dict[str, tuple[float, list[dict]]] = {}
 # appear on real mailboxes.
 _DEFAULT_FOLDER_NAMES = {
     "archive", "conversation history", "deleted items", "drafts", "inbox",
-    "junk email", "junk e-mail", "outbox", "rss feeds", "sent items",
-    "sync issues", "outbox", "notes",
+    "junk email", "junk e-mail", "notes", "outbox", "rss feeds",
+    "search folders", "sent items", "sync issues",
 }
 
 

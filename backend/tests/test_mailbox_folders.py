@@ -188,6 +188,38 @@ def test_folders_endpoint_custom_excludes_defaults_and_surfaces_inbox_children(
     assert "Aspen Growth" in names  # Jane's client folder (an Inbox child)
 
 
+def test_folders_endpoint_custom_root_level_layout(logged_in_admin, monkeypatch):
+    """Mirrors a real mailbox (per Jane's screenshot): her custom folder is a
+    root-level sibling of Inbox, alongside the built-in defaults. Custom mode
+    must surface only the custom folder and drop every default — including
+    'Search Folders', which Outlook lists but users don't create."""
+    import app.api.mailbox as mailbox_api
+    mailbox_api._FOLDER_CACHE.clear()
+
+    def _f(fid, name, children=0):
+        return {"id": fid, "display_name": name, "child_folder_count": children,
+                "total_item_count": 0, "unread_item_count": 0}
+
+    class _Prov:
+        def list_mail_folders(self, parent_id=None):
+            if parent_id is None:
+                return [
+                    _f("IN", "Inbox"), _f("DR", "Drafts"),
+                    _f("SF", "sample folder"),  # Jane's own, root-level
+                    _f("ST", "Sent Items"), _f("DI", "Deleted Items"),
+                    _f("JE", "Junk Email"), _f("NO", "Notes"),
+                    _f("AR", "Archive"), _f("CH", "Conversation History"),
+                    _f("SE", "Search Folders"),
+                ]
+            return []  # Inbox has no custom children in this mailbox
+    monkeypatch.setattr(mailbox_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.get("/api/v1/mailbox/folders?custom=true")
+    assert resp.status_code == 200, resp.text
+    names = [f["display_name"] for f in resp.json()["folders"]]
+    assert names == ["sample folder"], names
+
+
 def test_folders_endpoint_custom_child_level_returns_children(logged_in_admin, monkeypatch):
     import app.api.mailbox as mailbox_api
     mailbox_api._FOLDER_CACHE.clear()

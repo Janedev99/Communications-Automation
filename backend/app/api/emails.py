@@ -97,6 +97,7 @@ from app.schemas.knowledge import KnowledgeEntryResponse
 from app.schemas.escalation import EscalationResponse
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
+from app.services.folder_sync import sync_thread_to_outlook_folder
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
 from app.utils.recipients import (
@@ -378,6 +379,11 @@ def bulk_action(
                     user_id=current_user.id,
                     ip_address=get_client_ip(request),
                     details={"folder": body.params.folder or None},
+                )
+                # Reflect into Outlook (flag-gated, fail-safe).
+                sync_thread_to_outlook_folder(
+                    db, thread=thread, folder_name=body.params.folder,
+                    actor_id=current_user.id, request_ip=get_client_ip(request),
                 )
 
             db.flush()
@@ -1360,6 +1366,13 @@ def save_thread(
     )
 
     db.refresh(thread)
+
+    # Reflect the filing into the real Outlook mailbox (flag-gated, fail-safe).
+    sync_thread_to_outlook_folder(
+        db, thread=thread, folder_name=folder,
+        actor_id=current_user.id, request_ip=get_client_ip(request),
+    )
+
     return EmailThreadResponse.from_thread(thread)
 
 

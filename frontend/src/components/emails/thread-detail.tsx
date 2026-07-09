@@ -574,25 +574,31 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           )}
         </div>
 
-        {thread.ai_summary && (
-          <div className="mt-4 bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
-            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
-              AI Summary
-            </p>
-            <p className="text-sm text-foreground/80 leading-relaxed">{thread.ai_summary}</p>
-          </div>
-        )}
-
-        {thread.suggested_reply_tone && (
-          <p className="text-xs text-muted-foreground mt-2">
-            Suggested tone: {thread.suggested_reply_tone}
-          </p>
-        )}
       </div>
+
+      {/* Conversation. The AI summary and any banners ride at the TOP of the
+          scroll (no longer pinned), so the message list gets the panel's full
+          height and the scrollbar itself hints at how long the thread is. */}
+      <ScrollArea className="flex-1">
+        <div className="px-6 pt-4 pb-1 space-y-3 empty:hidden">
+          {thread.ai_summary && (
+            <div className="bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
+              <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                AI Summary
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed">{thread.ai_summary}</p>
+            </div>
+          )}
+
+          {thread.suggested_reply_tone && (
+            <p className="text-xs text-muted-foreground">
+              Suggested tone: {thread.suggested_reply_tone}
+            </p>
+          )}
 
       {/* Escalation banner */}
       {escalation && (
-        <div className="mx-6 mt-3 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30 flex-shrink-0">
+        <div className="px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30">
           <div className="flex items-start gap-3">
             {isSensitiveData(escalation.reason) ? (
               <ShieldAlert
@@ -644,7 +650,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
       {/* Saved-note banner — only when there's a note worth surfacing */}
       {thread.is_saved && thread.saved_note && (
-        <div className="mx-6 mt-3 px-4 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30 flex-shrink-0">
+        <div className="px-4 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30">
           <div className="flex items-start gap-2.5">
             <BookmarkCheck
               className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-700 dark:text-amber-300 fill-current"
@@ -662,9 +668,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           </div>
         </div>
       )}
+        </div>
 
-      {/* Messages area */}
-      <ScrollArea className="flex-1">
+        {/* Messages */}
         <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50 min-w-0">
           {thread.messages.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>

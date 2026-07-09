@@ -88,3 +88,30 @@
     text-wrap: balance;
   }
 }
+
+/* Print — isolate the email conversation.
+   Jane prints threads for review, so a print should show the conversation
+   panel alone: blank everything, reveal the region marked
+   `data-print-region` (the ThreadDetail panel), lift it to the page origin,
+   and un-clip the scroll viewport so every message prints (not just the
+   part that was on-screen). Interactive chrome inside the region opts out
+   via Tailwind's `print:hidden`. */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  [data-print-region],
+  [data-print-region] * {
+    visibility: visible !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  [data-print-region] {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    background: white !important;
+  }
+}

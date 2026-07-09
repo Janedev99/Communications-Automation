@@ -67,6 +67,7 @@ from app.models.email import (
     EmailStatus,
     EmailThread,
     MessageDirection,
+    SavedFolderRow,
     ThreadTier,
 )
 from app.services.tier_engine import decide_tier
@@ -1436,47 +1437,52 @@ def list_saved_folders(
 
     The unsorted bucket (no folder) appears as an entry with ``name=None``.
     """
+    # In-app counts by folder name (threads + messages).
     thread_rows = db.execute(
-        select(
-            EmailThread.saved_folder.label("folder"),
-            func.count(EmailThread.id).label("count"),
-        )
+        select(EmailThread.saved_folder.label("folder"),
+               func.count(EmailThread.id).label("count"))
         .where(EmailThread.is_saved == True)  # noqa: E712
         .group_by(EmailThread.saved_folder)
     ).all()
-
     message_rows = db.execute(
-        select(
-            EmailMessage.saved_folder.label("folder"),
-            func.count(EmailMessage.id).label("count"),
-        )
+        select(EmailMessage.saved_folder.label("folder"),
+               func.count(EmailMessage.id).label("count"))
         .where(EmailMessage.is_saved == True)  # noqa: E712
         .group_by(EmailMessage.saved_folder)
     ).all()
 
-    # Merge by folder name, preserving the threads/messages split.
-    aggregated: dict[str | None, dict[str, int]] = {}
+    counts: dict[str | None, dict[str, int]] = {}
     for row in thread_rows:
-        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
-        bucket["threads"] += row.count
+        counts.setdefault(row.folder, {"threads": 0, "messages": 0})["threads"] += row.count
     for row in message_rows:
-        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
-        bucket["messages"] += row.count
+        counts.setdefault(row.folder, {"threads": 0, "messages": 0})["messages"] += row.count
 
-    # Stable sort: unfiled (None) first, then folders alphabetically.
-    def _sort_key(name: str | None) -> tuple[int, str]:
-        return (0, "") if name is None else (1, name.lower())
+    registry = db.execute(select(SavedFolderRow)).scalars().all()
+    reg_names = {r.name for r in registry}
 
-    folders = [
-        SavedFolder(
-            name=name,
-            count=counts["threads"] + counts["messages"],
-            thread_count=counts["threads"],
-            message_count=counts["messages"],
-        )
-        for name, counts in sorted(aggregated.items(), key=lambda kv: _sort_key(kv[0]))
-    ]
-    return folders
+    out: list[SavedFolder] = []
+    # Unfiled bucket first (never a registry row).
+    if None in counts:
+        c = counts[None]
+        out.append(SavedFolder(name=None, count=c["threads"] + c["messages"],
+                               thread_count=c["threads"], message_count=c["messages"]))
+    # Registry folders (empty ones included).
+    for r in sorted(registry, key=lambda r: r.name.lower()):
+        c = counts.get(r.name, {"threads": 0, "messages": 0})
+        out.append(SavedFolder(
+            id=r.id, name=r.name, parent_id=r.parent_id, source=r.source,
+            outlook_item_count=r.outlook_item_count,
+            count=c["threads"] + c["messages"],
+            thread_count=c["threads"], message_count=c["messages"],
+        ))
+    # Defensive union: labels in use but not in the registry.
+    for name, c in sorted(((n, c) for n, c in counts.items()
+                           if n is not None and n not in reg_names),
+                          key=lambda kv: kv[0].lower()):
+        out.append(SavedFolder(name=name, source="app",
+                               count=c["threads"] + c["messages"],
+                               thread_count=c["threads"], message_count=c["messages"]))
+    return out
 
 
 @router.delete(

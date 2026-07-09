@@ -26,3 +26,26 @@ def test_folder_schemas_exist():
     assert sf.source is None and sf.outlook_item_count is None
     assert FolderImportResult(imported=1, updated=2, total=3).total == 3
     assert FolderSyncResult(created=1, existing=2, total=3).created == 1
+
+
+def test_list_folders_merges_registry_and_counts(logged_in_admin, db_session):
+    from app.models.email import EmailThread, EmailCategory, EmailStatus
+    # A registry folder with no saved items -> appears with count 0.
+    empty = SavedFolderRow(name="Empty Client", source="outlook",
+                           outlook_folder_id="OF1", outlook_item_count=147)
+    db_session.add(empty)
+    # A saved thread filed under a registry-less legacy label -> still surfaces.
+    t = EmailThread(id=uuid.uuid4(), client_email="c@x.com", subject="s",
+                    category=EmailCategory.general_inquiry, status=EmailStatus.categorized,
+                    is_saved=True, saved_folder="Legacy Label")
+    db_session.add(t)
+    db_session.commit()
+
+    resp = logged_in_admin.get("/api/v1/emails/saved/folders")
+    assert resp.status_code == 200, resp.text
+    by_name = {f["name"]: f for f in resp.json()}
+    assert by_name["Empty Client"]["count"] == 0
+    assert by_name["Empty Client"]["source"] == "outlook"
+    assert by_name["Empty Client"]["outlook_item_count"] == 147
+    assert by_name["Legacy Label"]["count"] == 1  # defensive union
+    assert by_name["Legacy Label"]["source"] == "app"

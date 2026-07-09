@@ -156,8 +156,12 @@ export interface EmailThread {
 }
 
 export interface SavedFolder {
+  id?: string;
   /** Folder name. Null indicates the unsorted/unfiled saved bucket. */
   name: string | null;
+  parent_id?: string | null;
+  source?: "app" | "outlook" | null;
+  outlook_item_count?: number | null;
   /** Total count = thread_count + message_count. */
   count: number;
   thread_count: number;

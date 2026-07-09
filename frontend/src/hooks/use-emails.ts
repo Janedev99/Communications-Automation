@@ -302,3 +302,18 @@ export function deleteSavedFolder(folder: string): Promise<void> {
     `/api/v1/emails/saved/folders/${encodeURIComponent(folder)}`,
   );
 }
+
+export function createFolder(body: { name: string; parent_id?: string | null }): Promise<SavedFolder> {
+  return api.post<SavedFolder>("/api/v1/emails/saved/folders", body);
+}
+
+export interface FolderImportResult { imported: number; updated: number; total: number }
+export interface FolderSyncResult { created: number; existing: number; total: number }
+
+export function importOutlookFolders(): Promise<FolderImportResult> {
+  return api.post<FolderImportResult>("/api/v1/emails/saved/folders/import-from-outlook", {});
+}
+
+export function syncFoldersToOutlook(): Promise<FolderSyncResult> {
+  return api.post<FolderSyncResult>("/api/v1/emails/saved/folders/sync-to-outlook", {});
+}

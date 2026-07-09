@@ -303,6 +303,15 @@ class EmailProvider(ABC):
         """
         return []
 
+    def find_or_create_folder(self, name: str) -> str | None:
+        """Return the id of a folder named `name` under Inbox, creating it if
+        absent. Base no-op (non-Graph providers don't sync). Never deletes."""
+        return None
+
+    def move_message_to_folder(self, internet_message_id: str, folder_id: str) -> None:
+        """Move a message into an arbitrary folder. Base no-op."""
+        return None
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -733,6 +742,43 @@ class MSGraphProvider(EmailProvider):
                 internet_message_id, destination, exc, exc.response.text[:500],
             )
             raise
+
+    def find_or_create_folder(self, name: str) -> str | None:
+        """Find an Inbox child folder named `name` (case-insensitive) or create
+        it under Inbox. READ + create only — never deletes."""
+        target = (name or "").strip()
+        if not target:
+            return None
+        for f in self.list_mail_folders(parent_id="inbox"):
+            if f["display_name"].strip().lower() == target.lower():
+                return f["id"]
+        mailbox = self._settings.msgraph_mailbox
+        resp = self._client.post(
+            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/inbox/childFolders",
+            headers=self._headers(),
+            json={"displayName": target},
+        )
+        resp.raise_for_status()
+        return resp.json()["id"]
+
+    def move_message_to_folder(self, internet_message_id: str, folder_id: str) -> None:
+        """Move a message (by stored internetMessageId) into `folder_id`.
+        No-op if the message can't be resolved (already moved/deleted)."""
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            logger.info(
+                "MSGraph move_message_to_folder: %s not found — skipping",
+                internet_message_id,
+            )
+            return
+        mailbox = self._settings.msgraph_mailbox
+        resp = self._client.post(
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/move",
+            headers=self._headers(),
+            json={"destinationId": folder_id},
+        )
+        resp.raise_for_status()
+        logger.info("MSGraph: moved message %s to folder %s", internet_message_id, folder_id)
 
     def forward_message(
         self,

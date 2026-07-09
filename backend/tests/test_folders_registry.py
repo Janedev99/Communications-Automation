@@ -64,3 +64,12 @@ def test_create_folder_and_subfolder_and_conflict(logged_in_admin, db_session):
     # Case-insensitive duplicate -> 409.
     r3 = logged_in_admin.post("/api/v1/emails/saved/folders", json={"name": "parent"})
     assert r3.status_code == 409, r3.text
+
+
+def test_create_folder_rejects_missing_parent(logged_in_admin):
+    import uuid as _u
+    resp = logged_in_admin.post(
+        "/api/v1/emails/saved/folders",
+        json={"name": "Orphan Child", "parent_id": str(_u.uuid4())},
+    )
+    assert resp.status_code == 422, resp.text

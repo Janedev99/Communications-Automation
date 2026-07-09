@@ -1440,6 +1440,10 @@ def create_saved_folder(
     ).scalar_one_or_none()
     if exists is not None:
         raise HTTPException(status_code=409, detail=f'A folder named "{name}" already exists.')
+    if body.parent_id is not None:
+        parent = db.get(SavedFolderRow, body.parent_id)
+        if parent is None:
+            raise HTTPException(status_code=422, detail="Parent folder does not exist.")
     row = SavedFolderRow(name=name, parent_id=body.parent_id, source="app")
     db.add(row)
     db.flush()

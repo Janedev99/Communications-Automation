@@ -191,19 +191,21 @@ function FolderTreeRow({
           <span className="flex-1 truncate">{f.name}</span>
           <span className="text-[10px] tabular-nums text-muted-foreground">{f.count}</span>
         </button>
-        <button
-          type="button"
-          onClick={() => onAddChild(f)}
-          className={cn(
-            "shrink-0 p-0.5 rounded transition-colors",
-            "text-muted-foreground/60 hover:text-foreground hover:bg-accent",
-            "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
-          )}
-          title="New subfolder"
-          aria-label={`New subfolder in ${f.name}`}
-        >
-          <Plus className="w-3 h-3" strokeWidth={1.75} />
-        </button>
+        {f.id && (
+          <button
+            type="button"
+            onClick={() => onAddChild(f)}
+            className={cn(
+              "shrink-0 p-0.5 rounded transition-colors",
+              "text-muted-foreground/60 hover:text-foreground hover:bg-accent",
+              "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
+            )}
+            title="New subfolder"
+            aria-label={`New subfolder in ${f.name}`}
+          >
+            <Plus className="w-3 h-3" strokeWidth={1.75} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onDelete(f)}

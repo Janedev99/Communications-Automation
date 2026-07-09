@@ -70,6 +70,7 @@ from app.models.email import (
     ThreadTier,
 )
 from app.services.tier_engine import decide_tier
+from app.models.audit import AuditLog
 from app.models.escalation import Escalation, EscalationStatus
 from app.models.user import User
 from app.schemas.email import (
@@ -80,6 +81,7 @@ from app.schemas.email import (
     ComposeDraftRequest,
     ComposeDraftResponse,
     DraftResponseResponse,
+    EmailMessageResponse,
     EmailThreadListItem,
     EmailThreadListResponse,
     EmailThreadResponse,
@@ -97,6 +99,14 @@ from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
+from app.utils.recipients import (
+    MAX_RECIPIENTS,
+    InvalidRecipient,
+    enforce_recipient_cap,
+    parse_recipient_items,
+    parse_recipient_list,
+)
+from app.utils.sanitize import strip_html
 
 router = APIRouter(prefix="/emails", tags=["emails"])
 
@@ -922,6 +932,223 @@ def get_inline_image(
         media_type=content_type or "application/octet-stream",
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+# Same shape as SendDraftRequest.idempotency_key — kept as a plain regex here
+# (rather than importing that schema) since a forward isn't a draft send;
+# the constraint is identical (alphanumeric/hyphen/underscore, 1-128 chars).
+_FORWARD_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+
+
+def _find_prior_forward(
+    db: Session,
+    *,
+    thread_id: uuid.UUID,
+    source_message_id: uuid.UUID,
+    idempotency_key: str,
+) -> EmailMessage | None:
+    """
+    Look up a previously-recorded forward for this exact (source message,
+    idempotency key) pair via the ``thread.forwarded`` audit trail, and
+    return the outbound EmailMessage it created (or None if no match).
+
+    EmailMessage has no dedicated idempotency column of its own (unlike
+    DraftResponse.send_idempotency_key), so dedup piggybacks on the audit
+    log instead — a small per-thread scan, filtered in Python rather than
+    via a JSON-path query so the same code works against both SQLite (tests)
+    and Postgres (prod) without dialect-specific JSON operators.
+
+    This guards against retry-driven double sends (a client resubmitting
+    after a timeout, or a double-click racing a slow request) with the same
+    key. It is NOT a row-level lock — two truly concurrent requests with the
+    same key could both miss this lookup and both forward. That's an
+    accepted, narrower guarantee than send_draft's SELECT FOR UPDATE (there
+    is no pre-existing row to lock for a forward that hasn't happened yet);
+    the sequential-retry case this fixes is the one that matters in practice.
+    """
+    candidates = db.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.action == "thread.forwarded",
+            AuditLog.entity_type == "email_thread",
+            AuditLog.entity_id == str(thread_id),
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(200)
+    ).scalars().all()
+
+    for entry in candidates:
+        details = entry.details or {}
+        if (
+            details.get("source_message_id") != str(source_message_id)
+            or details.get("idempotency_key") != idempotency_key
+        ):
+            continue
+        outbound_id = details.get("outbound_message_id")
+        if not outbound_id:
+            continue
+        try:
+            outbound_uuid = uuid.UUID(outbound_id)
+        except ValueError:
+            continue
+        existing = db.execute(
+            select(EmailMessage).where(EmailMessage.id == outbound_uuid)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+    return None
+
+
+@router.post(
+    "/{thread_id}/messages/{message_id}/forward",
+    response_model=EmailMessageResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def forward_message(
+    request: Request,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    to: str = Form(...),
+    cc: str | None = Form(None),
+    note: str | None = Form(None),
+    idempotency_key: str | None = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EmailMessageResponse:
+    """
+    Forward a single message (with its attachments, via the provider's
+    native forward) to new recipients.
+
+    multipart/form-data: ``to`` (required, comma/semicolon-separated),
+    optional ``cc``, optional ``note`` (prepended above a quoted-original
+    marker for in-app display — the provider handles the real quoting for
+    the outgoing email itself), optional ``idempotency_key`` (client-supplied,
+    same shape as the draft-send key) — a repeat request with the same key
+    for the same source message returns the original result without calling
+    the provider again (see _find_prior_forward).
+
+    Records the forwarded copy as a new OUTBOUND EmailMessage on the SAME
+    thread (so it shows up in the conversation view), audits
+    ``thread.forwarded``, and maps provider errors the same way compose/send
+    do: NotImplementedError -> 501, LookupError (message no longer resolvable
+    in the mailbox) -> 404, any other provider failure -> 502.
+    """
+    msg = _get_message_or_404(db, thread_id=thread_id, message_id=message_id)
+    thread = db.execute(
+        select(EmailThread).where(EmailThread.id == thread_id)
+    ).scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
+
+    if idempotency_key is not None and not _FORWARD_IDEMPOTENCY_KEY_RE.match(idempotency_key):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="idempotency_key must match ^[A-Za-z0-9_-]{1,128}$.",
+        )
+
+    if idempotency_key:
+        prior = _find_prior_forward(
+            db,
+            thread_id=thread.id,
+            source_message_id=msg.id,
+            idempotency_key=idempotency_key,
+        )
+        if prior is not None:
+            return EmailMessageResponse.model_validate(prior)
+
+    to_list = _parse_recipients_or_422(to)
+    if not to_list:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one valid 'to' recipient is required.",
+        )
+    cc_list = _parse_recipients_or_422(cc)
+    try:
+        enforce_recipient_cap(to_list, cc_list)
+    except InvalidRecipient as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    note_text = (note or "").strip()
+
+    from app.services.email_provider import get_email_provider
+    provider = get_email_provider()
+    try:
+        provider.connect()
+        actual_message_id = provider.forward_message(
+            internet_message_id=msg.message_id_header,
+            to=to_list,
+            cc=cc_list or None,
+            comment=note_text or None,
+        )
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Forwarding isn't available for this mailbox.",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(
+            "forward_message failed thread=%s message=%s: %s",
+            thread_id, message_id, exc, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to forward the email. Please try again.",
+        )
+
+    # Quoted-original marker for in-app display only — the provider already
+    # handled real quoting/attachment-carrying on the outgoing message itself.
+    quoted_header = (
+        "---------- Forwarded message ----------\n"
+        f"From: {msg.sender}\n"
+        f"Date: {msg.received_at.isoformat()}\n"
+        f"Subject: {thread.subject}\n"
+        f"To: {msg.recipient or ''}\n\n"
+    )
+    original_body = msg.body_text or (strip_html(msg.body_html) if msg.body_html else "") or ""
+    display_body = (f"{note_text}\n\n" if note_text else "") + quoted_header + original_body
+
+    from app.config import get_settings as _get_settings_fn
+    app_settings = _get_settings_fn()
+    from_address = app_settings.msgraph_mailbox or app_settings.firm_owner_email
+    domain = from_address.split("@")[-1] if "@" in from_address else "localhost"
+    outbound_message_id = actual_message_id or f"<fwd-{uuid.uuid4()}@{domain}>"
+
+    outbound_msg = EmailMessage(
+        thread_id=thread.id,
+        message_id_header=outbound_message_id,
+        sender=f"{app_settings.firm_name} <{from_address}>",
+        recipient=", ".join(to_list),
+        to_recipients=to_list,
+        cc_recipients=cc_list,
+        body_text=display_body,
+        received_at=datetime.now(timezone.utc),
+        direction=MessageDirection.outbound,
+        is_processed=True,
+    )
+    db.add(outbound_msg)
+    db.flush()
+
+    log_action(
+        db,
+        action="thread.forwarded",
+        entity_type="email_thread",
+        entity_id=str(thread.id),
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "to": to_list,
+            "cc": cc_list,
+            "source_message_id": str(msg.id),
+            "idempotency_key": idempotency_key,
+            "outbound_message_id": str(outbound_msg.id),
+        },
+    )
+
+    db.commit()
+    db.refresh(outbound_msg)
+    return EmailMessageResponse.model_validate(outbound_msg)
 
 
 @router.post("/{thread_id}/categorize", response_model=EmailThreadResponse, dependencies=[Depends(require_csrf)])
@@ -1983,9 +2210,65 @@ def update_draft(
             detail=f"Cannot modify a draft with status '{draft.status.value}'.",
         )
 
+    changed = False
+
     if body.body_text is not None:
         draft.body_text = body.body_text
-        # Auto-transition to 'edited' when body text changes and increment version
+        changed = True
+
+    if body.to_recipients is not None or body.cc_recipients is not None:
+        # Recipients are locked once a draft is approved (or beyond) — the
+        # UI shows a read-only pill view at that point. This is stricter than
+        # the body-text rule above (which still allows editing an approved
+        # draft, demoting it back to edited); recipients require an explicit
+        # revert first.
+        if draft.status not in (DraftStatus.pending, DraftStatus.edited):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot edit recipients on a draft with status '{draft.status.value}'. "
+                    "Only pending or edited drafts can have their recipients changed."
+                ),
+            )
+
+        new_to = draft.to_recipients
+        new_cc = draft.cc_recipients
+
+        if body.to_recipients is not None:
+            if len(body.to_recipients) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="At least one To recipient is required.",
+                )
+            try:
+                new_to = parse_recipient_items(body.to_recipients)
+            except InvalidRecipient as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+            if not new_to:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="At least one valid To recipient is required.",
+                )
+
+        if body.cc_recipients is not None:
+            try:
+                new_cc = parse_recipient_items(body.cc_recipients)
+            except InvalidRecipient as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+        try:
+            enforce_recipient_cap(new_to or [], new_cc or [])
+        except InvalidRecipient as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+        draft.to_recipients = new_to
+        draft.cc_recipients = new_cc
+        changed = True
+
+    if changed:
+        # Auto-transition to 'edited' when a pending/approved draft is
+        # modified. Approved drafts reaching this point were only touched
+        # via body_text (recipients already raised 409 above for approved).
         if draft.status in (DraftStatus.pending, DraftStatus.approved):
             draft.status = DraftStatus.edited
         draft.version += 1
@@ -2112,6 +2395,8 @@ def create_manual_draft(
         original_body_text=body.body_text,
         status=DraftStatus.edited,
         version=1,
+        to_recipients=[thread.client_email],
+        cc_recipients=[],
     )
     db.add(draft)
 
@@ -2135,30 +2420,17 @@ def create_manual_draft(
 
 # ── Compose a brand-new outbound email ───────────────────────────────────────
 
-_COMPOSE_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-
-def _parse_recipient_list(raw: str | None) -> list[str]:
-    """Split a comma/semicolon-separated recipient string into validated, de-duped
-    addresses (order preserved). Raises 422 on any malformed address."""
-    if not raw:
-        return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in re.split(r"[;,]", raw):
-        addr = part.strip()
-        if not addr:
-            continue
-        if not _COMPOSE_EMAIL_RE.match(addr):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invalid email address: {addr!r}",
-            )
-        key = addr.lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(addr)
-    return out
+def _parse_recipients_or_422(raw: str | None) -> list[str]:
+    """Router-layer wrapper: parse_recipient_list, but surface a 422 instead
+    of the raw InvalidRecipient. Shared by compose/forward form handlers."""
+    try:
+        return parse_recipient_list(raw)
+    except InvalidRecipient as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
 
 
 @router.post(
@@ -2193,13 +2465,17 @@ def compose_email(
         get_email_provider,
     )
 
-    to_list = _parse_recipient_list(to)
+    to_list = _parse_recipients_or_422(to)
     if not to_list:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="At least one valid 'to' recipient is required.",
         )
-    cc_list = _parse_recipient_list(cc)
+    cc_list = _parse_recipients_or_422(cc)
+    try:
+        enforce_recipient_cap(to_list, cc_list)
+    except InvalidRecipient as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
     subject = (subject or "").strip()
     if not subject:
@@ -2271,6 +2547,8 @@ def compose_email(
         message_id_header=outbound_message_id,
         sender=f"{app_settings.firm_name} <{from_address}>",
         recipient=", ".join(to_list),
+        to_recipients=to_list,
+        cc_recipients=cc_list,
         body_text=final_body,
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,

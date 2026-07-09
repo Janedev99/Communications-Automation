@@ -61,6 +61,11 @@ class EmailMessageResponse(BaseModel):
     direction: MessageDirection
     is_processed: bool
     attachments: list[AttachmentInfo] | None = None
+    # Reply-all support (FEAT/reply-recipients): original To/CC for inbound
+    # messages, or what we actually sent for outbound messages. Null on
+    # legacy rows — the UI falls back to `recipient` for To-only display.
+    to_recipients: list[str] | None = None
+    cc_recipients: list[str] | None = None
     # Per-message save state — mirrors EmailThread save fields.
     # saved_by_name is omitted here (cf. EmailThreadResponse) because
     # messages are usually serialised in bulk via from_attributes and
@@ -206,11 +211,25 @@ class DraftResponseResponse(BaseModel):
     # T1.12: Idempotent send tracking
     send_attempts: int = 0
     send_idempotency_key: str | None = None
+    # Reply-all support (FEAT/reply-recipients): the effective recipients this
+    # draft will send to. Null means "use the legacy default"
+    # ([thread.client_email] / []) — the send path resolves that fallback.
+    to_recipients: list[str] | None = None
+    cc_recipients: list[str] | None = None
 
 
 class UpdateDraftRequest(BaseModel):
-    """Edit draft text. Use dedicated approve/reject/send endpoints for status transitions."""
+    """Edit draft text and/or recipients. Use dedicated approve/reject/send
+    endpoints for status transitions.
+
+    to_recipients / cc_recipients: None = unchanged; an explicit [] on
+    cc_recipients clears Cc. An explicit [] on to_recipients is rejected
+    (422) — a draft must always have at least one To recipient. Only
+    editable while the draft is pending or edited (see api/emails.py).
+    """
     body_text: str | None = None
+    to_recipients: list[str] | None = None
+    cc_recipients: list[str] | None = None
 
 
 class GenerateDraftRequest(BaseModel):
@@ -397,4 +416,12 @@ class BulkActionResponse(BaseModel):
     succeeded: int
     failed: int
     errors: list[str] = Field(default_factory=list)
+
+
+# ── Reply-all / forward ────────────────────────────────────────────────────────
+
+class ReplyAllRecipientsResponse(BaseModel):
+    """Response for GET .../drafts/{draft_id}/reply-all-recipients."""
+    to: list[str]
+    cc: list[str]
 

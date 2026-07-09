@@ -10,6 +10,7 @@ import {
   BookmarkCheck,
   BookPlus,
   CheckCircle,
+  Forward,
   MoreVertical,
   RotateCcw,
   ShieldAlert,
@@ -25,6 +26,7 @@ import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { MessageBubble } from "./message-bubble";
 import { SaveThreadDialog } from "./save-thread-dialog";
+import { ForwardMessageDialog } from "./forward-message-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   DropdownMenu,
@@ -79,6 +81,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
   const [showTrashConfirm, setShowTrashConfirm] = useState(false);
   const [showSpamConfirm, setShowSpamConfirm] = useState(false);
   const [showAddToKbConfirm, setShowAddToKbConfirm] = useState(false);
+  const [showForwardDialog, setShowForwardDialog] = useState(false);
 
   const openSaveForThread = () => {
     setSaveMessageId(null);
@@ -96,6 +99,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
   const isClosed = thread.status === "closed";
   const isAssignedToMe = !!user && thread.assigned_to_id === user.id;
+  // Forward operates on the latest INBOUND message — with none, the dialog
+  // would open but could never submit. Disable both triggers up front.
+  const hasInboundMessage = thread.messages.some((m) => m.direction === "inbound");
 
   const handleClaim = async () => {
     if (!user || actionLoading) return;
@@ -333,6 +339,18 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               Add to KB
             </Button>
 
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowForwardDialog(true)}
+              disabled={!!actionLoading || !hasInboundMessage}
+              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              title={hasInboundMessage ? "Forward this message to someone else" : "Nothing to forward yet"}
+            >
+              <Forward className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Forward
+            </Button>
+
             {/* Trash + spam: hidden when the thread is already closed
                 (closed threads should be reopened first, not trashed,
                 so the audit trail preserves intent). */}
@@ -468,6 +486,16 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
                 <DropdownMenuItem onClick={() => setShowAddToKbConfirm(true)}>
                   <BookPlus className="w-4 h-4" strokeWidth={1.75} />
                   Add to KB
+                </DropdownMenuItem>
+
+                {/* Forward */}
+                <DropdownMenuItem
+                  onClick={() => setShowForwardDialog(true)}
+                  disabled={!hasInboundMessage}
+                  title={hasInboundMessage ? undefined : "Nothing to forward yet"}
+                >
+                  <Forward className="w-4 h-4" strokeWidth={1.75} />
+                  Forward
                 </DropdownMenuItem>
 
                 {/* Spam + Delete — hidden when closed */}
@@ -674,6 +702,13 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
         confirmVariant="destructive"
         loading={actionLoading === "spam"}
         onConfirm={handleSpam}
+      />
+
+      <ForwardMessageDialog
+        open={showForwardDialog}
+        onOpenChange={setShowForwardDialog}
+        thread={thread}
+        onForwarded={() => onThreadChange?.()}
       />
 
       <ConfirmDialog

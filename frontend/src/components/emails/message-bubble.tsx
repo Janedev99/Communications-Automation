@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Bookmark, BookmarkCheck, Download, Loader2, Paperclip } from "lucide-react";
+import { Bookmark, BookmarkCheck, ChevronDown, Download, Loader2, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { unsaveMessage } from "@/hooks/use-emails";
 import { downloadBinary } from "@/lib/api";
@@ -9,6 +9,84 @@ import { cn, formatDate } from "@/lib/utils";
 import type { AttachmentInfo, EmailMessage } from "@/lib/types";
 import { MessageBody } from "./message-body";
 import { MessageHtmlBody } from "./message-html-body";
+
+/**
+ * To/CC disclosure line, rendered under the sender name and above the body.
+ * Legacy rows (to_recipients/cc_recipients null) fall back to the singular
+ * `recipient` field as a To-only display. A single To with no Cc renders as
+ * a plain truncated line; multiple To or any Cc becomes a disclosure button
+ * that expands to the full stacked To/Cc lists.
+ */
+function MessageRecipientsLine({
+  message,
+  variant,
+}: {
+  message: EmailMessage;
+  variant: "inbound" | "outbound";
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const to =
+    message.to_recipients && message.to_recipients.length > 0
+      ? message.to_recipients
+      : message.recipient
+      ? [message.recipient]
+      : [];
+  const cc = message.cc_recipients ?? [];
+
+  if (to.length === 0 && cc.length === 0) return null;
+
+  const mutedClass =
+    variant === "inbound" ? "text-muted-foreground" : "text-primary-foreground/70";
+
+  // Single To, no Cc — plain line, no disclosure needed.
+  if (to.length <= 1 && cc.length === 0) {
+    return (
+      <p className={cn("text-[10px] truncate mb-1.5", mutedClass)} title={to[0]}>
+        To: {to[0]}
+      </p>
+    );
+  }
+
+  const fullTitle = [
+    to.length > 0 ? `To: ${to.join(", ")}` : null,
+    cc.length > 0 ? `Cc: ${cc.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" — ");
+  const summary =
+    to.length > 0
+      ? `To: ${to[0]}${to.length > 1 ? ` +${to.length - 1}` : ""}`
+      : `Cc: ${cc.length} recipient${cc.length === 1 ? "" : "s"}`;
+
+  return (
+    <div className="mb-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Hide recipients for this message" : "Show recipients for this message"}
+        title={fullTitle}
+        className={cn(
+          "inline-flex items-center gap-1 text-[10px] hover:underline",
+          mutedClass,
+        )}
+      >
+        <span className="truncate max-w-[200px]">{summary}</span>
+        <ChevronDown
+          className={cn("w-3 h-3 flex-shrink-0 transition-transform", expanded && "rotate-180")}
+          aria-hidden="true"
+        />
+      </button>
+      {expanded && (
+        <div className={cn("mt-1 space-y-0.5 text-[10px]", mutedClass)}>
+          {to.length > 0 && <p className="break-all">To: {to.join(", ")}</p>}
+          {cc.length > 0 && <p className="break-all">Cc: {cc.join(", ")}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface MessageBubbleProps {
   message: EmailMessage;
@@ -191,6 +269,7 @@ export function MessageBubble({
           <p className="text-[11px] font-medium text-muted-foreground mb-1.5 truncate pr-8">
             {message.sender}
           </p>
+          <MessageRecipientsLine message={message} variant="inbound" />
           {message.body_html ? (
             <MessageHtmlBody
               html={message.body_html}
@@ -239,6 +318,7 @@ export function MessageBubble({
         <p className="text-[11px] font-medium text-primary-foreground/70 mb-1.5 truncate pl-8">
           {message.sender}
         </p>
+        <MessageRecipientsLine message={message} variant="outbound" />
         <MessageBody text={message.body_text} variant="outbound" />
         {hasAttachments && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">

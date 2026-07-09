@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_client_ip, get_current_user, require_csrf
+from app.config import get_settings
 from app.database import get_db
 from app.models.email import (
     DraftResponse,
@@ -50,6 +51,7 @@ from app.schemas.email import (
     DraftResponseResponse,
     GenerateDraftRequest,
     RejectDraftRequest,
+    ReplyAllRecipientsResponse,
     SendDraftRequest,
 )
 from app.services.draft_generator import get_draft_generator
@@ -57,6 +59,7 @@ from app.services.email_provider import get_email_provider
 from app.services.llm_client import LLMError
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
+from app.utils.recipients import InvalidRecipient, compute_reply_all
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +242,53 @@ def get_draft(
     _get_thread_or_404(thread_id, db)
     draft = _get_draft_or_404(draft_id, thread_id, db)
     return DraftResponseResponse.model_validate(draft)
+
+
+# ── Reply-all recipients ──────────────────────────────────────────────────────
+
+@router.get(
+    "/emails/{thread_id}/drafts/{draft_id}/reply-all-recipients",
+    response_model=ReplyAllRecipientsResponse,
+)
+def get_reply_all_recipients(
+    thread_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReplyAllRecipientsResponse:
+    """
+    Compute the reply-all recipient set from the thread's latest inbound
+    message: the original sender plus everyone else on the original To/CC,
+    minus the firm's own mailbox. Staff uses this to expand a draft's
+    recipients beyond "reply to sender only" before sending — the draft
+    itself is not modified by this GET; the caller (frontend) applies the
+    result via the PUT edit endpoint.
+    """
+    _get_thread_or_404(thread_id, db)
+    _get_draft_or_404(draft_id, thread_id, db)
+
+    inbound_messages = db.execute(
+        select(EmailMessage)
+        .where(
+            EmailMessage.thread_id == thread_id,
+            EmailMessage.direction == MessageDirection.inbound,
+        )
+        .order_by(EmailMessage.received_at.desc())
+    ).scalars().all()
+    if not inbound_messages:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This thread has no inbound messages to reply to.",
+        )
+    latest_inbound = inbound_messages[0]
+
+    settings = get_settings()
+    try:
+        to_list, cc_list = compute_reply_all(latest_inbound, settings)
+    except InvalidRecipient as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    return ReplyAllRecipientsResponse(to=to_list, cc=cc_list)
 
 
 # ── Approve ───────────────────────────────────────────────────────────────────
@@ -504,6 +554,21 @@ def send_draft(
             ),
         )
 
+    # Fix the effective recipients on the draft row BEFORE the idempotency
+    # commit below, so a retry (e.g. after a provider failure) reads back the
+    # identical set instead of recomputing the NULL fallback. NULL fallback
+    # is [thread.client_email] / [] — the same default a plain reply has
+    # always used, so pre-migration drafts keep working unchanged.
+    if draft.to_recipients is None:
+        draft.to_recipients = [thread.client_email]
+    if draft.cc_recipients is None:
+        draft.cc_recipients = []
+    if not draft.to_recipients:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This draft has no recipients to send to.",
+        )
+
     # Read uploaded attachments into memory, enforcing the total-size cap before
     # we touch the idempotency machinery — a too-large request fails fast (413)
     # without recording a send attempt.
@@ -605,13 +670,24 @@ def send_draft(
         db, draft.body_text, signature_for_sender(db, current_user)
     )
 
+    # Effective recipients — fixed onto the draft row above, before the
+    # idempotency commit, so a retry sends to the identical set. To-folding
+    # (extra To addresses ride along as Cc) matches compose_email's proven
+    # pattern since the provider's send_email takes a single `to`.
+    to_list = draft.to_recipients
+    cc_list = draft.cc_recipients or []
+    primary_to = to_list[0]
+    effective_cc = to_list[1:] + cc_list
+
     # ── Step 3: Persist outbound message record BEFORE sending ───────────────
 
     outbound_msg = EmailMessage(
         thread_id=thread.id,
         message_id_header=outbound_message_id,
         sender=f"{app_settings.firm_name} <{from_address}>",
-        recipient=thread.client_email,
+        recipient=", ".join(to_list),
+        to_recipients=to_list,
+        cc_recipients=cc_list,
         body_text=final_body,
         received_at=datetime.now(timezone.utc),
         direction=MessageDirection.outbound,
@@ -647,9 +723,10 @@ def send_draft(
     try:
         provider.connect()
         actual_message_id = provider.send_email(
-            to=thread.client_email,
+            to=primary_to,
             subject=reply_subject,
             body_text=final_body,
+            cc=effective_cc,
             reply_to_message_id=reply_to_message_id,
             references_header=references_header,
             message_id=outbound_message_id,
@@ -697,6 +774,8 @@ def send_draft(
         details={
             "thread_id": str(thread_id),
             "client_email": thread.client_email,
+            "to": to_list,
+            "cc": cc_list,
             "reply_subject": reply_subject,
             "outbound_message_id": str(outbound_msg.id),
             "message_id_header": outbound_msg.message_id_header,

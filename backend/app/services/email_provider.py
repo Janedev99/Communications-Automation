@@ -100,6 +100,11 @@ class RawEmail:
     body_text: str | None
     body_html: str | None
     received_at: datetime
+    # Full original To/CC address lists (FEAT/reply-recipients) — feeds
+    # Reply All. Empty list (not None) when the provider reported zero
+    # recipients in that slot; email_intake.py stores an empty list as NULL.
+    to_recipients: list[str] = field(default_factory=list)
+    cc_recipients: list[str] = field(default_factory=list)
     raw_headers: dict[str, str] = field(default_factory=dict)
     # Optional provider-native thread identifier
     provider_thread_id: str | None = None
@@ -262,6 +267,29 @@ class EmailProvider(ABC):
             f"{type(self).__name__} does not support move_message"
         )
 
+    def forward_message(
+        self,
+        *,
+        internet_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        comment: str | None = None,
+    ) -> str:
+        """
+        Forward an already-polled message to new recipients, optionally with a
+        comment prepended above the quoted original.
+
+        Returns a Message-ID (or provider correlation id) for the forwarded
+        copy — same best-effort contract as send_email's returned id.
+
+        Default implementation raises — providers that can't support
+        server-side forwarding should leave this as the abstract raise so the
+        API surface degrades clearly (501) rather than silently failing.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support forward_message"
+        )
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -320,7 +348,7 @@ class MSGraphProvider(EmailProvider):
         url = (
             f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/Inbox/messages"
             "?$filter=isRead eq false"
-            "&$select=id,subject,from,toRecipients,body,bodyPreview,"
+            "&$select=id,subject,from,toRecipients,ccRecipients,body,bodyPreview,"
             "receivedDateTime,conversationId,internetMessageId,"
             "internetMessageHeaders,hasAttachments,attachments"
             "&$expand=attachments($select=id,name,size,contentType,isInline)"
@@ -381,6 +409,16 @@ class MSGraphProvider(EmailProvider):
             # production data: iCloud-sent emails routinely omit the subject).
             # Same for `from`: occasional system messages have a null `from`.
             sender_obj = (msg.get("from") or {}).get("emailAddress") or {}
+            to_addrs = [
+                r.get("emailAddress", {}).get("address")
+                for r in (msg.get("toRecipients") or [])
+                if r.get("emailAddress", {}).get("address")
+            ]
+            cc_addrs = [
+                r.get("emailAddress", {}).get("address")
+                for r in (msg.get("ccRecipients") or [])
+                if r.get("emailAddress", {}).get("address")
+            ]
             results.append(RawEmail(
                 message_id=msg.get("internetMessageId") or msg["id"],
                 subject=msg.get("subject") or "(no subject)",
@@ -391,6 +429,8 @@ class MSGraphProvider(EmailProvider):
                 received_at=datetime.fromisoformat(
                     msg["receivedDateTime"].replace("Z", "+00:00")
                 ),
+                to_recipients=to_addrs,
+                cc_recipients=cc_addrs,
                 raw_headers=raw_headers,
                 provider_thread_id=msg.get("conversationId"),
                 in_reply_to=raw_headers.get("In-Reply-To"),
@@ -644,6 +684,93 @@ class MSGraphProvider(EmailProvider):
                 internet_message_id, destination, exc, exc.response.text[:500],
             )
             raise
+
+    def forward_message(
+        self,
+        *,
+        internet_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        comment: str | None = None,
+    ) -> str:
+        """
+        Forward a message via Graph's createForward + send flow.
+
+        createForward drafts a forward copy — Graph auto-quotes the original
+        body and carries its attachments — with `comment` prepended, then
+        POST .../send dispatches it. Returns the draft's internetMessageId
+        when Graph reports one; otherwise falls back to a local correlation
+        id (mirrors send_email's contract for the no-attachment path).
+
+        Raises LookupError if internet_message_id can't be resolved in the
+        mailbox (deleted / moved) — the caller maps that to 404.
+        """
+        import uuid as _uuid
+
+        mailbox = self._settings.msgraph_mailbox
+        graph_id = self._resolve_graph_message_id(internet_message_id)
+        if graph_id is None:
+            raise LookupError(
+                f"Message {internet_message_id!r} not found in mailbox — "
+                "may have been deleted or moved"
+            )
+
+        payload: dict[str, Any] = {
+            "comment": comment or "",
+            "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+        }
+        if cc:
+            payload["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
+
+        try:
+            resp = self._client.post(
+                f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}/createForward",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            created = resp.json()
+            draft_id = created["id"]
+            forwarded_message_id = created.get("internetMessageId")
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "MSGraph createForward failed: %s | %s", exc, exc.response.text[:500]
+            )
+            raise
+
+        try:
+            send_resp = self._client.post(
+                f"{self.GRAPH_BASE}/users/{mailbox}/messages/{draft_id}/send",
+                headers=self._headers(),
+            )
+            send_resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "MSGraph forward send failed: %s | %s", exc, exc.response.text[:500]
+            )
+            # createForward succeeded but send didn't — an orphaned draft
+            # would otherwise sit in Jane's Drafts folder forever (and could
+            # be accidentally sent later by anyone with mailbox access).
+            # Best-effort cleanup: never let a delete failure mask the
+            # original send error the caller needs to see.
+            try:
+                cleanup = self._client.delete(
+                    f"{self.GRAPH_BASE}/users/{mailbox}/messages/{draft_id}",
+                    headers=self._headers(),
+                )
+                cleanup.raise_for_status()
+            except Exception as cleanup_exc:
+                logger.error(
+                    "MSGraph: failed to delete orphaned forward draft %s: %s",
+                    draft_id, cleanup_exc,
+                )
+            raise
+
+        logger.info("MSGraph: forwarded message %s to %s", internet_message_id, to)
+        if forwarded_message_id:
+            return forwarded_message_id
+        domain = mailbox.split("@")[-1] if "@" in mailbox else "localhost"
+        return f"<fwd-{_uuid.uuid4()}@{domain}>"
 
     def send_email(
         self,
@@ -930,6 +1057,17 @@ class IMAPProvider(EmailProvider):
         sender = _decode_header_value(msg.get("From", ""))
         recipient = _decode_header_value(msg.get("To", self._settings.imap_username))
 
+        # Full To/Cc address lists (FEAT/reply-recipients) — getaddresses parses
+        # "Name <addr>, Name2 <addr2>" forms; decode the raw header first so
+        # RFC 2047-encoded display names don't interfere with address extraction.
+        from email.utils import getaddresses
+        to_recipients = [
+            addr for _, addr in getaddresses([_decode_header_value(msg.get("To", ""))]) if addr
+        ]
+        cc_recipients = [
+            addr for _, addr in getaddresses([_decode_header_value(msg.get("Cc", ""))]) if addr
+        ]
+
         # Parse received date
         date_str = msg.get("Date", "")
         try:
@@ -989,6 +1127,8 @@ class IMAPProvider(EmailProvider):
             body_text=body_text,
             body_html=body_html,
             received_at=received_at,
+            to_recipients=to_recipients,
+            cc_recipients=cc_recipients,
             raw_headers=raw_headers,
             in_reply_to=msg.get("In-Reply-To"),
             references=msg.get("References"),

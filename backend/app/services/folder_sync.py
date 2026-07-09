@@ -1,7 +1,8 @@
 """Reflect in-app thread filing into the real Outlook mailbox (iteration B).
 
 Feature-flagged (OUTLOOK_FOLDER_SYNC, default off). On the existing filing
-triggers, create a client folder under Inbox and move the thread's INBOUND
+triggers, create a client folder at the mailbox root (a sibling of Inbox —
+where Outlook users create their own folders) and move the thread's INBOUND
 messages into it. Never raises — a filing sync must not break the send/save
 that triggered it. Never deletes anything.
 """
@@ -28,9 +29,9 @@ def sync_thread_to_outlook_folder(
     actor_id: uuid.UUID | None = None,
     request_ip: str | None = None,
 ) -> None:
-    """Create the client folder under Inbox (if needed) and move the thread's
-    inbound messages into it. No-op unless the flag is on and the provider is
-    MSGraph. Logs and swallows all failures."""
+    """Create the client folder at the mailbox root (if needed) and move the
+    thread's inbound messages into it. No-op unless the flag is on and the
+    provider is MSGraph. Logs and swallows all failures."""
     settings = get_settings()
     if not settings.outlook_folder_sync:
         return

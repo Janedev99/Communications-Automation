@@ -58,12 +58,15 @@ def test_find_or_create_returns_existing_id_without_post(monkeypatch):
                     "childFolderCount": 0, "totalItemCount": 0, "unreadItemCount": 0}]}
     ])
     p = _graph(monkeypatch, client)
-    # Case-insensitive match — no folder is created.
+    # Case-insensitive match against ROOT folders — no folder is created.
     assert p.find_or_create_folder("caroline apex") == "F1"
     assert all(m != "POST" for m, _, _ in client.calls)
+    # Match must query the mailbox root (sibling-of-Inbox level), not Inbox.
+    get = [c for c in client.calls if c[0] == "GET"][0]
+    assert "/mailFolders" in get[1] and "childFolders" not in get[1]
 
 
-def test_find_or_create_creates_when_absent(monkeypatch):
+def test_find_or_create_creates_at_root_when_absent(monkeypatch):
     client = _RecordingClient(
         get_payloads=[{"value": []}],
         post_payloads=[{"id": "NEW1"}],
@@ -71,7 +74,10 @@ def test_find_or_create_creates_when_absent(monkeypatch):
     p = _graph(monkeypatch, client)
     assert p.find_or_create_folder("Doug Conquest") == "NEW1"
     post = [c for c in client.calls if c[0] == "POST"][0]
-    assert "/mailFolders/inbox/childFolders" in post[1]
+    # Created at the mailbox root — where Jane creates her own folders —
+    # NOT under Inbox.
+    assert post[1].endswith("/mailFolders")
+    assert "childFolders" not in post[1]
     assert post[2] == {"displayName": "Doug Conquest"}
 
 

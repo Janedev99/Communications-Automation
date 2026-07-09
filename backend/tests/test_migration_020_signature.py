@@ -30,13 +30,22 @@ mig = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mig)
 
 
-def test_new_signature_is_old_minus_closing_prefix():
+def test_new_signature_matches_requested_default_block():
+    # Old = the exact seed (carries both the closing and the contact block).
     assert mig._OLD_SIGNATURE.startswith(mig._CLOSING_PREFIX)
-    assert mig._NEW_SIGNATURE == mig._OLD_SIGNATURE[len(mig._CLOSING_PREFIX):]
-    # Sanity: the name/title block survives, the closing is gone.
+    assert "Office:" in mig._OLD_SIGNATURE
+    # New = client-requested default (PDF 2026-07): name/title/firm/address only,
+    # derived from the seed with the closing + contact block removed.
     assert mig._NEW_SIGNATURE.startswith("Jane M. Schilmoeller, CPA")
+    assert "Business Growth and Profitability Advisor" in mig._NEW_SIGNATURE
+    assert "Schilmoeller & Schoenfield, PC" in mig._NEW_SIGNATURE
+    assert "3131 Eastside Street, Suite 430" in mig._NEW_SIGNATURE
+    assert mig._NEW_SIGNATURE.endswith("Houston, Texas  77098")
+    # The closing AND the contact block are gone.
     assert "Thanks so much," not in mig._NEW_SIGNATURE
-    assert mig._NEW_SIGNATURE.endswith("Fax: (346) 415-6337")
+    assert "Office:" not in mig._NEW_SIGNATURE
+    assert "Direct Line:" not in mig._NEW_SIGNATURE
+    assert "Fax:" not in mig._NEW_SIGNATURE
 
 
 def _make_user(db, email, signature):

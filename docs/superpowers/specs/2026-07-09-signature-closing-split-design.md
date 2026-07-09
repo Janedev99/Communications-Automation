@@ -49,7 +49,11 @@ holds the closing.
    No config table, no new storage. Staff edit it in the body if they want.
 2. **Jane's live signature — stripped by a migration (`020`).** Idempotent,
    guarded, rewrites `users.signature` for `jane@schilcpa.com` to the
-   name/title/firm block only. Reproducible on Coolify via its own
+   client-requested default block. Per Email Changes.pdf (2026-07) the desired
+   default signature is the name / title / firm / address block ONLY — it omits
+   BOTH the closing AND the trailing contact lines (Office / Direct Line / Fax).
+   The migration removes both, deriving the new value from the seed so the
+   firm's exact formatting is preserved. Reproducible on Coolify via its own
    `alembic upgrade`. Requires a prod DB write → explicit approval before
    running (same protocol as 019).
 3. **Existing drafts — left as-is, no bulk regeneration.** Standing rule:
@@ -76,12 +80,18 @@ holds the closing.
 
 - Idempotent + guarded (mirrors 018's approach — bake the known prod value,
   no app-config import).
-- `upgrade()`: `UPDATE users SET signature = <name/title/firm block>`
-  `WHERE email = 'jane@schilcpa.com' AND signature = <exact old value with closing>`.
+- Target new value = the client-requested default (PDF): name / title / firm /
+  address only. Derived from the seed as
+  `_OLD_SIGNATURE.removeprefix(closing).split("\n\nOffice:")[0]` — drops the
+  leading closing AND the trailing Office/Direct Line/Fax block, keeping the
+  seed's exact formatting.
+- `upgrade()`: `UPDATE users SET signature = <new block>`
+  `WHERE email = 'jane@schilcpa.com' AND signature = <exact old value>`.
   Guarding on the exact old value means: if Jane has already edited her
   signature, the migration no-ops (won't clobber her change) — same spirit as
   017/018's `ON CONFLICT DO NOTHING` / `WHERE signature IS NULL` guards.
-- `downgrade()`: restore the closing-prefixed form under the same guard.
+- `downgrade()`: restore the seeded (closing + contact block) form under the
+  same guard.
 - Does not touch `company_signature` or `legacy_draft_signature`.
 
 ### 3. Existing drafts

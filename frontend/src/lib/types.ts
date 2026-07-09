@@ -164,6 +164,15 @@ export interface SavedFolder {
   message_count: number;
 }
 
+/** A real Outlook mail folder (read-only, from GET /api/v1/mailbox/folders). */
+export interface OutlookFolder {
+  id: string;
+  display_name: string;
+  child_folder_count: number;
+  total_item_count: number;
+  unread_item_count: number;
+}
+
 export interface EmailThreadListItem {
   id: string;
   subject: string;

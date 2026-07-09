@@ -19,6 +19,7 @@ import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { CategoryBadge } from "@/components/emails/category-badge";
+import { OutlookFolderTree } from "@/components/emails/outlook-folder-tree";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -318,6 +319,12 @@ export default function SavedPage() {
             </ul>
           )}
         </section>
+      </div>
+
+      {/* Jane's real Outlook folder structure (read-only). Separate from the
+          app's own saved folders above — this reflects the actual mailbox. */}
+      <div className="mt-6">
+        <OutlookFolderTree />
       </div>
 
       {/* Folder-delete confirm. The backend follows the Outlook /

@@ -86,6 +86,11 @@ export interface EmailMessage {
   direction: "inbound" | "outbound";
   is_processed: boolean;
   attachments: AttachmentInfo[] | null;
+  /** Reply-all support: original To/CC for inbound messages, or what we
+   *  actually sent for outbound messages. Null on legacy rows — fall back
+   *  to `recipient` for a To-only display. */
+  to_recipients: string[] | null;
+  cc_recipients: string[] | null;
   /** Per-message save state (independent from thread.is_saved) */
   is_saved: boolean;
   saved_folder: string | null;
@@ -157,6 +162,15 @@ export interface SavedFolder {
   count: number;
   thread_count: number;
   message_count: number;
+}
+
+/** A real Outlook mail folder (read-only, from GET /api/v1/mailbox/folders). */
+export interface OutlookFolder {
+  id: string;
+  display_name: string;
+  child_folder_count: number;
+  total_item_count: number;
+  unread_item_count: number;
 }
 
 export interface EmailThreadListItem {
@@ -247,6 +261,16 @@ export interface DraftResponse {
   send_attempts: number;
   /** Server-assigned or client-supplied idempotency key for the last send attempt. */
   send_idempotency_key: string | null;
+  /** Reply-all support: the effective recipients this draft will send to.
+   *  Null means "use the legacy default" ([thread.client_email] / []). */
+  to_recipients: string[] | null;
+  cc_recipients: string[] | null;
+}
+
+/** Response for GET .../drafts/{draft_id}/reply-all-recipients. */
+export interface ReplyAllRecipients {
+  to: string[];
+  cc: string[];
 }
 
 // ── System Status ─────────────────────────────────────────────────────────────

@@ -228,6 +228,13 @@ class EmailMessage(Base):
     message_id_header: Mapped[str] = mapped_column(String(998), nullable=False, unique=True)
     sender: Mapped[str] = mapped_column(String(255), nullable=False)
     recipient: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Reply-all support (FEAT/reply-recipients): the original To/CC for an
+    # inbound message, or what we actually sent for an outbound message. NULL
+    # means legacy/unknown (rows stored before this field existed, or a
+    # provider that never reported them) — callers must degrade gracefully
+    # (fall back to `recipient` for To-only display; treat CC as empty).
+    to_recipients: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    cc_recipients: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     received_at: Mapped[datetime] = mapped_column(
@@ -315,6 +322,14 @@ class DraftResponse(Base):
     # T1.12: Idempotent send tracking — prevent double-send on retry
     send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     send_idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Reply-all support (FEAT/reply-recipients): the EFFECTIVE recipients this
+    # draft will send to when approved. Set at draft creation to
+    # [thread.client_email] / []. NULL means "use the legacy default" — the
+    # send path falls back to the same [thread.client_email] / [] pair a
+    # plain reply has always used, so pre-migration drafts keep working.
+    to_recipients: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    cc_recipients: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     thread: Mapped["EmailThread"] = relationship("EmailThread", back_populates="drafts")

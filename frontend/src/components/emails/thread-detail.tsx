@@ -10,7 +10,9 @@ import {
   BookmarkCheck,
   BookPlus,
   CheckCircle,
+  Forward,
   MoreVertical,
+  Printer,
   RotateCcw,
   ShieldAlert,
   ShieldX,
@@ -25,6 +27,7 @@ import { ThreadStatusBadge } from "./thread-status-badge";
 import { CategoryBadge } from "./category-badge";
 import { MessageBubble } from "./message-bubble";
 import { SaveThreadDialog } from "./save-thread-dialog";
+import { ForwardMessageDialog } from "./forward-message-dialog";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   DropdownMenu,
@@ -79,6 +82,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
   const [showTrashConfirm, setShowTrashConfirm] = useState(false);
   const [showSpamConfirm, setShowSpamConfirm] = useState(false);
   const [showAddToKbConfirm, setShowAddToKbConfirm] = useState(false);
+  const [showForwardDialog, setShowForwardDialog] = useState(false);
 
   const openSaveForThread = () => {
     setSaveMessageId(null);
@@ -96,6 +100,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
   const isClosed = thread.status === "closed";
   const isAssignedToMe = !!user && thread.assigned_to_id === user.id;
+  // Forward operates on the latest INBOUND message — with none, the dialog
+  // would open but could never submit. Disable both triggers up front.
+  const hasInboundMessage = thread.messages.some((m) => m.direction === "inbound");
 
   const handleClaim = async () => {
     if (!user || actionLoading) return;
@@ -222,8 +229,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-card">
       {/* Thread metadata header */}
       <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
+        {/* Stack the subject above the action toolbar below xl so the subject
+            gets full width — the 7-button toolbar is fixed-width and would
+            otherwise squeeze the subject to one-word-per-line at 1024–1280px.
+            Side-by-side returns at xl+. */}
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between xl:gap-4">
+          <div className="min-w-0 xl:flex-1">
             <h2 className="text-lg font-semibold text-foreground leading-snug tracking-tight">
               {thread.subject}
             </h2>
@@ -250,7 +261,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               and the Conversation|Draft segmented control: below lg the
               compact mobile cluster is used so tablet portrait (640–1023px)
               never shows this full 6-button row in a constrained header. */}
-          <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
+          <div className="hidden lg:flex flex-wrap items-center gap-2 flex-shrink-0 print:hidden">
             {thread.is_saved ? (
               // Segmented control: the folder label and the remove (✕) action
               // share one bordered pill with a divider, so the ✕ reads as part
@@ -333,6 +344,29 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               Add to KB
             </Button>
 
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowForwardDialog(true)}
+              disabled={!!actionLoading || !hasInboundMessage}
+              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              title={hasInboundMessage ? "Forward this message to someone else" : "Nothing to forward yet"}
+            >
+              <Forward className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Forward
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => window.print()}
+              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              title="Print this conversation"
+            >
+              <Printer className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Print
+            </Button>
+
             {/* Trash + spam: hidden when the thread is already closed
                 (closed threads should be reopened first, not trashed,
                 so the audit trail preserves intent). */}
@@ -389,7 +423,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           </div>
 
           {/* Action buttons — mobile + tablet (below lg) */}
-          <div className="flex lg:hidden items-center gap-2 flex-shrink-0">
+          <div className="flex lg:hidden items-center gap-2 flex-shrink-0 print:hidden">
             {/* Resolve / Reopen */}
             {isClosed ? (
               <Button
@@ -470,6 +504,22 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
                   Add to KB
                 </DropdownMenuItem>
 
+                {/* Forward */}
+                <DropdownMenuItem
+                  onClick={() => setShowForwardDialog(true)}
+                  disabled={!hasInboundMessage}
+                  title={hasInboundMessage ? undefined : "Nothing to forward yet"}
+                >
+                  <Forward className="w-4 h-4" strokeWidth={1.75} />
+                  Forward
+                </DropdownMenuItem>
+
+                {/* Print */}
+                <DropdownMenuItem onClick={() => window.print()}>
+                  <Printer className="w-4 h-4" strokeWidth={1.75} />
+                  Print
+                </DropdownMenuItem>
+
                 {/* Spam + Delete — hidden when closed */}
                 {!isClosed && (
                   <>
@@ -500,7 +550,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
         {onReviewDraft && (
           <button
             onClick={onReviewDraft}
-            className="lg:hidden mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+            className="lg:hidden mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline print:hidden"
           >
             Review draft
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
@@ -528,25 +578,31 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           )}
         </div>
 
-        {thread.ai_summary && (
-          <div className="mt-4 bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
-            <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
-              AI Summary
-            </p>
-            <p className="text-sm text-foreground/80 leading-relaxed">{thread.ai_summary}</p>
-          </div>
-        )}
-
-        {thread.suggested_reply_tone && (
-          <p className="text-xs text-muted-foreground mt-2">
-            Suggested tone: {thread.suggested_reply_tone}
-          </p>
-        )}
       </div>
+
+      {/* Conversation. The AI summary and any banners ride at the TOP of the
+          scroll (no longer pinned), so the message list gets the panel's full
+          height and the scrollbar itself hints at how long the thread is. */}
+      <ScrollArea className="flex-1">
+        <div className="px-6 pt-4 pb-1 space-y-3 empty:hidden">
+          {thread.ai_summary && (
+            <div className="bg-muted/40 rounded-md px-3.5 py-2.5 border border-border">
+              <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                AI Summary
+              </p>
+              <p className="text-sm text-foreground/80 leading-relaxed">{thread.ai_summary}</p>
+            </div>
+          )}
+
+          {thread.suggested_reply_tone && (
+            <p className="text-xs text-muted-foreground">
+              Suggested tone: {thread.suggested_reply_tone}
+            </p>
+          )}
 
       {/* Escalation banner */}
       {escalation && (
-        <div className="mx-6 mt-3 px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30 flex-shrink-0">
+        <div className="px-4 py-3 rounded-md bg-destructive/10 border border-destructive/30">
           <div className="flex items-start gap-3">
             {isSensitiveData(escalation.reason) ? (
               <ShieldAlert
@@ -588,7 +644,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
             </div>
             <Link
               href="/escalations"
-              className="text-xs font-medium text-destructive hover:underline flex-shrink-0"
+              className="text-xs font-medium text-destructive hover:underline flex-shrink-0 print:hidden"
             >
               View escalation
             </Link>
@@ -598,7 +654,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
       {/* Saved-note banner — only when there's a note worth surfacing */}
       {thread.is_saved && thread.saved_note && (
-        <div className="mx-6 mt-3 px-4 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30 flex-shrink-0">
+        <div className="px-4 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30">
           <div className="flex items-start gap-2.5">
             <BookmarkCheck
               className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-700 dark:text-amber-300 fill-current"
@@ -616,9 +672,9 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           </div>
         </div>
       )}
+        </div>
 
-      {/* Messages area */}
-      <ScrollArea className="flex-1">
+        {/* Messages */}
         <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50 min-w-0">
           {thread.messages.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>
@@ -674,6 +730,13 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
         confirmVariant="destructive"
         loading={actionLoading === "spam"}
         onConfirm={handleSpam}
+      />
+
+      <ForwardMessageDialog
+        open={showForwardDialog}
+        onOpenChange={setShowForwardDialog}
+        thread={thread}
+        onForwarded={() => onThreadChange?.()}
       />
 
       <ConfirmDialog

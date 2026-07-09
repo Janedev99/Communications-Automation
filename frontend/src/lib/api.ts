@@ -11,7 +11,7 @@
  *   cannot read it. Falls back to the cookie for same-origin deploys.
  */
 import { ApiError } from "./types";
-import type { EmailThread } from "./types";
+import type { DraftResponse, EmailMessage, EmailThread, ReplyAllRecipients } from "./types";
 
 const CSRF_STORAGE_KEY = "csrf_token";
 
@@ -332,4 +332,82 @@ export async function sendDraft(
     credentials: "include",
   });
   await assertOk(res);
+}
+
+/**
+ * Update a draft's recipients (To/Cc). Thin, typed wrapper over the generic
+ * draft PUT edit endpoint — mirrors the shape draft-panel.tsx already uses
+ * inline for body_text edits, so recipient + body writes can share one
+ * autosave debounce/indicator.
+ */
+export function updateDraftRecipients(
+  threadId: string,
+  draftId: string,
+  patch: { to_recipients?: string[]; cc_recipients?: string[] },
+): Promise<DraftResponse> {
+  return api.put<DraftResponse>(
+    `/api/v1/emails/${threadId}/drafts/${draftId}`,
+    patch,
+  );
+}
+
+/**
+ * Compute the reply-all recipient set (sender + everyone else on the
+ * original To/CC, minus the firm's own mailbox) from the thread's latest
+ * inbound message. Does not modify the draft — the caller applies the
+ * result via updateDraftRecipients.
+ */
+export function getReplyAllRecipients(
+  threadId: string,
+  draftId: string,
+): Promise<ReplyAllRecipients> {
+  return api.get<ReplyAllRecipients>(
+    `/api/v1/emails/${threadId}/drafts/${draftId}/reply-all-recipients`,
+  );
+}
+
+export interface ForwardMessageInput {
+  /** Comma/semicolon-separated To recipients. */
+  to: string;
+  /** Comma/semicolon-separated Cc recipients. */
+  cc?: string;
+  note?: string;
+  /** Client-supplied idempotency key — same shape/purpose as sendDraft's.
+   *  Generate once per dialog-open and reuse it across retries within that
+   *  session so a resubmit after a timeout/error returns the original
+   *  result instead of forwarding a second time. */
+  idempotencyKey?: string;
+}
+
+/**
+ * Forward a single message (with its attachments, via the provider's native
+ * forward) to new recipients. Multipart sibling of composeEmail/sendDraft —
+ * same boundary-header rationale. Returns the newly created outbound
+ * EmailMessage recorded on the same thread.
+ */
+export async function forwardMessage(
+  threadId: string,
+  messageId: string,
+  input: ForwardMessageInput,
+): Promise<EmailMessage> {
+  const url = `${getBaseUrl()}/api/v1/emails/${threadId}/messages/${messageId}/forward`;
+
+  const form = new FormData();
+  form.set("to", input.to);
+  if (input.cc) form.set("cc", input.cc);
+  if (input.note) form.set("note", input.note);
+  if (input.idempotencyKey) form.set("idempotency_key", input.idempotencyKey);
+
+  const headers: Record<string, string> = {};
+  const csrfToken = getCsrfToken();
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+
+  const res = await fetch(url, {
+    method: "POST",
+    body: form,
+    headers,
+    credentials: "include",
+  });
+  await assertOk(res);
+  return res.json() as Promise<EmailMessage>;
 }

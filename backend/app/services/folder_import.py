@@ -1,5 +1,10 @@
 """One-time (re-runnable) import of Outlook folders into the saved_folders
-registry, and a push that creates app folders in Outlook. Never deletes."""
+registry, and a push that creates app folders in Outlook. Never deletes.
+
+The import direction (Outlook -> registry) is read-only and always runs when
+the provider is MSGraph. The push direction (registry -> Outlook) mutates the
+live mailbox, so it is additionally gated on the OUTLOOK_FOLDER_SYNC flag
+(default off) — see sync_folders_to_outlook."""
 from __future__ import annotations
 
 import logging
@@ -102,8 +107,11 @@ def import_outlook_folders(db: Session) -> dict:
 
 def sync_folders_to_outlook(db: Session) -> dict:
     """Create each registry folder in Outlook (find-or-create at root) and store
-    the returned Graph id. Additive only — never deletes. No-op unless MSGraph."""
+    the returned Graph id. Additive only — never deletes. Flag-gated on
+    OUTLOOK_FOLDER_SYNC (default off) and a no-op unless the provider is MSGraph."""
     settings = get_settings()
+    if not settings.outlook_folder_sync:
+        return {"created": 0, "existing": 0, "total": 0}
     if settings.email_provider.lower() != "msgraph":
         return {"created": 0, "existing": 0, "total": 0}
     provider = get_email_provider()

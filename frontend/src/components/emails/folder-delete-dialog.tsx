@@ -26,9 +26,11 @@ interface FolderDeleteDialogProps {
  * so folder deletion reads as part of the same confirm-dialog family as
  * every other destructive action in the app.
  *
- * The backend rejects with 409 if the folder still has items filed
- * directly under it — that message is surfaced verbatim via toast, same
- * pattern as move/create-folder.
+ * Delete is idempotent (204) even when the folder still has items filed
+ * directly under it — those items simply become unfiled ("No folder")
+ * rather than being blocked or cascaded. Any error message returned by the
+ * backend is still surfaced verbatim via toast, same pattern as
+ * move/create-folder.
  */
 export function FolderDeleteDialog({
   folder,
@@ -74,8 +76,8 @@ export function FolderDeleteDialog({
           <div className="space-y-1.5 text-sm">
             {outlookCount > 0 && (
               <p className="text-amber-600 dark:text-amber-400">
-                This will also move {outlookCount} email{outlookCount === 1 ? "" : "s"} in
-                Outlook to Deleted Items (recoverable).
+                If Outlook folder sync is enabled, this also moves {outlookCount} email
+                {outlookCount === 1 ? "" : "s"} in Outlook to Deleted Items (recoverable).
               </p>
             )}
             {hasChildren && (

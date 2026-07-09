@@ -42,11 +42,12 @@ def test_delete_folder_base_noop():
     assert p.delete_folder("FID") is None
 
 
-def _cfg(monkeypatch, provider_name="msgraph"):
+def _cfg(monkeypatch, provider_name="msgraph", outlook_folder_sync=True):
     import app.services.folder_import as fi
     from app.config import get_settings
     s = get_settings()
     monkeypatch.setattr(s, "email_provider", provider_name, raising=False)
+    monkeypatch.setattr(s, "outlook_folder_sync", outlook_folder_sync, raising=False)
     monkeypatch.setattr(fi, "get_settings", lambda: s)
     return fi
 
@@ -185,6 +186,19 @@ def test_sync_creates_and_stores_id(db_session, monkeypatch):
         select(SavedFolderRow).where(SavedFolderRow.name == "Push Me")
     ).scalar_one()
     assert row.outlook_folder_id == "NEWID"
+
+
+def test_sync_noop_when_flag_off(db_session, monkeypatch):
+    fi = _cfg(monkeypatch)
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "outlook_folder_sync", False, raising=False)
+    called = []
+    class _Prov:
+        def find_or_create_folder(self, name):
+            called.append(name); return "X"
+    monkeypatch.setattr(fi, "get_email_provider", lambda: _Prov())
+    assert fi.sync_folders_to_outlook(db_session) == {"created": 0, "existing": 0, "total": 0}
+    assert called == []
 
 
 # =============================================================================

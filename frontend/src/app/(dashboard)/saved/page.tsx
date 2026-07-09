@@ -1141,8 +1141,10 @@ function NewSubfolderDialog({
       toast.success(`Created folder "${trimmed}".`);
       onCreated();
     } catch (err: unknown) {
-      // Backend rejects duplicate names under the same parent with a 409 —
-      // surface its detail message verbatim, same pattern as delete/move.
+      // Backend rejects duplicate names with a 409 — uniqueness is global
+      // (case-insensitive) across the whole folder tree, not just siblings
+      // under the same parent. Surface its detail message verbatim, same
+      // pattern as delete/move.
       toast.error(err instanceof Error ? err.message : "Could not create folder.");
     } finally {
       setSubmitting(false);

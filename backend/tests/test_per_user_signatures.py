@@ -111,6 +111,22 @@ def test_apply_never_touches_staff_typed_closings(db_session):
     assert out.endswith(PERSONAL_SIG)
 
 
+def test_apply_keeps_body_closing_and_single_signature(db_session):
+    """New contract: the AI writes an editable closing line in the body. It is
+    plain text (not a known signature block), so apply_signature keeps it and
+    still appends exactly ONE signature — the name is not duplicated."""
+    body = "Here is your answer.\n\nThanks so much,"
+    out = apply_signature(db_session, body, PERSONAL_SIG)
+
+    # Closing line survives verbatim in the body.
+    assert "Here is your answer.\n\nThanks so much," in out
+    # Exactly one signature appended; the signer's name appears once.
+    assert out.endswith(PERSONAL_SIG)
+    assert out.count("Gus") == 1
+    # Re-applying is idempotent (no second signature).
+    assert apply_signature(db_session, out, PERSONAL_SIG) == out
+
+
 def test_apply_with_empty_signature_returns_body(db_session):
     ss.set_setting(db_session, ss.COMPANY_SIGNATURE, "")
     db_session.commit()

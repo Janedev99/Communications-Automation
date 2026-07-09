@@ -233,7 +233,7 @@ function BubbleSaveAction({
       title={title}
       aria-label={title}
       className={cn(
-        "absolute top-2 transition-opacity rounded-md p-1",
+        "absolute top-2 transition-opacity rounded-md p-1 print:hidden",
         // Position depends on bubble side so it doesn't overlap the
         // sender name. Inbound bubbles are left-aligned; outbound right.
         variant === "inbound" ? "right-2" : "left-2",

@@ -12,6 +12,7 @@ import {
   CheckCircle,
   Forward,
   MoreVertical,
+  Printer,
   RotateCcw,
   ShieldAlert,
   ShieldX,
@@ -256,7 +257,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               and the Conversation|Draft segmented control: below lg the
               compact mobile cluster is used so tablet portrait (640–1023px)
               never shows this full 6-button row in a constrained header. */}
-          <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
+          <div className="hidden lg:flex items-center gap-2 flex-shrink-0 print:hidden">
             {thread.is_saved ? (
               // Segmented control: the folder label and the remove (✕) action
               // share one bordered pill with a divider, so the ✕ reads as part
@@ -351,6 +352,17 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
               Forward
             </Button>
 
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => window.print()}
+              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              title="Print this conversation"
+            >
+              <Printer className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
+              Print
+            </Button>
+
             {/* Trash + spam: hidden when the thread is already closed
                 (closed threads should be reopened first, not trashed,
                 so the audit trail preserves intent). */}
@@ -407,7 +419,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
           </div>
 
           {/* Action buttons — mobile + tablet (below lg) */}
-          <div className="flex lg:hidden items-center gap-2 flex-shrink-0">
+          <div className="flex lg:hidden items-center gap-2 flex-shrink-0 print:hidden">
             {/* Resolve / Reopen */}
             {isClosed ? (
               <Button
@@ -498,6 +510,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
                   Forward
                 </DropdownMenuItem>
 
+                {/* Print */}
+                <DropdownMenuItem onClick={() => window.print()}>
+                  <Printer className="w-4 h-4" strokeWidth={1.75} />
+                  Print
+                </DropdownMenuItem>
+
                 {/* Spam + Delete — hidden when closed */}
                 {!isClosed && (
                   <>
@@ -528,7 +546,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
         {onReviewDraft && (
           <button
             onClick={onReviewDraft}
-            className="lg:hidden mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+            className="lg:hidden mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline print:hidden"
           >
             Review draft
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
@@ -616,7 +634,7 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
             </div>
             <Link
               href="/escalations"
-              className="text-xs font-medium text-destructive hover:underline flex-shrink-0"
+              className="text-xs font-medium text-destructive hover:underline flex-shrink-0 print:hidden"
             >
               View escalation
             </Link>

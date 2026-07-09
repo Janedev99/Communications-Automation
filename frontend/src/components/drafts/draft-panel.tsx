@@ -1126,7 +1126,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
       {recipientsSection}
 
       {/* Editor */}
-      <div className="flex-1 px-5 py-4 overflow-hidden flex flex-col">
+      <div className="flex-1 px-5 pt-4 pb-2 overflow-hidden flex flex-col">
         {draft.status === "approved" && (
           <div className="flex items-center gap-1.5 mb-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-1.5">
             <Lock className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={1.75} />
@@ -1172,7 +1172,7 @@ export function DraftPanel({ thread, draft, onDraftChange }: DraftPanelProps) {
           Renders nothing during bootstrap (no approvals / saves / rejections yet).
           empty:hidden collapses the wrapper's padding when both children return
           null, so it reserves no vertical space until there's something to show. */}
-      <div className="px-5 pt-3 pb-1 flex-shrink-0 space-y-2 empty:hidden">
+      <div className="px-5 pt-1 pb-1 flex-shrink-0 space-y-2 empty:hidden">
         <FeedbackOnboarding />
         <FeedbackIndicator category={thread.category} />
       </div>

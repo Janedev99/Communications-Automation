@@ -186,6 +186,7 @@ The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthrop
 | 6 | **Mobile layout is not yet refined.** | Jane accesses via phone browser; it works but isn't optimized. On the roadmap (§8). |
 | 7 | **Pre-018 drafts have the old global signature baked into their body.** | Handled automatically: the send path strips the known legacy block and appends the sender's signature instead (exact-suffix match only). Self-heals as old drafts drain. |
 | 8 | **Single-worker constraint** (§6.1). | Scaling out requires extracting the poller first. |
+| 9 | **Outlook → app sync is one-directional.** | The poller only *adds* new unread inbox mail; deletions, moves, and read-state changes made on the Outlook side are not reflected in the portal. The reverse direction *does* mirror (portal Delete → Deleted Items, Spam → Junk Email, Send → Sent Items). Documented for end users in USER_GUIDE §1.11. Full two-way sync would require the poller to diff mailbox state each cycle and reconcile removals. |
 
 ---
 

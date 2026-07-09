@@ -280,6 +280,31 @@ class EmailMessage(Base):
         )
 
 
+class SavedFolderRow(Base):
+    """Registry of saved folders (first-class). Emails still reference a folder
+    by NAME (email_threads.saved_folder); this table lets empty folders exist,
+    carry hierarchy (parent_id), and record Outlook origin + item count."""
+    __tablename__ = "saved_folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("saved_folders.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # "app" = created in-app; "outlook" = imported from the mailbox.
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="app")
+    outlook_folder_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    outlook_item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class DraftResponse(Base):
     __tablename__ = "draft_responses"
 

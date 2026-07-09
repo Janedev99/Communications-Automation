@@ -48,13 +48,13 @@ export function FolderDeleteDialog({
       await deleteSavedFolder(folder.name);
       toast.success(`Deleted folder "${folder.name}".`);
       onDeleted();
+      onClose();
     } catch (err: unknown) {
       // The 409 detail tells the user exactly what to do (move items
       // out first) — pass it through rather than a generic message.
       toast.error(err instanceof Error ? err.message : "Could not delete folder.");
     } finally {
       setDeleting(false);
-      onClose();
     }
   };
 

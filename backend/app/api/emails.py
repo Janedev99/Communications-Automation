@@ -39,7 +39,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_client_ip, get_current_user, require_csrf
+from app.api.deps import get_client_ip, get_current_user, require_admin, require_csrf
+from app.config import get_settings
+from app.services.email_provider import get_email_provider
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,7 @@ from app.models.email import (
     EmailStatus,
     EmailThread,
     MessageDirection,
+    SavedFolderRow,
     ThreadTier,
 )
 from app.services.tier_engine import decide_tier
@@ -80,11 +83,14 @@ from app.schemas.email import (
     BulkActionResponse,
     ComposeDraftRequest,
     ComposeDraftResponse,
+    CreateFolderRequest,
     DraftResponseResponse,
     EmailMessageResponse,
     EmailThreadListItem,
     EmailThreadListResponse,
     EmailThreadResponse,
+    FolderImportResult,
+    FolderSyncResult,
     ManualDraftRequest,
     SaveThreadRequest,
     SavedFolder,
@@ -95,6 +101,7 @@ from app.schemas.email import (
 from app.models.email import KnowledgeEntry
 from app.schemas.knowledge import KnowledgeEntryResponse
 from app.schemas.escalation import EscalationResponse
+from app.services import folder_import
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
 from app.services.folder_sync import sync_thread_to_outlook_folder
@@ -1421,6 +1428,55 @@ def unsave_thread(
     return EmailThreadResponse.from_thread(thread)
 
 
+@router.post("/saved/folders", response_model=SavedFolder,
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_csrf)])
+def create_saved_folder(
+    body: CreateFolderRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SavedFolder:
+    """Create a first-class folder (optionally nested under parent_id)."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Folder name cannot be empty.")
+    exists = db.execute(
+        select(SavedFolderRow).where(func.lower(SavedFolderRow.name) == name.lower())
+    ).scalar_one_or_none()
+    if exists is not None:
+        raise HTTPException(status_code=409, detail=f'A folder named "{name}" already exists.')
+    if body.parent_id is not None:
+        parent = db.get(SavedFolderRow, body.parent_id)
+        if parent is None:
+            raise HTTPException(status_code=422, detail="Parent folder does not exist.")
+    row = SavedFolderRow(name=name, parent_id=body.parent_id, source="app")
+    db.add(row)
+    db.flush()
+    return SavedFolder(id=row.id, name=row.name, parent_id=row.parent_id,
+                       source=row.source, outlook_item_count=None,
+                       count=0, thread_count=0, message_count=0)
+
+
+@router.post("/saved/folders/import-from-outlook", response_model=FolderImportResult,
+             dependencies=[Depends(require_csrf)])
+def import_folders_from_outlook(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FolderImportResult:
+    """One-time (re-runnable) import of all custom Outlook folders."""
+    return FolderImportResult(**folder_import.import_outlook_folders(db))
+
+
+@router.post("/saved/folders/sync-to-outlook", response_model=FolderSyncResult,
+             dependencies=[Depends(require_csrf)])
+def sync_folders_to_outlook_endpoint(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FolderSyncResult:
+    """Create app folders in Outlook (additive; never deletes)."""
+    return FolderSyncResult(**folder_import.sync_folders_to_outlook(db))
+
+
 @router.get("/saved/folders", response_model=list[SavedFolder])
 def list_saved_folders(
     current_user: User = Depends(get_current_user),
@@ -1436,47 +1492,52 @@ def list_saved_folders(
 
     The unsorted bucket (no folder) appears as an entry with ``name=None``.
     """
+    # In-app counts by folder name (threads + messages).
     thread_rows = db.execute(
-        select(
-            EmailThread.saved_folder.label("folder"),
-            func.count(EmailThread.id).label("count"),
-        )
+        select(EmailThread.saved_folder.label("folder"),
+               func.count(EmailThread.id).label("count"))
         .where(EmailThread.is_saved == True)  # noqa: E712
         .group_by(EmailThread.saved_folder)
     ).all()
-
     message_rows = db.execute(
-        select(
-            EmailMessage.saved_folder.label("folder"),
-            func.count(EmailMessage.id).label("count"),
-        )
+        select(EmailMessage.saved_folder.label("folder"),
+               func.count(EmailMessage.id).label("count"))
         .where(EmailMessage.is_saved == True)  # noqa: E712
         .group_by(EmailMessage.saved_folder)
     ).all()
 
-    # Merge by folder name, preserving the threads/messages split.
-    aggregated: dict[str | None, dict[str, int]] = {}
+    counts: dict[str | None, dict[str, int]] = {}
     for row in thread_rows:
-        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
-        bucket["threads"] += row.count
+        counts.setdefault(row.folder, {"threads": 0, "messages": 0})["threads"] += row.count
     for row in message_rows:
-        bucket = aggregated.setdefault(row.folder, {"threads": 0, "messages": 0})
-        bucket["messages"] += row.count
+        counts.setdefault(row.folder, {"threads": 0, "messages": 0})["messages"] += row.count
 
-    # Stable sort: unfiled (None) first, then folders alphabetically.
-    def _sort_key(name: str | None) -> tuple[int, str]:
-        return (0, "") if name is None else (1, name.lower())
+    registry = db.execute(select(SavedFolderRow)).scalars().all()
+    reg_names = {r.name for r in registry}
 
-    folders = [
-        SavedFolder(
-            name=name,
-            count=counts["threads"] + counts["messages"],
-            thread_count=counts["threads"],
-            message_count=counts["messages"],
-        )
-        for name, counts in sorted(aggregated.items(), key=lambda kv: _sort_key(kv[0]))
-    ]
-    return folders
+    out: list[SavedFolder] = []
+    # Unfiled bucket first (never a registry row).
+    if None in counts:
+        c = counts[None]
+        out.append(SavedFolder(name=None, count=c["threads"] + c["messages"],
+                               thread_count=c["threads"], message_count=c["messages"]))
+    # Registry folders (empty ones included).
+    for r in sorted(registry, key=lambda r: r.name.lower()):
+        c = counts.get(r.name, {"threads": 0, "messages": 0})
+        out.append(SavedFolder(
+            id=r.id, name=r.name, parent_id=r.parent_id, source=r.source,
+            outlook_item_count=r.outlook_item_count,
+            count=c["threads"] + c["messages"],
+            thread_count=c["threads"], message_count=c["messages"],
+        ))
+    # Defensive union: labels in use but not in the registry.
+    for name, c in sorted(((n, c) for n, c in counts.items()
+                           if n is not None and n not in reg_names),
+                          key=lambda kv: kv[0].lower()):
+        out.append(SavedFolder(name=name, source="app",
+                               count=c["threads"] + c["messages"],
+                               thread_count=c["threads"], message_count=c["messages"]))
+    return out
 
 
 @router.delete(
@@ -1493,26 +1554,34 @@ def delete_saved_folder(
     """
     Delete a named saved folder.
 
-    Folders aren't first-class entities — they're just distinct values of
-    the ``saved_folder`` column on email_threads and email_messages. So
-    "deleting a folder" follows the Outlook / Gmail-label model: the
-    folder *label* goes away, but every item that was filed under it
-    stays saved (it just becomes unfiled).
+    Folders are first-class registry rows (``SavedFolderRow``) that can be
+    nested, but "deleting a folder" still follows the Outlook / Gmail-label
+    model for the *items* filed under it: the folder goes away, but every
+    item that was filed under it stays saved (it just becomes unfiled).
 
     Atomically:
-      - Sets saved_folder = NULL on every saved thread that referenced
-        this folder.
-      - Sets saved_folder = NULL on every saved message that referenced
-        this folder.
-      - is_saved stays true on every affected row, so users keep their
-        items in the Saved view — they just move into the "No folder"
-        bucket on the rail.
-      - The folder name disappears from /saved/folders the next time
-        it's read, since folders are derived from distinct column values.
+      - Walks the registry to collect this folder AND every descendant
+        (recursive, in-Python BFS over parent_id) so deleting a parent
+        cascades to its whole subtree.
+      - When ``settings.outlook_folder_sync`` is on and a collected row
+        has an ``outlook_folder_id``, calls ``provider.delete_folder`` to
+        reflect the deletion in Outlook. This is best-effort/recoverable:
+        a provider failure is logged and swallowed, never blocking the
+        in-app delete.
+      - Sets saved_folder = NULL on every saved thread/message filed under
+        the requested name OR any collected descendant's name (covers both
+        registry-backed folders and legacy label-only folders sharing the
+        same name space). is_saved stays true, so users keep their items
+        in the Saved view — they just move into the "No folder" bucket.
+      - Removes the collected registry rows.
+      - The folder name(s) disappear from /saved/folders the next time
+        it's read, since folders are derived from the registry ∪ distinct
+        column values.
 
     Always returns 204 (idempotent — deleting a never-existed folder
-    name is a no-op). Audit log captures the count of items that were
-    moved out so admins can reconstruct the action later.
+    name is a no-op). Audit log captures the descendants removed and the
+    count of items that were moved out so admins can reconstruct the
+    action later.
     """
     if not folder_name.strip():
         raise HTTPException(
@@ -1522,22 +1591,63 @@ def delete_saved_folder(
 
     now = datetime.now(timezone.utc)
 
+    # Collect this folder + all descendants from the registry (recursive).
+    rows = db.execute(select(SavedFolderRow)).scalars().all()
+    by_parent: dict[uuid.UUID | None, list[SavedFolderRow]] = {}
+    for r in rows:
+        by_parent.setdefault(r.parent_id, []).append(r)
+    # Prefer an exact-name match; fall back to case-insensitive only when
+    # exactly one row matches. If multiple case-variant rows exist and none
+    # matches the requested name exactly, treat as not-found rather than
+    # guessing which mailbox folder to delete (the in-app unfile of the raw
+    # folder_name still runs below).
+    root = next((r for r in rows if r.name == folder_name), None)
+    if root is None:
+        ci_matches = [r for r in rows if r.name.lower() == folder_name.lower()]
+        root = ci_matches[0] if len(ci_matches) == 1 else None
+
+    to_delete: list[SavedFolderRow] = []
+    if root is not None:
+        seen_ids: set[uuid.UUID] = set()
+        stack = [root]
+        while stack:
+            cur = stack.pop()
+            if cur.id in seen_ids:
+                continue
+            seen_ids.add(cur.id)
+            to_delete.append(cur)
+            stack.extend(by_parent.get(cur.id, []))
+
+    names_to_unfile = {folder_name} | {r.name for r in to_delete}
+
+    # Reflect deletion to Outlook (recoverable) when enabled and synced.
+    settings = get_settings()
+    if settings.outlook_folder_sync and settings.email_provider.lower() == "msgraph":
+        provider = get_email_provider()
+        for r in to_delete:
+            if r.outlook_folder_id:
+                try:
+                    provider.delete_folder(r.outlook_folder_id)
+                except Exception as exc:  # noqa: BLE001 — never block the in-app delete
+                    logger.warning("Outlook folder delete failed for %s: %s", r.name, exc)
+
+    # Unfile every saved item under any of the affected names.
     threads_unfiled = db.execute(
         update(EmailThread)
-        .where(
-            EmailThread.is_saved == True,  # noqa: E712
-            EmailThread.saved_folder == folder_name,
-        )
+        .where(EmailThread.is_saved == True,  # noqa: E712
+               EmailThread.saved_folder.in_(names_to_unfile))
         .values(saved_folder=None, updated_at=now)
     ).rowcount or 0
     messages_unfiled = db.execute(
         update(EmailMessage)
-        .where(
-            EmailMessage.is_saved == True,  # noqa: E712
-            EmailMessage.saved_folder == folder_name,
-        )
+        .where(EmailMessage.is_saved == True,  # noqa: E712
+               EmailMessage.saved_folder.in_(names_to_unfile))
         .values(saved_folder=None)
     ).rowcount or 0
+
+    # Drop the registry rows (children first isn't required — collected set).
+    for r in to_delete:
+        db.delete(r)
 
     db.flush()
 
@@ -1548,13 +1658,11 @@ def delete_saved_folder(
         entity_id=folder_name[:64],  # entity_id is a string column
         user_id=current_user.id,
         ip_address=get_client_ip(request),
-        details={
-            "folder": folder_name,
-            "threads_unfiled": threads_unfiled,
-            "messages_unfiled": messages_unfiled,
-        },
+        details={"folder": folder_name,
+                 "descendants": [r.name for r in to_delete if r.name != folder_name],
+                 "threads_unfiled": threads_unfiled,
+                 "messages_unfiled": messages_unfiled},
     )
-
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

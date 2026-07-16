@@ -132,6 +132,15 @@ class Settings(BaseSettings):
     # mailbox writes. Enable only after a supervised live test.
     outlook_folder_sync: bool = False
 
+    # ── Outlook → app delete sync (email delete-sync iteration) ───────────────
+    # When True, each poll reconciles Outlook Deleted Items + Junk against local
+    # threads via Graph delta queries: a message Jane deletes/junks in Outlook
+    # flips the matching app thread to deleted/spam so it leaves the to-do.
+    # READ-only against Outlook + a local (reversible) status change — never
+    # deletes mailbox mail. Default False = current one-way behaviour
+    # (app→Outlook delete/spam only). Enable after a supervised live test.
+    email_delete_sync: bool = False
+
     # ── RunPod orchestrator ───────────────────────────────────────────────────
     # The orchestrator wraps the runpod_client REST primitives in a service
     # that auto-starts the pod before a draft generation and auto-stops it

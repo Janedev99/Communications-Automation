@@ -7,7 +7,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
-import { ComposeProvider } from "@/components/emails/compose-context";
+import { ComposeProvider, ComposeMount } from "@/components/emails/compose-context";
 import { useUser } from "@/hooks/use-user";
 import { api } from "@/lib/api";
 
@@ -196,11 +196,15 @@ export default function DashboardLayout({
           />
         </MobileNavDrawer>
 
-        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        {/* Content column is `relative` so the full-page compose overlay can
+            cover exactly this area (absolute inset-0) while the sidebar stays
+            visible for navigation. */}
+        <div className="relative flex flex-col flex-1 min-w-0 overflow-hidden">
           <Header onOpenNav={openMobileNav} navOpen={mobileNavOpen} />
           <main className="flex-1 overflow-y-auto p-4 lg:p-6">
             {children}
           </main>
+          <ComposeMount />
         </div>
 
         <KeyboardShortcutsDialog

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Bookmark } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -15,17 +15,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   saveMessage,
   saveThread,
   useSavedFolders,
 } from "@/hooks/use-emails";
+import { cn } from "@/lib/utils";
 import type { EmailThread } from "@/lib/types";
 
 /**
@@ -88,6 +82,13 @@ export function SaveThreadDialog({
   const [newFolderName, setNewFolderName] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+  // Registry can hold hundreds of folders post-Outlook-import, so the picker
+  // is a search-filtered, height-capped list rather than a plain dropdown.
+  const [folderQuery, setFolderQuery] = useState("");
+  // Combobox-style keyboard nav: index into "No folder" + filtered folders +
+  // "New folder…", driven entirely from the search input so keyboard users
+  // never have to tab through every row.
+  const [activeIndex, setActiveIndex] = useState(0);
 
   // Pre-fill from current state when dialog opens (re-saves edit metadata)
   useEffect(() => {
@@ -99,7 +100,15 @@ export function SaveThreadDialog({
     }
     setNewFolderName("");
     setNote(current.note ?? "");
+    setFolderQuery("");
+    setActiveIndex(0);
   }, [open, current.isSaved, current.folder, current.note]);
+
+  // Reset the active option whenever the query changes so a fresh search
+  // doesn't leave the highlight pointing at a now-hidden row.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [folderQuery]);
 
   const isNewFolder = pickedFolder === NEW_FOLDER_VALUE;
   const folderToSubmit = isNewFolder
@@ -149,9 +158,58 @@ export function SaveThreadDialog({
     count: number;
   }>;
 
+  // Case-insensitive name filter — "No folder" and "New folder…" stay
+  // visible regardless of the query so the escape hatches are never hidden.
+  const folderFilter = folderQuery.trim().toLowerCase();
+  const filteredFolders = folderFilter
+    ? existingFolders.filter((f) => f.name.toLowerCase().includes(folderFilter))
+    : existingFolders;
+
   const isMessageTarget = target.kind === "message";
   const titleAction = current.isSaved ? "Update saved" : "Save this";
   const titleSubject = isMessageTarget ? "email" : "thread";
+
+  // Option 0 = "No folder", options 1..N = filteredFolders, option N+1 =
+  // "+ New folder…" — this is the same order the list renders in.
+  const optionCount = filteredFolders.length + 2;
+  const safeActiveIndex = Math.min(activeIndex, optionCount - 1);
+  const optionId = (index: number) => `save-folder-option-${index}`;
+
+  // Always-visible selection line — the old SelectTrigger always showed the
+  // chosen folder; a filtered search can hide the selected row entirely, so
+  // this keeps the current pick visible regardless of the query.
+  const selectedFolderLabel = isNewFolder
+    ? newFolderName.trim() || "New folder…"
+    : pickedFolder === NO_FOLDER_VALUE
+    ? "No folder"
+    : pickedFolder;
+
+  useEffect(() => {
+    if (!open) return;
+    document
+      .getElementById(optionId(safeActiveIndex))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [safeActiveIndex, open]);
+
+  const handleFolderSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, optionCount - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (safeActiveIndex === 0) {
+        setPickedFolder(NO_FOLDER_VALUE);
+      } else if (safeActiveIndex === optionCount - 1) {
+        setPickedFolder(NEW_FOLDER_VALUE);
+      } else {
+        const folder = filteredFolders[safeActiveIndex - 1];
+        if (folder) setPickedFolder(folder.name);
+      }
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -170,34 +228,67 @@ export function SaveThreadDialog({
 
         <div className="space-y-4 py-2">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-foreground" htmlFor="save-folder">
+            <label className="text-xs font-medium text-foreground" htmlFor="save-folder-search">
               Folder
             </label>
-            <Select value={pickedFolder} onValueChange={(v: string | null) => v && setPickedFolder(v)}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="No folder" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_FOLDER_VALUE}>
-                  <span className="text-muted-foreground">No folder (just save)</span>
-                </SelectItem>
-                {existingFolders.length > 0 && (
-                  <>
-                    {existingFolders.map((folder) => (
-                      <SelectItem key={folder.name} value={folder.name}>
-                        <span className="truncate">{folder.name}</span>
-                        <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
-                          {folder.count}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </>
-                )}
-                <SelectItem value={NEW_FOLDER_VALUE}>
-                  <span className="text-primary">+ New folder…</span>
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <input
+              id="save-folder-search"
+              type="text"
+              value={folderQuery}
+              onChange={(e) => setFolderQuery(e.target.value)}
+              onKeyDown={handleFolderSearchKeyDown}
+              placeholder="Search folders…"
+              role="combobox"
+              aria-expanded="true"
+              aria-controls="save-folder-listbox"
+              aria-activedescendant={optionId(safeActiveIndex)}
+              className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+            />
+            <p className="text-xs text-muted-foreground truncate">
+              Selected: {selectedFolderLabel}
+            </p>
+            <div
+              id="save-folder-listbox"
+              role="listbox"
+              aria-label="Folders"
+              className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1"
+            >
+              <FolderOptionRow
+                id={optionId(0)}
+                label="No folder (just save)"
+                muted
+                selected={pickedFolder === NO_FOLDER_VALUE}
+                active={safeActiveIndex === 0}
+                onClick={() => setPickedFolder(NO_FOLDER_VALUE)}
+              />
+              {filteredFolders.map((folder, i) => (
+                <FolderOptionRow
+                  key={folder.name}
+                  id={optionId(i + 1)}
+                  label={folder.name}
+                  count={folder.count}
+                  selected={pickedFolder === folder.name}
+                  active={safeActiveIndex === i + 1}
+                  onClick={() => setPickedFolder(folder.name)}
+                />
+              ))}
+              {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
+                <p
+                  className="px-2 py-1.5 text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  No folders match &quot;{folderQuery}&quot;.
+                </p>
+              )}
+              <FolderOptionRow
+                id={optionId(filteredFolders.length + 1)}
+                label="+ New folder…"
+                accent
+                selected={isNewFolder}
+                active={safeActiveIndex === filteredFolders.length + 1}
+                onClick={() => setPickedFolder(NEW_FOLDER_VALUE)}
+              />
+            </div>
             {isNewFolder && (
               <Input
                 autoFocus
@@ -236,5 +327,64 @@ export function SaveThreadDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One row in the search-filtered folder list. Mirrors the look of the old
+ * `SelectItem` rows (rounded, padded, accent-highlighted when
+ * selected/hovered) so swapping the dropdown for a plain scrollable list
+ * doesn't change how the picker reads visually.
+ */
+function FolderOptionRow({
+  id,
+  label,
+  count,
+  selected,
+  active,
+  muted,
+  accent,
+  onClick,
+}: {
+  id?: string;
+  label: string;
+  count?: number;
+  selected: boolean;
+  active?: boolean;
+  muted?: boolean;
+  accent?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={id}
+      role="option"
+      aria-selected={selected}
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
+        selected
+          ? "bg-accent text-accent-foreground"
+          : active
+          ? "bg-accent/60"
+          : "hover:bg-accent/60",
+      )}
+    >
+      <span
+        className={cn(
+          "flex-1 truncate",
+          muted && "text-muted-foreground",
+          accent && "text-primary",
+        )}
+      >
+        {label}
+      </span>
+      {count !== undefined && (
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {count}
+        </span>
+      )}
+    </button>
   );
 }

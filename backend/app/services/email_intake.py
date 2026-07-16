@@ -35,6 +35,7 @@ from app.models.email import (
     EmailStatus,
     EmailThread,
     MessageDirection,
+    SyncState,
     ThreadTier,
 )
 from app.services.categorizer import get_categorizer
@@ -421,6 +422,114 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
         db.close()
 
 
+# ── Outlook → app delete sync ─────────────────────────────────────────────────
+# Each entry: (provider logical folder, sync_state cursor key, target status a
+# matched thread is flipped to). Deleted Items → deleted; Junk → spam.
+_DELETE_SYNC_FOLDERS: list[tuple[str, str, EmailStatus]] = [
+    ("deleted_items", "delta:deleteditems", EmailStatus.deleted),
+    ("junk_email", "delta:junkemail", EmailStatus.spam),
+]
+
+# Statuses we never overwrite from an Outlook-side deletion: already-terminal
+# (deleted/spam) so we don't churn, and closed (resolved) so a tidy-up delete in
+# Outlook doesn't rewrite a thread staff already resolved.
+_DELETE_SYNC_SKIP_STATUSES = frozenset(
+    {EmailStatus.deleted, EmailStatus.spam, EmailStatus.closed}
+)
+
+
+def _apply_outlook_deletions(
+    db: Session, internet_message_ids: list[str], target_status: EmailStatus
+) -> int:
+    """
+    Flip every local thread that owns one of ``internet_message_ids`` to
+    ``target_status`` (unless already terminal). Returns the number of threads
+    changed. Writes an audit entry per thread (system actor). Does NOT commit —
+    the caller owns the transaction.
+    """
+    if not internet_message_ids:
+        return 0
+    rows = (
+        db.execute(
+            select(EmailMessage.thread_id).where(
+                EmailMessage.message_id_header.in_(internet_message_ids)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed = 0
+    for thread_id in set(rows):
+        thread = db.get(EmailThread, thread_id)
+        if thread is None or thread.status in _DELETE_SYNC_SKIP_STATUSES:
+            continue
+        old_status = thread.status
+        thread.status = target_status
+        thread.updated_at = datetime.now(timezone.utc)
+        log_action(
+            db,
+            action=f"email.{target_status.value}_via_outlook_sync",
+            entity_type="email_thread",
+            entity_id=str(thread.id),
+            details={
+                "old_status": old_status.value,
+                "new_status": target_status.value,
+                "source": "outlook_delete_sync",
+            },
+            user_id=None,
+        )
+        changed += 1
+    return changed
+
+
+def reconcile_outlook_deletions(provider) -> int:
+    """
+    Reflect mail Jane deleted/junked in Outlook back into the app: delta-query
+    Deleted Items + Junk, and flip matching local threads to deleted/spam so
+    they leave the to-do. Gated by the caller on ``settings.email_delete_sync``.
+
+    First run per folder (no stored deltaLink) is baseline-only: it captures the
+    cursor without acting, so pre-existing deletions aren't retroactively
+    applied. Each folder is reconciled in its own transaction so one failing
+    folder can't roll back the other. Returns the number of threads updated.
+    """
+    total_changed = 0
+    for folder, cursor_key, target_status in _DELETE_SYNC_FOLDERS:
+        db = SessionLocal()
+        try:
+            state = db.get(SyncState, cursor_key)
+            prior_link = state.value if state else None
+            try:
+                ids, next_link = provider.delta_folder_messages(
+                    folder=folder, delta_link=prior_link
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Delete-sync: delta fetch failed for %s: %s", folder, exc
+                )
+                continue
+
+            # Baseline run (no prior cursor): capture the deltaLink only.
+            if prior_link is not None:
+                total_changed += _apply_outlook_deletions(db, ids, target_status)
+
+            if next_link:
+                if state is None:
+                    db.add(SyncState(key=cursor_key, value=next_link))
+                else:
+                    state.value = next_link
+                    state.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error(
+                "Delete-sync: reconcile failed for %s: %s", folder, exc, exc_info=True
+            )
+        finally:
+            db.close()
+    return total_changed
+
+
 def poll_once() -> int:
     """
     Run a single poll cycle: fetch new emails and process each one.
@@ -443,6 +552,20 @@ def poll_once() -> int:
     # fetched (even if zero new emails). This prevents false "stalled" health
     # alerts during legitimately quiet periods (nights, weekends, etc.).
     _record_successful_poll()
+
+    # Outlook → app delete-sync: reflect mail Jane deleted/junked in Outlook
+    # back into the app. Runs every cycle (independent of new-mail volume, so a
+    # quiet inbox still reconciles) and is fully guarded so it can never break
+    # the core poll. Gated on the flag; default off = one-way behaviour.
+    if settings.email_delete_sync:
+        try:
+            reflected = reconcile_outlook_deletions(provider)
+            if reflected:
+                logger.info(
+                    "Delete-sync: reflected %d Outlook deletion(s) locally", reflected
+                )
+        except Exception as exc:
+            logger.error("Delete-sync: unexpected error: %s", exc, exc_info=True)
 
     if not raw_emails:
         logger.debug("No new emails found")

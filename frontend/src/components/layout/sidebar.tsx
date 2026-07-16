@@ -158,7 +158,8 @@ export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: S
         )}
       </div>
 
-      {/* Compose — opens the docked New Email window from any page (Gmail-style) */}
+      {/* Compose — opens the full-page New Email workspace (minimizable to a
+          corner dock so it floats over any page). */}
       <div className="px-2 pb-2">
         <button
           onClick={() => { openCompose(); onNavigate?.(); }}

@@ -48,6 +48,7 @@ import {
   type SavedMessageSort,
   type ThreadSort,
 } from "@/hooks/use-emails";
+import { useUser } from "@/hooks/use-user";
 import { cn, relativeTime } from "@/lib/utils";
 import type { EmailThreadListItem, SavedFolder, SavedMessageItem } from "@/lib/types";
 
@@ -167,7 +168,10 @@ function FolderTreeRow({
   activeFolder: string;
   filter: string;
   onSelect: (name: string) => void;
-  onDelete: (f: SavedFolder) => void;
+  // Optional: only admins may delete folders (a delete can cascade into
+  // Jane's live Outlook once OUTLOOK_FOLDER_SYNC is on), so staff get no
+  // delete affordance — the button is hidden when onDelete is absent.
+  onDelete?: (f: SavedFolder) => void;
   onAddChild: (parent: SavedFolder) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -227,19 +231,21 @@ function FolderTreeRow({
             <Plus className="w-3 h-3" strokeWidth={1.75} />
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => onDelete(f)}
-          className={cn(
-            "shrink-0 mr-1 p-0.5 rounded transition-colors",
-            "text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10",
-            "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
-          )}
-          title={`Delete folder "${f.name}"`}
-          aria-label={`Delete folder ${f.name}`}
-        >
-          <Trash2 className="w-3 h-3" strokeWidth={1.75} />
-        </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={() => onDelete(f)}
+            className={cn(
+              "shrink-0 mr-1 p-0.5 rounded transition-colors",
+              "text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10",
+              "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
+            )}
+            title={`Delete folder "${f.name}"`}
+            aria-label={`Delete folder ${f.name}`}
+          >
+            <Trash2 className="w-3 h-3" strokeWidth={1.75} />
+          </button>
+        )}
       </div>
       {expanded &&
         node.children.map((c) => (
@@ -264,6 +270,10 @@ export default function SavedPage() {
     isLoading: foldersLoading,
     mutate: mutateFolders,
   } = useSavedFolders();
+  // Folder deletion is admin-only (a delete can cascade into Jane's live
+  // Outlook once OUTLOOK_FOLDER_SYNC is on), matching the admin-gated backend
+  // endpoint — staff see no delete affordance.
+  const { isAdmin } = useUser();
   const [activeFolder, setActiveFolder] = useState<string>(ALL_FOLDERS);
   // Shared filter text for the folder tree (app folders + imported Outlook
   // folders — all registry rows post-import).
@@ -403,7 +413,7 @@ export default function SavedPage() {
                     activeFolder={activeFolder}
                     filter={folderFilter}
                     onSelect={(name) => setActiveFolder(name)}
-                    onDelete={(f) => setPendingFolderDelete(f)}
+                    onDelete={isAdmin ? (f) => setPendingFolderDelete(f) : undefined}
                     onAddChild={(parent) => setNewSubfolderParent(parent)}
                   />
                 ))}

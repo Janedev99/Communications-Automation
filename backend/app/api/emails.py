@@ -1548,11 +1548,14 @@ def list_saved_folders(
 def delete_saved_folder(
     request: Request,
     folder_name: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> Response:
     """
-    Delete a named saved folder.
+    Delete a named saved folder. Admin-only: once OUTLOOK_FOLDER_SYNC is on a
+    delete can cascade into Jane's live mailbox (removing the real Outlook
+    folder), so deletion is restricted to admins — matching the import/sync
+    endpoints. Staff can still create and file into folders.
 
     Folders are first-class registry rows (``SavedFolderRow``) that can be
     nested, but "deleting a folder" still follows the Outlook / Gmail-label

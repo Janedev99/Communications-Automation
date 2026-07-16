@@ -171,3 +171,14 @@ def test_delete_folder_ambiguous_case_variants_deletes_neither_in_outlook(logged
     resp = logged_in_admin.delete("/api/v1/emails/saved/folders/AMBIG FOLDER")
     assert resp.status_code == 204, resp.text
     assert called == []  # ambiguous -> touch nothing in Outlook
+
+
+def test_delete_folder_forbidden_for_staff(logged_in_staff, db_session):
+    """Folder deletion is admin-only — a delete can cascade into Jane's live
+    Outlook when OUTLOOK_FOLDER_SYNC is on, so staff get 403 and the folder
+    survives (matches the admin-gated import/sync endpoints)."""
+    folder = _mk_folder(db_session, "StaffNoDelete")
+    resp = logged_in_staff.delete("/api/v1/emails/saved/folders/StaffNoDelete")
+    assert resp.status_code == 403, resp.text
+    db_session.expunge(folder)
+    assert db_session.get(SavedFolderRow, folder.id) is not None  # untouched

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useSWRConfig } from "swr";
-import { Loader2, Minus, Send, Sparkles, X } from "lucide-react";
+import { Loader2, Send, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,37 +19,33 @@ import {
   useAttachments,
 } from "@/components/emails/attachments";
 
-export interface ComposePrefill {
-  to?: string;
-  subject?: string;
-  body?: string;
-}
-
-interface ComposeDockProps {
-  prefill?: ComposePrefill;
-  onClose: () => void;
+interface ComposeWorkspaceProps {
+  /** Called after a successful send (page navigates away). */
+  onSent: () => void;
+  /** Called when the user cancels out of the compose page. */
+  onCancel: () => void;
 }
 
 type ComposeMode = "manual" | "ai";
 
 /**
- * Gmail-style docked compose window pinned to the bottom-right. Header bar
- * minimizes/closes; the body supports writing manually or asking the AI to
- * draft from an instruction, plus attachments (add/remove with a running total
- * and a 25 MB client-side guard mirroring the server cap). On send it refreshes
- * the email + dashboard SWR caches so the Inbox / Sent / counts update.
+ * Full-page compose workspace. This is the same writing surface Jane gets when
+ * replying (big body editor filling the content area), per the 2026-07-10 ask
+ * that composing feel like "the same place on the screen" as replying — it
+ * replaces the old bottom-right floating dock. Supports writing manually or
+ * asking the AI to draft from an instruction, plus attachments (add/remove with
+ * a running total and a 25 MB client-side guard mirroring the server cap).
  */
-export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
+export function ComposeWorkspace({ onSent, onCancel }: ComposeWorkspaceProps) {
   const { mutate } = useSWRConfig();
 
-  const [minimized, setMinimized] = useState(false);
   const [mode, setMode] = useState<ComposeMode>("manual");
 
-  const [to, setTo] = useState(prefill?.to ?? "");
+  const [to, setTo] = useState("");
   const [showCc, setShowCc] = useState(false);
   const [cc, setCc] = useState("");
-  const [subject, setSubject] = useState(prefill?.subject ?? "");
-  const [body, setBody] = useState(prefill?.body ?? "");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
 
   const [instruction, setInstruction] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -113,7 +109,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
           typeof key === "string" &&
           (key.startsWith("/api/v1/emails") || key.startsWith("/api/v1/dashboard")),
       );
-      onClose();
+      onSent();
     } catch (err: unknown) {
       const message =
         err instanceof ApiError ? err.message : "Could not send the email.";
@@ -124,53 +120,13 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
   };
 
   return (
-    <div
-      className={cn(
-        "fixed bottom-0 right-4 sm:right-6 z-50 flex flex-col",
-        "w-[min(34rem,calc(100vw-2rem))] rounded-t-xl bg-card",
-        "ring-1 ring-foreground/10 shadow-2xl shadow-foreground/10",
-      )}
-      role="dialog"
-      aria-label="New email"
-    >
-      {/* Header bar — click to minimize / restore */}
-      <div
-        className="flex items-center justify-between gap-2 px-4 h-11 rounded-t-xl bg-foreground text-background cursor-pointer select-none"
-        onClick={() => setMinimized((m) => !m)}
-      >
-        <span className="text-sm font-medium truncate">
-          {subject.trim() || "New message"}
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMinimized((m) => !m);
-            }}
-            className="p-1 rounded hover:bg-background/20 transition-colors"
-            aria-label={minimized ? "Expand" : "Minimize"}
-          >
-            <Minus className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-            className="p-1 rounded hover:bg-background/20 transition-colors"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {!minimized && (
-        <div className="flex flex-col gap-3 p-4 max-h-[88vh] overflow-y-auto">
+    <div className="flex flex-col h-full min-h-0 bg-card border border-border rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="text-base font-semibold text-foreground">New Email</h1>
           {/* Mode toggle */}
-          <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/60 self-start">
+          <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/60">
             {(
               [
                 { id: "manual" as const, label: "Write myself" },
@@ -193,10 +149,24 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
               </button>
             ))}
           </div>
+        </div>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          aria-label="Cancel and go back to Emails"
+        >
+          <X className="w-4 h-4" aria-hidden="true" />
+          Cancel
+        </button>
+      </div>
 
+      {/* Scrollable body */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
+        <div className="flex flex-col gap-3 p-5 flex-1 min-h-0">
           {/* Recipients */}
           <div className="flex items-center gap-2 border-b border-border pb-2">
-            <label htmlFor="compose-to" className="text-xs text-muted-foreground w-10 shrink-0">
+            <label htmlFor="compose-to" className="text-xs text-muted-foreground w-14 shrink-0">
               To
             </label>
             <Input
@@ -219,7 +189,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
 
           {showCc && (
             <div className="flex items-center gap-2 border-b border-border pb-2">
-              <label htmlFor="compose-cc" className="text-xs text-muted-foreground w-10 shrink-0">
+              <label htmlFor="compose-cc" className="text-xs text-muted-foreground w-14 shrink-0">
                 Cc
               </label>
               <Input
@@ -234,7 +204,7 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
 
           {/* Subject */}
           <div className="flex items-center gap-2 border-b border-border pb-2">
-            <label htmlFor="compose-subject" className="text-xs text-muted-foreground w-10 shrink-0">
+            <label htmlFor="compose-subject" className="text-xs text-muted-foreground w-14 shrink-0">
               Subject
             </label>
             <Input
@@ -283,13 +253,12 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             </div>
           )}
 
-          {/* Body */}
+          {/* Body — grows to fill the remaining page height. */}
           <Textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="Write your message…"
-            rows={12}
-            className="textarea-autogrow resize-y shrink-0 min-h-[18rem] max-h-[60vh] text-sm"
+            className="flex-1 min-h-[16rem] resize-none text-sm leading-relaxed"
           />
           {/* Per-user signatures (018): show exactly what will be appended
               for the current sender (personal, or company fallback). */}
@@ -302,30 +271,30 @@ export function ComposeDock({ prefill, onClose }: ComposeDockProps) {
             totalBytes={totalBytes}
             overSizeLimit={overSizeLimit}
           />
-
-          {/* Footer */}
-          <div className="flex items-center gap-2 pt-1">
-            <Button
-              type="button"
-              onClick={handleSend}
-              disabled={!canSend}
-              className="gap-1.5"
-            >
-              {sending ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Sending…
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" /> Send
-                </>
-              )}
-            </Button>
-            <AttachButton onClick={openPicker} />
-            <AttachmentInput inputRef={inputRef} onFiles={addFiles} />
-          </div>
         </div>
-      )}
+      </div>
+
+      {/* Footer — pinned so Send is always reachable regardless of body length. */}
+      <div className="flex items-center gap-2 px-5 py-3 border-t border-border flex-shrink-0">
+        <Button
+          type="button"
+          onClick={handleSend}
+          disabled={!canSend}
+          className="gap-1.5"
+        >
+          {sending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" /> Sending…
+            </>
+          ) : (
+            <>
+              <Send className="w-4 h-4" /> Send
+            </>
+          )}
+        </Button>
+        <AttachButton onClick={openPicker} />
+        <AttachmentInput inputRef={inputRef} onFiles={addFiles} />
+      </div>
     </div>
   );
 }

@@ -20,18 +20,19 @@ const DRAFT_NEEDS_ATTENTION_STATUSES: DraftStatus[] = [
   "send_failed",
 ];
 
-// Draft workspace width (lg+ two-panel layout). Default is deliberately wider
-// than the old fixed 400px — the draft is where the editing happens, per Jane's
-// feedback. User-dragged width persists (jane_ localStorage convention) and is
-// clamped so the conversation panel never gets squeezed to nothing.
-const DRAFT_WIDTH_KEY = "jane_thread_draft_width";
-const DRAFT_WIDTH_DEFAULT = 520;
-const DRAFT_WIDTH_MIN = 380;
-const DRAFT_WIDTH_MAX = 680;
-const DRAFT_WIDTH_STEP = 24; // keyboard resize increment
+// Conversation (received-email) width for the lg+ two-panel layout. The DRAFT
+// is now the big flexible pane (per Jane's 2026-07-10 ask — she drafts long
+// emails and wants the room), so the *conversation* is the fixed, user-resizable
+// pane on the right. User-dragged width persists (jane_ localStorage convention)
+// and is clamped so the draft workspace never gets squeezed to nothing.
+const CONV_WIDTH_KEY = "jane_thread_conv_width";
+const CONV_WIDTH_DEFAULT = 420;
+const CONV_WIDTH_MIN = 320;
+const CONV_WIDTH_MAX = 560;
+const CONV_WIDTH_STEP = 24; // keyboard resize increment
 
-function clampDraftWidth(px: number): number {
-  return Math.min(DRAFT_WIDTH_MAX, Math.max(DRAFT_WIDTH_MIN, Math.round(px)));
+function clampConvWidth(px: number): number {
+  return Math.min(CONV_WIDTH_MAX, Math.max(CONV_WIDTH_MIN, Math.round(px)));
 }
 
 export default function ThreadDetailPage({
@@ -53,30 +54,30 @@ export default function ThreadDetailPage({
     setMobileTab("conversation");
   }, [threadId]);
 
-  // ── Resizable draft workspace (lg+) ──────────────────────────────────────
+  // ── Resizable conversation pane (lg+) ────────────────────────────────────
   const gridRef = useRef<HTMLDivElement>(null);
-  const [draftWidth, setDraftWidth] = useState(DRAFT_WIDTH_DEFAULT);
+  const [convWidth, setConvWidth] = useState(CONV_WIDTH_DEFAULT);
   const [resizing, setResizing] = useState(false);
   // Latest width for the pointer-up persist (the move handler's closure would
   // otherwise capture a stale value).
-  const draftWidthRef = useRef(draftWidth);
-  draftWidthRef.current = draftWidth;
+  const convWidthRef = useRef(convWidth);
+  convWidthRef.current = convWidth;
 
   // Hydrate the persisted width AFTER mount. Server and first client render
-  // both use DRAFT_WIDTH_DEFAULT so the markup matches (no hydration mismatch);
+  // both use CONV_WIDTH_DEFAULT so the markup matches (no hydration mismatch);
   // the stored value applies once we're on the client.
   useEffect(() => {
-    const saved = window.localStorage.getItem(DRAFT_WIDTH_KEY);
+    const saved = window.localStorage.getItem(CONV_WIDTH_KEY);
     if (saved !== null) {
       const n = Number(saved);
-      if (Number.isFinite(n)) setDraftWidth(clampDraftWidth(n));
+      if (Number.isFinite(n)) setConvWidth(clampConvWidth(n));
     }
   }, []);
 
-  const persistDraftWidth = useCallback((px: number) => {
-    const w = clampDraftWidth(px);
-    setDraftWidth(w);
-    window.localStorage.setItem(DRAFT_WIDTH_KEY, String(w));
+  const persistConvWidth = useCallback((px: number) => {
+    const w = clampConvWidth(px);
+    setConvWidth(w);
+    window.localStorage.setItem(CONV_WIDTH_KEY, String(w));
   }, []);
 
   const handleResizeStart = useCallback((e: React.PointerEvent) => {
@@ -86,16 +87,19 @@ export default function ThreadDetailPage({
 
   const handleResizeKey = useCallback(
     (e: React.KeyboardEvent) => {
-      // ArrowLeft widens the draft (divider moves left); ArrowRight narrows it.
+      // The divider follows the arrow: ArrowLeft moves it left (conversation
+      // grows, draft shrinks); ArrowRight moves it right (conversation shrinks,
+      // draft grows). The conversation is the right column, so its width tracks
+      // the divider position directly.
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        persistDraftWidth(draftWidthRef.current + DRAFT_WIDTH_STEP);
+        persistConvWidth(convWidthRef.current + CONV_WIDTH_STEP);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        persistDraftWidth(draftWidthRef.current - DRAFT_WIDTH_STEP);
+        persistConvWidth(convWidthRef.current - CONV_WIDTH_STEP);
       }
     },
-    [persistDraftWidth]
+    [persistConvWidth]
   );
 
   // Global pointer listeners live only while dragging so a drag that leaves the
@@ -106,12 +110,12 @@ export default function ThreadDetailPage({
     const onMove = (e: PointerEvent) => {
       const grid = gridRef.current;
       if (!grid) return;
-      // Draft pane is the right column: width = grid's right edge − pointer x.
-      setDraftWidth(clampDraftWidth(grid.getBoundingClientRect().right - e.clientX));
+      // Conversation is the right column: width = grid's right edge − pointer x.
+      setConvWidth(clampConvWidth(grid.getBoundingClientRect().right - e.clientX));
     };
     const onUp = () => {
       setResizing(false);
-      window.localStorage.setItem(DRAFT_WIDTH_KEY, String(draftWidthRef.current));
+      window.localStorage.setItem(CONV_WIDTH_KEY, String(convWidthRef.current));
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -222,29 +226,29 @@ export default function ThreadDetailPage({
         </div>
       </div>
 
-      {/* Two-panel layout. lg+ is a three-column grid — conversation (1fr),
-          a draggable divider, and the draft workspace (user-resizable width via
-          the --draft-w custom property). Below lg it collapses to a single
-          column and the mobile segmented control shows one panel at a time
-          (the divider is hidden). */}
+      {/* Two-panel layout. lg+ is a three-column grid — the draft workspace
+          (1fr, the big pane where Jane writes), a draggable divider, and the
+          received-email/conversation panel (user-resizable width via the
+          --conv-w custom property). Below lg it collapses to a single column
+          and the mobile segmented control shows one panel at a time (the
+          divider is hidden). */}
       <div
         ref={gridRef}
-        className="grid grid-cols-1 lg:[grid-template-columns:1fr_auto_var(--draft-w)] flex-1 min-h-0 overflow-hidden"
-        style={{ "--draft-w": `${draftWidth}px` } as React.CSSProperties}
+        className="grid grid-cols-1 lg:[grid-template-columns:1fr_auto_var(--conv-w)] flex-1 min-h-0 overflow-hidden"
+        style={{ "--conv-w": `${convWidth}px` } as React.CSSProperties}
       >
-        {/* Left panel: thread + messages. Marked as the print region. */}
+        {/* Left panel: draft workflow — the big workspace. Excluded from print
+            (Jane prints the conversation, not the draft editor). */}
         <div
-          data-print-region
           className={cn(
-            "min-h-0 min-w-0",
-            mobileTab === "draft" ? "hidden lg:block" : "block"
+            "min-h-0 overflow-hidden flex flex-col print:hidden",
+            mobileTab === "conversation" ? "hidden lg:flex" : "flex"
           )}
         >
-          <ThreadDetail
+          <DraftPanel
             thread={thread}
-            escalation={escalation ?? undefined}
-            onThreadChange={handleThreadChange}
-            onReviewDraft={() => setMobileTab("draft")}
+            draft={draft}
+            onDraftChange={handleDraftChange}
           />
         </div>
 
@@ -253,10 +257,10 @@ export default function ThreadDetailPage({
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize draft workspace"
-          aria-valuemin={DRAFT_WIDTH_MIN}
-          aria-valuemax={DRAFT_WIDTH_MAX}
-          aria-valuenow={draftWidth}
+          aria-label="Resize received-email panel"
+          aria-valuemin={CONV_WIDTH_MIN}
+          aria-valuemax={CONV_WIDTH_MAX}
+          aria-valuenow={convWidth}
           tabIndex={0}
           onPointerDown={handleResizeStart}
           onKeyDown={handleResizeKey}
@@ -268,18 +272,19 @@ export default function ThreadDetailPage({
           )}
         />
 
-        {/* Right panel: draft workflow. Excluded from print (Jane prints the
-            conversation, not the draft editor). */}
+        {/* Right panel: thread + messages. Marked as the print region. */}
         <div
+          data-print-region
           className={cn(
-            "border-t lg:border-t-0 border-border min-h-0 overflow-hidden flex flex-col print:hidden",
-            mobileTab === "conversation" ? "hidden lg:flex" : "flex"
+            "border-t lg:border-t-0 border-border min-h-0 min-w-0",
+            mobileTab === "draft" ? "hidden lg:block" : "block"
           )}
         >
-          <DraftPanel
+          <ThreadDetail
             thread={thread}
-            draft={draft}
-            onDraftChange={handleDraftChange}
+            escalation={escalation ?? undefined}
+            onThreadChange={handleThreadChange}
+            onReviewDraft={() => setMobileTab("draft")}
           />
         </div>
       </div>

@@ -20,6 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
 import { useDashboard } from "@/hooks/use-dashboard";
+import { useCompose } from "@/components/emails/compose-context";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { AlphaBadge } from "@/components/ui/alpha-badge";
 
@@ -70,6 +71,7 @@ export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: S
   const pathname = usePathname();
   const { isAdmin } = useUser();
   const { stats } = useDashboard();
+  const { openCompose } = useCompose();
 
   // Compute whether there are new items since last seen
   const lastSeenRef = useRef<LastSeenCounts>(getLastSeen());
@@ -156,11 +158,11 @@ export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: S
         )}
       </div>
 
-      {/* Compose — navigates to the full-page New Email workspace */}
+      {/* Compose — opens the full-page New Email workspace (minimizable to a
+          corner dock so it floats over any page). */}
       <div className="px-2 pb-2">
-        <Link
-          href="/emails/new"
-          onClick={() => onNavigate?.()}
+        <button
+          onClick={() => { openCompose(); onNavigate?.(); }}
           title={collapsed ? "New Email" : undefined}
           aria-label="New Email"
           className={cn(
@@ -170,7 +172,7 @@ export function Sidebar({ collapsed, onToggle, inDrawer = false, onNavigate }: S
         >
           <PenSquare className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
           {!collapsed && <span>New Email</span>}
-        </Link>
+        </button>
       </div>
 
       {/* Main nav */}

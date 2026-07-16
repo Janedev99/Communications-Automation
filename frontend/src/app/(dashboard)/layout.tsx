@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { KeyboardShortcutsDialog } from "@/components/shared/keyboard-shortcuts-dialog";
+import { ComposeProvider, ComposeMount } from "@/components/emails/compose-context";
 import { useUser } from "@/hooks/use-user";
 import { api } from "@/lib/api";
 
@@ -180,31 +181,37 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      {/* Desktop sidebar — hidden below lg, shown at lg+ */}
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+    <ComposeProvider>
+      <div className="flex h-screen overflow-hidden">
+        {/* Desktop sidebar — hidden below lg, shown at lg+ */}
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
 
-      {/* Mobile drawer — renders the sidebar without its desktop hide class */}
-      <MobileNavDrawer open={mobileNavOpen} onClose={closeMobileNav}>
-        <Sidebar
-          collapsed={false}
-          onToggle={() => {}}
-          inDrawer
-          onNavigate={closeMobileNav}
+        {/* Mobile drawer — renders the sidebar without its desktop hide class */}
+        <MobileNavDrawer open={mobileNavOpen} onClose={closeMobileNav}>
+          <Sidebar
+            collapsed={false}
+            onToggle={() => {}}
+            inDrawer
+            onNavigate={closeMobileNav}
+          />
+        </MobileNavDrawer>
+
+        {/* Content column is `relative` so the full-page compose overlay can
+            cover exactly this area (absolute inset-0) while the sidebar stays
+            visible for navigation. */}
+        <div className="relative flex flex-col flex-1 min-w-0 overflow-hidden">
+          <Header onOpenNav={openMobileNav} navOpen={mobileNavOpen} />
+          <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+            {children}
+          </main>
+          <ComposeMount />
+        </div>
+
+        <KeyboardShortcutsDialog
+          open={showShortcuts}
+          onOpenChange={setShowShortcuts}
         />
-      </MobileNavDrawer>
-
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <Header onOpenNav={openMobileNav} navOpen={mobileNavOpen} />
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {children}
-        </main>
       </div>
-
-      <KeyboardShortcutsDialog
-        open={showShortcuts}
-        onOpenChange={setShowShortcuts}
-      />
-    </div>
+    </ComposeProvider>
   );
 }

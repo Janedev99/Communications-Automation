@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Bookmark, Download, PenSquare, Search, ShieldX, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
 import { useDashboard } from "@/hooks/use-dashboard";
 import { useUser } from "@/hooks/use-user";
+import { useCompose } from "@/components/emails/compose-context";
 import type { BulkActionRequest, ThreadTier } from "@/lib/types";
 
 function parseTierParam(raw: string | null): TierFilter {
@@ -55,8 +56,8 @@ function readSavedView(): Partial<SavedEmailsView> {
 
 export default function EmailsPage() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const { isAdmin } = useUser();
+  const { openCompose } = useCompose();
 
   // Initial view: an explicit deep-link (e.g. ?client_email=) wins and starts at
   // page 1; otherwise restore the last view from sessionStorage so returning
@@ -302,7 +303,7 @@ export default function EmailsPage() {
                 Export
               </Button>
             )}
-            <Button onClick={() => router.push("/emails/new")}>
+            <Button onClick={() => openCompose()}>
               <PenSquare className="w-4 h-4 mr-1.5" aria-hidden="true" />
               New Email
             </Button>

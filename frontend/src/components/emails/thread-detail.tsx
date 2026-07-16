@@ -18,7 +18,6 @@ import {
   ShieldX,
   Trash2,
   UserCircle2,
-  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -43,7 +42,6 @@ import {
   changeThreadStatus,
   markThreadSpam,
   trashThread,
-  unsaveThread,
 } from "@/hooks/use-emails";
 import { useUser } from "@/hooks/use-user";
 import { cn, formatDate } from "@/lib/utils";
@@ -207,20 +205,6 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
     }
   };
 
-  const handleUnsave = async () => {
-    if (actionLoading) return;
-    setActionLoading("unsave");
-    try {
-      await unsaveThread(thread.id);
-      onThreadChange?.();
-      toast.success("Removed from saved.");
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Could not unsave.");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
   return (
     // min-h-0 is essential here: this component is a CSS-grid item in
     // page.tsx, and grid items default to min-height: auto (content size).
@@ -229,15 +213,10 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-card">
       {/* Thread metadata header */}
       <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
-        {/* Always stack the subject above the action toolbar. This panel
-            lives in a `1fr_400px` grid column, so its real width is far
-            narrower than the viewport once the sidebar + draft pane are
-            subtracted — a viewport-keyed `xl:flex-row` would go side-by-side
-            while the column is still cramped, letting the toolbar (and a long
-            saved-folder pill) crush the subject to one word per line. Full
-            width for the subject, wrapping toolbar below, is robust at any
-            container size. */}
-        <div className="flex flex-col gap-3">
+        {/* Subject + a compact action cluster share one row. The cluster is
+            small (Resolve + Claim + "⋯ More"), so it no longer squeezes the
+            subject the way the old wide toolbar did in this narrow pane. */}
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-foreground leading-snug tracking-tight">
               {thread.subject}
@@ -261,173 +240,12 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
             </div>
           </div>
 
-          {/* Action buttons — desktop (lg+). Breakpoint matches the sidebar
-              and the Conversation|Draft segmented control: below lg the
-              compact mobile cluster is used so tablet portrait (640–1023px)
-              never shows this full 6-button row in a constrained header. */}
-          <div className="hidden lg:flex flex-wrap items-center gap-2 flex-shrink-0 print:hidden">
-            {thread.is_saved ? (
-              // Segmented control: the folder label and the remove (✕) action
-              // share one bordered pill with a divider, so the ✕ reads as part
-              // of the same "saved" object instead of floating beside it.
-              <div className="inline-flex items-center h-8 rounded-lg ring-1 ring-amber-500/40 overflow-hidden text-amber-700 dark:text-amber-300">
-                <button
-                  type="button"
-                  onClick={() => openSaveForThread()}
-                  disabled={!!actionLoading}
-                  className="inline-flex items-center gap-1.5 h-full px-2.5 text-xs font-medium hover:bg-amber-500/10 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  title={
-                    thread.saved_folder
-                      ? `Saved in "${thread.saved_folder}" — click to edit`
-                      : "Saved — click to edit"
-                  }
-                >
-                  <BookmarkCheck className="w-3.5 h-3.5 shrink-0 fill-current" strokeWidth={1.75} aria-hidden="true" />
-                  <span className="truncate max-w-[180px]">{thread.saved_folder ?? "Saved"}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleUnsave}
-                  disabled={!!actionLoading}
-                  className="inline-flex items-center h-full px-1.5 border-l border-amber-500/30 hover:bg-amber-500/10 hover:text-destructive transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  title="Remove from saved"
-                  aria-label="Remove from saved"
-                >
-                  <XCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                </button>
-              </div>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => openSaveForThread()}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-                title="Save this thread to a folder"
-              >
-                <Bookmark className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Save
-              </Button>
-            )}
-            {!isAssignedToMe ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleClaim}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5"
-              >
-                <UserCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Claim
-              </Button>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleUnassign}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-muted-foreground"
-              >
-                <UserCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Unassign
-              </Button>
-            )}
-
-            {/* Add to Knowledge Base — always available, even on closed
-                threads (a resolved thread is often exactly the kind of
-                "settled answer" worth promoting to the KB). */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowAddToKbConfirm(true)}
-              disabled={!!actionLoading}
-              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              title="Add this conversation to the knowledge base — future AI drafts can pull from it as context"
-            >
-              <BookPlus className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-              Add to KB
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowForwardDialog(true)}
-              disabled={!!actionLoading || !hasInboundMessage}
-              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              title={hasInboundMessage ? "Forward this message to someone else" : "Nothing to forward yet"}
-            >
-              <Forward className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-              Forward
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => window.print()}
-              className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
-              title="Print this conversation"
-            >
-              <Printer className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-              Print
-            </Button>
-
-            {/* Trash + spam: hidden when the thread is already closed
-                (closed threads should be reopened first, not trashed,
-                so the audit trail preserves intent). */}
-            {!isClosed && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowSpamConfirm(true)}
-                  disabled={!!actionLoading}
-                  className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-500/10"
-                  title="Mark as spam — moves to Junk Email in Outlook and trains the junk filter"
-                >
-                  <ShieldX className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                  Spam
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowTrashConfirm(true)}
-                  disabled={!!actionLoading}
-                  className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  title="Delete — moves to Deleted Items in Outlook"
-                >
-                  <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                  Delete
-                </Button>
-              </>
-            )}
-            {isClosed ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleReopen}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10"
-              >
-                <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Reopen
-              </Button>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClose}
-                disabled={!!actionLoading}
-                className="h-8 text-xs gap-1.5 text-muted-foreground hover:text-emerald-700 dark:hover:text-emerald-300 hover:bg-emerald-500/10"
-                title="Mark this thread resolved (it moves out of the active inbox)"
-              >
-                <CheckCircle className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden="true" />
-                Resolve
-              </Button>
-            )}
-          </div>
-
-          {/* Action buttons — mobile + tablet (below lg) */}
-          <div className="flex lg:hidden items-center gap-2 flex-shrink-0 print:hidden">
+          {/* Actions — a compact primary + "⋯ More" cluster. The received
+              email now sits in the narrow reference pane (~320–560px on
+              desktop, so never wide enough for a full button row), so the wide
+              toolbar was retired in favour of this cluster at every width:
+              Resolve + Claim stay one tap away, everything else lives in More. */}
+          <div className="flex items-center gap-2 flex-shrink-0 print:hidden">
             {/* Resolve / Reopen */}
             {isClosed ? (
               <Button

@@ -98,9 +98,14 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
   const isClosed = thread.status === "closed";
   const isAssignedToMe = !!user && thread.assigned_to_id === user.id;
+  // Defensive: a well-formed thread always carries a messages array, but guard
+  // against a malformed/partial object (e.g. an invalid thread id reaching this
+  // route) so the whole page degrades to an empty conversation instead of
+  // white-screening on `.some`/`.map`.
+  const messages = thread.messages ?? [];
   // Forward operates on the latest INBOUND message — with none, the dialog
   // would open but could never submit. Disable both triggers up front.
-  const hasInboundMessage = thread.messages.some((m) => m.direction === "inbound");
+  const hasInboundMessage = messages.some((m) => m.direction === "inbound");
 
   const handleClaim = async () => {
     if (!user || actionLoading) return;
@@ -498,10 +503,10 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
 
         {/* Messages */}
         <div className="flex flex-col space-y-4 px-6 py-4 bg-muted/50 min-w-0">
-          {thread.messages.length === 0 ? (
+          {messages.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No messages yet.</p>
           ) : (
-            thread.messages.map((message) => (
+            messages.map((message) => (
               <MessageBubble
                 key={message.id}
                 message={message}

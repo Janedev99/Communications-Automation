@@ -233,3 +233,87 @@ def test_poll_respects_the_flag(mock_email_provider, monkeypatch):
     ei.poll_once()
     folders = {c["folder"] for c in mock_email_provider.delta_calls}
     assert folders == {"deleted_items", "junk_email"}
+
+
+# ── MSGraph delta paging (regression: large-folder baseline) ──────────────────
+
+class _FakeResp:
+    def __init__(self, payload: dict):
+        self._p = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._p
+
+
+def _make_msgraph_provider():
+    """MSGraphProvider with auth + client stubbed so we can drive delta paging."""
+    from types import SimpleNamespace
+    from app.services.email_provider import MSGraphProvider
+
+    settings = SimpleNamespace(
+        msgraph_mailbox="jane@example.com",
+        msgraph_tenant_id="t",
+        msgraph_client_id="c",
+        msgraph_client_secret="s",
+    )
+    provider = MSGraphProvider(settings)
+    provider._headers = lambda: {"Authorization": "Bearer test"}
+    return provider
+
+
+def test_msgraph_delta_follows_pages_and_captures_deltalink():
+    """Baseline must follow @odata.nextLink to the terminal deltaLink, skipping
+    @removed entries and requesting large pages — the large-folder bug."""
+    provider = _make_msgraph_provider()
+    pages = [
+        {"value": [{"internetMessageId": "<a@x>"}], "@odata.nextLink": "PAGE-2"},
+        {
+            "value": [
+                {"internetMessageId": "<b@x>"},
+                {"@removed": {"reason": "deleted"}, "id": "gone"},
+            ],
+            "@odata.deltaLink": "DELTA-FINAL",
+        },
+    ]
+    calls: list[dict] = []
+
+    def fake_get(url, headers=None):
+        calls.append({"url": url, "headers": headers})
+        return _FakeResp(pages[len(calls) - 1])
+
+    provider._client = type("C", (), {"get": staticmethod(fake_get)})()
+
+    ids, next_delta = provider.delta_folder_messages(
+        folder="deleted_items", delta_link=None
+    )
+
+    assert ids == ["<a@x>", "<b@x>"]  # @removed entry skipped
+    assert next_delta == "DELTA-FINAL"  # terminal deltaLink captured
+    assert len(calls) == 2  # followed nextLink exactly once
+    assert calls[0]["headers"].get("Prefer") == "odata.maxpagesize=500"
+    assert calls[1]["url"] == "PAGE-2"  # resumed from the nextLink URL
+
+
+def test_msgraph_delta_never_advances_cursor_when_cap_hit():
+    """If pages never terminate in a deltaLink (cap reached), the cursor is NOT
+    advanced — so a failed baseline retries next poll rather than silently
+    marking itself done. Regression for the 100-page abort."""
+    provider = _make_msgraph_provider()
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None):
+        calls["n"] += 1
+        # Always a nextLink, never a deltaLink → the cap must stop it.
+        return _FakeResp({"value": [], "@odata.nextLink": "MORE"})
+
+    provider._client = type("C", (), {"get": staticmethod(fake_get)})()
+
+    ids, next_delta = provider.delta_folder_messages(
+        folder="junk_email", delta_link="PRIOR-CURSOR"
+    )
+
+    assert next_delta == "PRIOR-CURSOR"  # unchanged — no false advance
+    assert calls["n"] == 1000  # stopped at the page cap

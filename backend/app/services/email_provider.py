@@ -787,14 +787,24 @@ class MSGraphProvider(EmailProvider):
             f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/{folder_id}"
             "/messages/delta?$select=internetMessageId"
         )
+        # Ask for large pages: a first-run baseline over a big Deleted Items
+        # folder is downloaded once to reach the deltaLink, and Graph's default
+        # message-delta page is tiny — without this a large folder needs
+        # hundreds of round-trips. Graph honours odata.maxpagesize on message
+        # delta (server caps it), and the token is carried in @odata.nextLink.
+        headers = {**self._headers(), "Prefer": "odata.maxpagesize=500"}
         ids: list[str] = []
         next_delta: str | None = delta_link
-        # Follow @odata.nextLink pages until the terminal @odata.deltaLink.
-        # Cap pages so a pathological cursor can't spin the poll thread forever.
-        for _ in range(100):
+        reached_delta_link = False
+        # Cap pages as a safety bound (≈500k messages at 500/page) so a
+        # pathological cursor can't spin the poll thread forever — but high
+        # enough that a real baseline over a large folder finishes and captures
+        # its deltaLink. An aborted baseline advances no cursor and would
+        # re-walk from scratch every poll (see the warning below).
+        for _ in range(1000):
             if not url:
                 break
-            resp = self._client.get(url, headers=self._headers())
+            resp = self._client.get(url, headers=headers)
             resp.raise_for_status()
             payload = resp.json()
             for item in payload.get("value", []):
@@ -806,8 +816,16 @@ class MSGraphProvider(EmailProvider):
             if "@odata.deltaLink" in payload:
                 next_delta = payload["@odata.deltaLink"]
                 url = None
+                reached_delta_link = True
             else:
                 url = payload.get("@odata.nextLink")
+        if not reached_delta_link:
+            logger.warning(
+                "MSGraph delta for %s hit the page cap without a deltaLink; "
+                "cursor not advanced (will retry next poll). If this recurs, the "
+                "folder is larger than the cap allows to baseline.",
+                folder,
+            )
         return ids, next_delta
 
     def find_or_create_folder(self, name: str) -> str | None:

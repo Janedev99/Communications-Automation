@@ -205,6 +205,7 @@ function FolderTreeRow({
         <button
           type="button"
           onClick={() => f.name && onSelect(f.name)}
+          title={f.name ?? undefined}
           className="flex-1 flex items-center gap-1.5 py-1 pr-2 text-sm text-left min-w-0"
         >
           <Folder className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
@@ -338,6 +339,18 @@ export default function SavedPage() {
   const folderTree = buildFolderTree(namedFolders);
   const folderFilter = folderQuery.trim().toLowerCase();
 
+  // Human label + icon for the folder currently in view — surfaced as a
+  // header above the tabs so it's always clear which folder is open (the
+  // rail selection alone can scroll out of sight in a long folder list).
+  const activeFolderLabel =
+    activeFolder === ALL_FOLDERS
+      ? "All saved"
+      : activeFolder === UNFILED
+      ? "No folder"
+      : activeFolder;
+  const ActiveFolderIcon =
+    activeFolder === ALL_FOLDERS ? Bookmark : activeFolder === UNFILED ? Inbox : Folder;
+
   return (
     <div>
       <PageHeader
@@ -406,6 +419,21 @@ export default function SavedPage() {
 
         {/* Tabs + sort + list */}
         <section>
+          {/* Active-folder header — tells the user which folder these tabs
+              are showing, since the rail selection can scroll off-screen. */}
+          <div className="flex items-center gap-2 mb-3 min-w-0">
+            <ActiveFolderIcon
+              className="w-4 h-4 shrink-0 text-muted-foreground"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
+            <h2
+              className="text-base font-semibold text-foreground truncate"
+              title={activeFolderLabel}
+            >
+              {activeFolderLabel}
+            </h2>
+          </div>
           <div className="flex items-center gap-1 mb-3 border-b border-border/60">
             <TabButton
               active={activeTab === "threads"}
@@ -791,6 +819,7 @@ function FolderRailItem({
       <span className="w-4 shrink-0" aria-hidden="true" />
       <button
         onClick={onClick}
+        title={label}
         className="flex-1 flex items-center gap-1.5 py-1 pr-2 text-sm text-left min-w-0"
       >
         <Icon

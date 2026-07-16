@@ -229,12 +229,16 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-card">
       {/* Thread metadata header */}
       <div className="px-6 py-5 border-b border-border bg-card flex-shrink-0">
-        {/* Stack the subject above the action toolbar below xl so the subject
-            gets full width — the 7-button toolbar is fixed-width and would
-            otherwise squeeze the subject to one-word-per-line at 1024–1280px.
-            Side-by-side returns at xl+. */}
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between xl:gap-4">
-          <div className="min-w-0 xl:flex-1">
+        {/* Always stack the subject above the action toolbar. This panel
+            lives in a `1fr_400px` grid column, so its real width is far
+            narrower than the viewport once the sidebar + draft pane are
+            subtracted — a viewport-keyed `xl:flex-row` would go side-by-side
+            while the column is still cramped, letting the toolbar (and a long
+            saved-folder pill) crush the subject to one word per line. Full
+            width for the subject, wrapping toolbar below, is robust at any
+            container size. */}
+        <div className="flex flex-col gap-3">
+          <div className="min-w-0">
             <h2 className="text-lg font-semibold text-foreground leading-snug tracking-tight">
               {thread.subject}
             </h2>
@@ -278,8 +282,8 @@ export function ThreadDetail({ thread, escalation, onThreadChange, onReviewDraft
                       : "Saved — click to edit"
                   }
                 >
-                  <BookmarkCheck className="w-3.5 h-3.5 fill-current" strokeWidth={1.75} aria-hidden="true" />
-                  {thread.saved_folder ?? "Saved"}
+                  <BookmarkCheck className="w-3.5 h-3.5 shrink-0 fill-current" strokeWidth={1.75} aria-hidden="true" />
+                  <span className="truncate max-w-[180px]">{thread.saved_folder ?? "Saved"}</span>
                 </button>
                 <button
                   type="button"

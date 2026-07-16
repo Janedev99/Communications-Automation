@@ -316,6 +316,21 @@ class EmailProvider(ABC):
         """Move a message into an arbitrary folder. Base no-op."""
         return None
 
+    def delta_folder_messages(
+        self, *, folder: str, delta_link: str | None
+    ) -> tuple[list[str], str | None]:
+        """
+        Return ``(internet_message_ids, next_delta_link)`` for messages that
+        arrived in ``folder`` since ``delta_link`` (or a fresh baseline when
+        ``delta_link`` is None). ``folder`` is a logical name
+        (``"deleted_items"`` | ``"junk_email"``).
+
+        Used by the Outlook→app delete-sync to detect mail Jane deleted/junked
+        in the mailbox. Base no-op: returns no changes and echoes the cursor,
+        so non-delta providers (IMAP) contribute nothing to delete-sync.
+        """
+        return [], delta_link
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -746,6 +761,54 @@ class MSGraphProvider(EmailProvider):
                 internet_message_id, destination, exc, exc.response.text[:500],
             )
             raise
+
+    def delta_folder_messages(
+        self, *, folder: str, delta_link: str | None
+    ) -> tuple[list[str], str | None]:
+        """
+        Delta-query a well-known folder (Deleted Items / Junk) for newly-arrived
+        messages, returning ``(internet_message_ids, next_delta_link)``.
+
+        Resumes from ``delta_link`` when given (a full Graph URL); otherwise
+        starts a fresh delta — which returns every current item plus a terminal
+        deltaLink, so callers must treat a first (baseline) run as
+        cursor-capture only and not act on the returned ids. ``@removed``
+        entries (messages leaving the folder — a restore or purge) are skipped:
+        v1 only reflects arrivals (deletions), not restores.
+        """
+        folder_id = self._DESTINATION_FOLDER_IDS.get(folder)
+        if folder_id is None:
+            raise ValueError(
+                f"Unknown delta folder {folder!r}; expected one of "
+                f"{sorted(self._DESTINATION_FOLDER_IDS)}"
+            )
+        mailbox = self._settings.msgraph_mailbox
+        url: str | None = delta_link or (
+            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/{folder_id}"
+            "/messages/delta?$select=internetMessageId"
+        )
+        ids: list[str] = []
+        next_delta: str | None = delta_link
+        # Follow @odata.nextLink pages until the terminal @odata.deltaLink.
+        # Cap pages so a pathological cursor can't spin the poll thread forever.
+        for _ in range(100):
+            if not url:
+                break
+            resp = self._client.get(url, headers=self._headers())
+            resp.raise_for_status()
+            payload = resp.json()
+            for item in payload.get("value", []):
+                if "@removed" in item:
+                    continue
+                imid = item.get("internetMessageId")
+                if imid:
+                    ids.append(imid)
+            if "@odata.deltaLink" in payload:
+                next_delta = payload["@odata.deltaLink"]
+                url = None
+            else:
+                url = payload.get("@odata.nextLink")
+        return ids, next_delta
 
     def find_or_create_folder(self, name: str) -> str | None:
         """Find a mailbox root folder named `name` (case-insensitive) or create

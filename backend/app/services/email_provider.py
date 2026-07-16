@@ -308,6 +308,10 @@ class EmailProvider(ABC):
         absent. Base no-op (non-Graph providers don't sync). Never deletes."""
         return None
 
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete a mail folder (recoverable move to Deleted Items). Base no-op."""
+        return None
+
     def move_message_to_folder(self, internet_message_id: str, folder_id: str) -> None:
         """Move a message into an arbitrary folder. Base no-op."""
         return None
@@ -763,6 +767,18 @@ class MSGraphProvider(EmailProvider):
         )
         resp.raise_for_status()
         return resp.json()["id"]
+
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete a mail folder via Graph. Graph moves the folder (and its
+        contents) to Deleted Items — recoverable, NOT a permanent purge. This is
+        the only method that deletes a folder; import/sync/find-or-create never do."""
+        mailbox = self._settings.msgraph_mailbox
+        resp = self._client.delete(
+            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/{folder_id}",
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        logger.info("MSGraph: deleted (moved to Deleted Items) folder %s", folder_id)
 
     def move_message_to_folder(self, internet_message_id: str, folder_id: str) -> None:
         """Move a message (by stored internetMessageId) into `folder_id`.

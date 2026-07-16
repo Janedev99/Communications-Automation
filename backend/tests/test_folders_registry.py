@@ -1,0 +1,173 @@
+from __future__ import annotations
+import uuid
+from app.models.email import SavedFolderRow
+
+
+def test_saved_folder_row_columns():
+    row = SavedFolderRow(name="Acme Corp", source="app")
+    assert row.name == "Acme Corp"
+    assert row.source == "app"
+    assert row.parent_id is None
+    assert row.outlook_folder_id is None
+    assert row.outlook_item_count is None
+
+
+def test_saved_folder_row_tablename():
+    assert SavedFolderRow.__tablename__ == "saved_folders"
+
+
+def test_folder_schemas_exist():
+    from app.schemas.email import (
+        CreateFolderRequest, FolderImportResult, FolderSyncResult, SavedFolder,
+    )
+    req = CreateFolderRequest(name="X")
+    assert req.parent_id is None
+    sf = SavedFolder(name="X", count=0, thread_count=0, message_count=0)
+    assert sf.source is None and sf.outlook_item_count is None
+    assert FolderImportResult(imported=1, updated=2, total=3).total == 3
+    assert FolderSyncResult(created=1, existing=2, total=3).created == 1
+
+
+def test_list_folders_merges_registry_and_counts(logged_in_admin, db_session):
+    from app.models.email import EmailThread, EmailCategory, EmailStatus
+    # A registry folder with no saved items -> appears with count 0.
+    empty = SavedFolderRow(name="Empty Client", source="outlook",
+                           outlook_folder_id="OF1", outlook_item_count=147)
+    db_session.add(empty)
+    # A saved thread filed under a registry-less legacy label -> still surfaces.
+    t = EmailThread(id=uuid.uuid4(), client_email="c@x.com", subject="s",
+                    category=EmailCategory.general_inquiry, status=EmailStatus.categorized,
+                    is_saved=True, saved_folder="Legacy Label")
+    db_session.add(t)
+    db_session.commit()
+
+    resp = logged_in_admin.get("/api/v1/emails/saved/folders")
+    assert resp.status_code == 200, resp.text
+    by_name = {f["name"]: f for f in resp.json()}
+    assert by_name["Empty Client"]["count"] == 0
+    assert by_name["Empty Client"]["source"] == "outlook"
+    assert by_name["Empty Client"]["outlook_item_count"] == 147
+    assert by_name["Legacy Label"]["count"] == 1  # defensive union
+    assert by_name["Legacy Label"]["source"] == "app"
+
+
+def test_create_folder_and_subfolder_and_conflict(logged_in_admin, db_session):
+    r1 = logged_in_admin.post("/api/v1/emails/saved/folders", json={"name": "Parent"})
+    assert r1.status_code == 201, r1.text
+    parent_id = r1.json()["id"]
+
+    r2 = logged_in_admin.post("/api/v1/emails/saved/folders",
+                              json={"name": "Child", "parent_id": parent_id})
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["parent_id"] == str(parent_id)
+
+    # Case-insensitive duplicate -> 409.
+    r3 = logged_in_admin.post("/api/v1/emails/saved/folders", json={"name": "parent"})
+    assert r3.status_code == 409, r3.text
+
+
+def test_create_folder_rejects_missing_parent(logged_in_admin):
+    import uuid as _u
+    resp = logged_in_admin.post(
+        "/api/v1/emails/saved/folders",
+        json={"name": "Orphan Child", "parent_id": str(_u.uuid4())},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def _mk_folder(db, name, parent_id=None, outlook_id=None):
+    row = SavedFolderRow(name=name, parent_id=parent_id, source="app",
+                         outlook_folder_id=outlook_id)
+    db.add(row); db.commit(); db.refresh(row); return row
+
+
+def test_delete_folder_removes_row_and_descendants_and_unfiles(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    from app.models.email import EmailThread, EmailCategory, EmailStatus
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", False, raising=False)
+    parent = _mk_folder(db_session, "P")
+    child = _mk_folder(db_session, "C", parent_id=parent.id)
+    t = EmailThread(id=uuid.uuid4(), client_email="c@x.com", subject="s",
+                    category=EmailCategory.general_inquiry, status=EmailStatus.categorized,
+                    is_saved=True, saved_folder="P")
+    db_session.add(t); db_session.commit()
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/P")
+    assert resp.status_code == 204, resp.text
+    # registry row + child gone; item unfiled; NO graph delete (flag off).
+    # The endpoint runs in a separate request-scoped session; detach these
+    # already-loaded rows from this session's identity map first so .get()
+    # issues a fresh SELECT instead of returning the (now stale) cached
+    # objects from _mk_folder() above — expiring them instead would raise
+    # ObjectDeletedError since the underlying rows are actually gone.
+    db_session.expunge(parent)
+    db_session.expunge(child)
+    assert db_session.get(SavedFolderRow, parent.id) is None
+    assert db_session.get(SavedFolderRow, child.id) is None
+    db_session.refresh(t)
+    assert t.saved_folder is None and t.is_saved is True
+    assert called == []
+
+
+def test_delete_folder_reflects_to_outlook_when_flag_on(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    f = _mk_folder(db_session, "SyncMe", outlook_id="OF9")
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/SyncMe")
+    assert resp.status_code == 204, resp.text
+    assert called == ["OF9"]  # reflected to Outlook
+
+
+def test_delete_folder_case_variants_prefers_exact_match(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    a = _mk_folder(db_session, "CaseTest", outlook_id="OF-EXACT")
+    b = _mk_folder(db_session, "casetest2", outlook_id="OF-OTHER")  # nearby, not a variant
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/CaseTest")
+    assert resp.status_code == 204, resp.text
+    assert called == ["OF-EXACT"]
+
+
+def test_delete_folder_ambiguous_case_variants_deletes_neither_in_outlook(logged_in_admin, db_session, monkeypatch):
+    import app.api.emails as emails_api
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "outlook_folder_sync", True, raising=False)
+    monkeypatch.setattr(s, "email_provider", "msgraph", raising=False)
+    _mk_folder(db_session, "Ambig Folder", outlook_id="OF-A")
+    _mk_folder(db_session, "ambig folder", outlook_id="OF-B")
+
+    called = []
+    class _Prov:
+        def delete_folder(self, fid): called.append(fid)
+    monkeypatch.setattr(emails_api, "get_email_provider", lambda: _Prov())
+
+    # Request uses a THIRD casing that matches neither exactly and both case-insensitively.
+    resp = logged_in_admin.delete("/api/v1/emails/saved/folders/AMBIG FOLDER")
+    assert resp.status_code == 204, resp.text
+    assert called == []  # ambiguous -> touch nothing in Outlook

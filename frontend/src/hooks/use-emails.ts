@@ -7,7 +7,6 @@ import type {
   BulkActionResponse,
   EmailThread,
   EmailThreadListItem,
-  OutlookFolder,
   PaginatedResponse,
   SavedFolder,
   SavedMessageItem,
@@ -216,22 +215,6 @@ export function unsaveThread(threadId: string): Promise<EmailThread> {
   return api.post<EmailThread>(`/api/v1/emails/${threadId}/unsave`, {});
 }
 
-/** One level of Outlook folders. Omit parentId for the top level; pass a
- *  folder id to fetch its children (lazy expand). `custom` hides Outlook's
- *  built-in system folders and surfaces Jane's own folder tree. */
-export function useOutlookFolders(parentId?: string, custom = false) {
-  const sp = new URLSearchParams();
-  if (parentId) sp.set("parent", parentId);
-  if (custom) sp.set("custom", "true");
-  const qs = sp.toString();
-  const key = qs ? `/api/v1/mailbox/folders?${qs}` : "/api/v1/mailbox/folders";
-  const { data, error, isLoading } = useSWR<{ folders: OutlookFolder[] }>(
-    key,
-    swrFetcher,
-  );
-  return { folders: data?.folders ?? [], isLoading, isError: !!error };
-}
-
 export function useSavedFolders() {
   const { data, error, isLoading, mutate } = useSWR<SavedFolder[]>(
     "/api/v1/emails/saved/folders",
@@ -301,4 +284,19 @@ export function deleteSavedFolder(folder: string): Promise<void> {
   return api.delete<void>(
     `/api/v1/emails/saved/folders/${encodeURIComponent(folder)}`,
   );
+}
+
+export function createFolder(body: { name: string; parent_id?: string | null }): Promise<SavedFolder> {
+  return api.post<SavedFolder>("/api/v1/emails/saved/folders", body);
+}
+
+export interface FolderImportResult { imported: number; updated: number; total: number }
+export interface FolderSyncResult { created: number; existing: number; total: number }
+
+export function importOutlookFolders(): Promise<FolderImportResult> {
+  return api.post<FolderImportResult>("/api/v1/emails/saved/folders/import-from-outlook", {});
+}
+
+export function syncFoldersToOutlook(): Promise<FolderSyncResult> {
+  return api.post<FolderSyncResult>("/api/v1/emails/saved/folders/sync-to-outlook", {});
 }

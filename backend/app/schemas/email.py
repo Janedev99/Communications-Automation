@@ -357,15 +357,36 @@ class AddThreadToKnowledgeBaseRequest(BaseModel):
 
 class SavedFolder(BaseModel):
     """Entry returned by GET /emails/saved/folders."""
+    id: uuid.UUID | None = None
     name: str | None = Field(
         default=None,
         description="Folder name. Null indicates the unsorted/unfiled saved bucket.",
     )
+    parent_id: uuid.UUID | None = None
+    source: str | None = None  # "app" | "outlook" | None (unfiled bucket)
+    outlook_item_count: int | None = None
     count: int
     # Per-folder breakdown so the frontend can show e.g. "Smith folder
     # holds 2 threads + 3 individual emails" without two separate calls.
     thread_count: int = 0
     message_count: int = 0
+
+
+class CreateFolderRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    parent_id: uuid.UUID | None = None
+
+
+class FolderImportResult(BaseModel):
+    imported: int
+    updated: int
+    total: int
+
+
+class FolderSyncResult(BaseModel):
+    created: int
+    existing: int
+    total: int
 
 
 class SavedMessageItem(BaseModel):

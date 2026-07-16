@@ -1,25 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
 import {
   ArrowUpDown,
   Bookmark,
   BookmarkCheck,
+  ChevronRight,
   Folder,
   FolderInput,
   Inbox,
   Mail,
   MessagesSquare,
+  Plus,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
-import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { CategoryBadge } from "@/components/emails/category-badge";
-import { OutlookFolderTree } from "@/components/emails/outlook-folder-tree";
+import { FolderDeleteDialog } from "@/components/emails/folder-delete-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -38,18 +39,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  deleteSavedFolder,
+  createFolder,
   saveMessage,
   saveThread,
   useEmails,
-  useOutlookFolders,
   useSavedFolders,
   useSavedMessages,
   type SavedMessageSort,
   type ThreadSort,
 } from "@/hooks/use-emails";
 import { cn, relativeTime } from "@/lib/utils";
-import type { EmailThreadListItem, SavedMessageItem } from "@/lib/types";
+import type { EmailThreadListItem, SavedFolder, SavedMessageItem } from "@/lib/types";
 
 const ALL_FOLDERS = "__all__";
 const UNFILED = "__unfiled__";
@@ -84,31 +84,205 @@ const MESSAGE_SORT_OPTIONS: { value: SavedMessageSort; label: string }[] = [
   { value: "client_desc", label: "Client Z → A" },
 ];
 
+// ── Folder rail tree ──────────────────────────────────────────────────────────
+// After the Outlook import (Task 8), every folder shown in the rail — app
+// folders and imported Outlook folders alike — is a registry row with an
+// id/parent_id, so we build a single nested tree instead of splitting into a
+// flat app-folder list + a separate live-Graph tree.
+
+interface FolderNodeData {
+  folder: SavedFolder;
+  children: FolderNodeData[];
+}
+
+/**
+ * Nests folders by `parent_id`. Legacy label-only folders (pre-registry rows
+ * that never got an `id` migrated) can't participate in parent/child lookups
+ * by id, so they're rendered as root-level leaves rather than dropped.
+ */
+function buildFolderTree(folders: SavedFolder[]): FolderNodeData[] {
+  const byId = new Map<string, FolderNodeData>();
+  folders.forEach((f) => {
+    if (f.id) byId.set(f.id, { folder: f, children: [] });
+  });
+  const roots: FolderNodeData[] = [];
+  folders.forEach((f) => {
+    if (!f.id) {
+      // No id to nest by — surface it as a leaf at the top level.
+      roots.push({ folder: f, children: [] });
+      return;
+    }
+    const node = byId.get(f.id)!;
+    const parent = f.parent_id ? byId.get(f.parent_id) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  });
+  return roots;
+}
+
+function subtreeMatches(node: FolderNodeData, filter: string): boolean {
+  if (!filter) return true;
+  if ((node.folder.name ?? "").toLowerCase().includes(filter)) return true;
+  return node.children.some((c) => subtreeMatches(c, filter));
+}
+
+/**
+ * Finds a folder's node in the tree so its direct children can be listed
+ * (for the "subfolders will be deleted too" note in the delete dialog).
+ * Matches by id when both sides have one; falls back to name for legacy
+ * label-only folders that never got an id migrated.
+ */
+function findNodeByFolder(
+  nodes: FolderNodeData[],
+  folder: SavedFolder,
+): FolderNodeData | undefined {
+  for (const node of nodes) {
+    const sameFolder = folder.id
+      ? node.folder.id === folder.id
+      : node.folder.name === folder.name;
+    if (sameFolder) return node;
+    const found = findNodeByFolder(node.children, folder);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * One row in the folder tree, recursing into its children. Mirrors the
+ * compact `FolderRailItem` styling so the tree reads as part of the same
+ * rail, with a chevron column for expand/collapse and hover-revealed
+ * "+subfolder" / delete actions.
+ */
+function FolderTreeRow({
+  node,
+  depth,
+  activeFolder,
+  filter,
+  onSelect,
+  onDelete,
+  onAddChild,
+}: {
+  node: FolderNodeData;
+  depth: number;
+  activeFolder: string;
+  filter: string;
+  onSelect: (name: string) => void;
+  onDelete: (f: SavedFolder) => void;
+  onAddChild: (parent: SavedFolder) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const f = node.folder;
+  const nameMatch = !filter || (f.name ?? "").toLowerCase().includes(filter);
+  const descMatch = node.children.some((c) => subtreeMatches(c, filter));
+  if (filter && !nameMatch && !descMatch) return null;
+
+  return (
+    <div>
+      <div
+        className={cn(
+          "group/row relative flex items-center rounded-md transition-colors",
+          activeFolder === f.name
+            ? "bg-card text-foreground ring-1 ring-border shadow-sm"
+            : "text-muted-foreground hover:text-foreground hover:bg-accent",
+        )}
+        style={{ paddingLeft: `${depth * 12}px` }}
+      >
+        <button
+          type="button"
+          onClick={() => node.children.length > 0 && setExpanded((v) => !v)}
+          className={cn(
+            "flex items-center justify-center w-4 h-6 shrink-0",
+            node.children.length === 0 && "invisible",
+          )}
+          aria-label={expanded ? "Collapse folder" : "Expand folder"}
+        >
+          <ChevronRight
+            className={cn("w-3 h-3 transition-transform", expanded && "rotate-90")}
+            strokeWidth={1.75}
+            aria-hidden="true"
+          />
+        </button>
+        <button
+          type="button"
+          onClick={() => f.name && onSelect(f.name)}
+          title={f.name ?? undefined}
+          className="flex-1 flex items-center gap-1.5 py-1 pr-2 text-sm text-left min-w-0"
+        >
+          <Folder className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          <span className="flex-1 truncate">{f.name}</span>
+          <span className="text-[10px] tabular-nums text-muted-foreground">{f.count}</span>
+        </button>
+        {f.id && (
+          <button
+            type="button"
+            onClick={() => onAddChild(f)}
+            className={cn(
+              "shrink-0 p-0.5 rounded transition-colors",
+              "text-muted-foreground/60 hover:text-foreground hover:bg-accent",
+              "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
+            )}
+            title="New subfolder"
+            aria-label={`New subfolder in ${f.name}`}
+          >
+            <Plus className="w-3 h-3" strokeWidth={1.75} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onDelete(f)}
+          className={cn(
+            "shrink-0 mr-1 p-0.5 rounded transition-colors",
+            "text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10",
+            "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100",
+          )}
+          title={`Delete folder "${f.name}"`}
+          aria-label={`Delete folder ${f.name}`}
+        >
+          <Trash2 className="w-3 h-3" strokeWidth={1.75} />
+        </button>
+      </div>
+      {expanded &&
+        node.children.map((c) => (
+          <FolderTreeRow
+            key={c.folder.id}
+            node={c}
+            depth={depth + 1}
+            activeFolder={activeFolder}
+            filter={filter}
+            onSelect={onSelect}
+            onDelete={onDelete}
+            onAddChild={onAddChild}
+          />
+        ))}
+    </div>
+  );
+}
+
 export default function SavedPage() {
   const {
     folders,
     isLoading: foldersLoading,
     mutate: mutateFolders,
   } = useSavedFolders();
-  // Jane's own Outlook folders share the same rail list. SWR dedupes this
-  // identical request with the one inside <OutlookFolderTree/> — no extra
-  // fetch — we read it here only to decide whether to show the Folders header.
-  const { folders: outlookFolders } = useOutlookFolders(undefined, true);
   const [activeFolder, setActiveFolder] = useState<string>(ALL_FOLDERS);
-  // Shared filter text for the unified Folders list (app folders + Outlook).
+  // Shared filter text for the folder tree (app folders + imported Outlook
+  // folders — all registry rows post-import).
   const [folderQuery, setFolderQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SavedTab>("threads");
   const [threadSort, setThreadSort] = useState<ThreadSort>("updated_desc");
   const [messageSort, setMessageSort] = useState<SavedMessageSort>("saved_desc");
 
-  // Folder-deletion confirm state — we use a single ConfirmDialog driven by
-  // a "pendingDelete" string (folder name to delete) rather than one
-  // dialog per folder, which would render N dialogs in the DOM.
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  // Folder-deletion confirm state — a single dialog driven by the folder
+  // pending deletion (not just its name), so the dialog can read
+  // `outlook_item_count` for the Outlook-impact warning, rather than one
+  // dialog per folder rendered in the DOM.
+  const [pendingFolderDelete, setPendingFolderDelete] = useState<SavedFolder | null>(null);
 
   // Move-to-folder dialog state — shared between thread cards and message cards.
   const [moveTarget, setMoveTarget] = useState<MoveTarget | null>(null);
+
+  // New-subfolder dialog state — set to the parent folder being added under.
+  const [newSubfolderParent, setNewSubfolderParent] = useState<SavedFolder | null>(null);
 
   // The list query: when ALL_FOLDERS, fetch all saved; otherwise filter by folder
   // (UNFILED maps to the empty-string folder param the backend treats as NULL).
@@ -156,40 +330,26 @@ export default function SavedPage() {
     mutateFolders();
   };
 
-  const namedFolders = folders.filter((f) => f.name != null) as Array<{
-    name: string;
-    count: number;
-    thread_count: number;
-    message_count: number;
-  }>;
+  const namedFolders = folders.filter(
+    (f): f is SavedFolder & { name: string } => f.name != null,
+  );
   const unfiledFolder = folders.find((f) => f.name == null);
   const unfiledCount = unfiledFolder?.count ?? 0;
 
-  // Confirm + execute folder deletion. The backend rejects with 409 if the
-  // folder still has items — we surface that message verbatim so the user
-  // gets the "move them first" prompt without us re-implementing the rule.
-  const handleDeleteFolder = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    try {
-      await deleteSavedFolder(pendingDelete);
-      toast.success(`Deleted folder "${pendingDelete}".`);
-      // If the deleted folder was the active one, pop back to All saved
-      // so we don't render an empty filtered view.
-      if (activeFolder === pendingDelete) {
-        setActiveFolder(ALL_FOLDERS);
-      }
-      mutateFolders();
-      mutateThreads();
-      mutateMessages();
-      setPendingDelete(null);
-    } catch (err: unknown) {
-      // The 409 detail tells the user exactly what to do — pass through.
-      toast.error(err instanceof Error ? err.message : "Could not delete folder.");
-    } finally {
-      setDeleting(false);
-    }
-  };
+  const folderTree = buildFolderTree(namedFolders);
+  const folderFilter = folderQuery.trim().toLowerCase();
+
+  // Human label + icon for the folder currently in view — surfaced as a
+  // header above the tabs so it's always clear which folder is open (the
+  // rail selection alone can scroll out of sight in a long folder list).
+  const activeFolderLabel =
+    activeFolder === ALL_FOLDERS
+      ? "All saved"
+      : activeFolder === UNFILED
+      ? "No folder"
+      : activeFolder;
+  const ActiveFolderIcon =
+    activeFolder === ALL_FOLDERS ? Bookmark : activeFolder === UNFILED ? Inbox : Folder;
 
   return (
     <div>
@@ -218,11 +378,12 @@ export default function SavedPage() {
               muted
             />
           )}
-          {/* One unified Folders list: the app's own saved folders and Jane's
-              Outlook folders (custom, nested) share a single header and a
-              single filter box. Clicking any folder filters the saved list by
-              that folder name. */}
-          {(namedFolders.length > 0 || outlookFolders.length > 0) && (
+          {/* Registry-driven folder tree: after the Outlook import, every
+              folder — app-created or imported from Outlook — is a row in
+              the same registry with an id/parent_id, so this renders one
+              nested tree instead of a flat app-folder list plus a separate
+              live-Graph tree. */}
+          {namedFolders.length > 0 && (
             <div className="pt-2 mt-2 border-t border-border/60">
               <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Folders
@@ -234,28 +395,18 @@ export default function SavedPage() {
                 className="mb-1 mx-1 h-6 w-[calc(100%-0.5rem)] rounded-md border border-border bg-card px-2 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               />
               <div className="space-y-0.5">
-                {namedFolders
-                  .filter(
-                    (f) =>
-                      !folderQuery.trim() ||
-                      f.name.toLowerCase().includes(folderQuery.trim().toLowerCase()),
-                  )
-                  .map((f) => (
-                    <FolderRailItem
-                      key={f.name}
-                      label={f.name}
-                      icon={Folder}
-                      count={f.count}
-                      active={activeFolder === f.name}
-                      onClick={() => setActiveFolder(f.name)}
-                      onDelete={() => setPendingDelete(f.name)}
-                    />
-                  ))}
-                <OutlookFolderTree
-                  activeFolder={activeFolder}
-                  onSelectFolder={(name) => setActiveFolder(name)}
-                  query={folderQuery}
-                />
+                {folderTree.map((node) => (
+                  <FolderTreeRow
+                    key={node.folder.id ?? node.folder.name}
+                    node={node}
+                    depth={0}
+                    activeFolder={activeFolder}
+                    filter={folderFilter}
+                    onSelect={(name) => setActiveFolder(name)}
+                    onDelete={(f) => setPendingFolderDelete(f)}
+                    onAddChild={(parent) => setNewSubfolderParent(parent)}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -268,6 +419,21 @@ export default function SavedPage() {
 
         {/* Tabs + sort + list */}
         <section>
+          {/* Active-folder header — tells the user which folder these tabs
+              are showing, since the rail selection can scroll off-screen. */}
+          <div className="flex items-center gap-2 mb-3 min-w-0">
+            <ActiveFolderIcon
+              className="w-4 h-4 shrink-0 text-muted-foreground"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
+            <h2
+              className="text-base font-semibold text-foreground truncate"
+              title={activeFolderLabel}
+            >
+              {activeFolderLabel}
+            </h2>
+          </div>
           <div className="flex items-center gap-1 mb-3 border-b border-border/60">
             <TabButton
               active={activeTab === "threads"}
@@ -352,40 +518,32 @@ export default function SavedPage() {
       {/* Folder-delete confirm. The backend follows the Outlook /
           Gmail-label model: deleting a folder unfiles every item that
           was in it (sets saved_folder = NULL) but keeps them saved.
-          Items survive — they just move to the "No folder" bucket. */}
-      <ConfirmDialog
-        open={!!pendingDelete}
-        onOpenChange={(o) => !o && setPendingDelete(null)}
-        title={`Delete folder "${pendingDelete ?? ""}"?`}
-        description={
-          (() => {
-            const folder = namedFolders.find((f) => f.name === pendingDelete);
-            if (!folder || folder.count === 0) {
-              return "This folder is empty. It will be removed from your folder list.";
+          Items survive — they just move to the "No folder" bucket. This
+          is the single folder-delete confirmation path (dedicated
+          component, not the generic <ConfirmDialog> used elsewhere on
+          this page) so it can read `outlook_item_count` for the
+          Outlook-impact warning and note affected subfolders. */}
+      {pendingFolderDelete && (
+        <FolderDeleteDialog
+          folder={pendingFolderDelete}
+          childNames={
+            findNodeByFolder(folderTree, pendingFolderDelete)
+              ?.children.map((c) => c.folder.name)
+              .filter((n): n is string => n != null) ?? []
+          }
+          onClose={() => setPendingFolderDelete(null)}
+          onDeleted={() => {
+            mutateFolders();
+            mutateThreads();
+            mutateMessages();
+            // If the deleted folder was the active one, pop back to All
+            // saved so we don't render an empty filtered view.
+            if (activeFolder === pendingFolderDelete.name) {
+              setActiveFolder(ALL_FOLDERS);
             }
-            const parts: string[] = [];
-            if (folder.thread_count > 0) {
-              parts.push(
-                `${folder.thread_count} thread${folder.thread_count === 1 ? "" : "s"}`,
-              );
-            }
-            if (folder.message_count > 0) {
-              parts.push(
-                `${folder.message_count} email${folder.message_count === 1 ? "" : "s"}`,
-              );
-            }
-            return (
-              `${parts.join(" and ")} in this folder will stay saved — ` +
-              "they'll just move to \"No folder.\" The folder label is " +
-              "removed from your folder list."
-            );
-          })()
-        }
-        confirmLabel="Delete folder"
-        confirmVariant="destructive"
-        onConfirm={handleDeleteFolder}
-        loading={deleting}
-      />
+          }}
+        />
+      )}
 
       {/* Move-to-folder dialog. Reuses saveThread / saveMessage internally
           since "move" is just a save with a different folder. */}
@@ -397,6 +555,18 @@ export default function SavedPage() {
           onMoved={() => {
             handleRefresh();
             setMoveTarget(null);
+          }}
+        />
+      )}
+
+      {/* New-subfolder dialog, opened from the "+" on a tree row. */}
+      {newSubfolderParent && (
+        <NewSubfolderDialog
+          parent={newSubfolderParent}
+          onClose={() => setNewSubfolderParent(null)}
+          onCreated={() => {
+            mutateFolders();
+            setNewSubfolderParent(null);
           }}
         />
       )}
@@ -649,6 +819,7 @@ function FolderRailItem({
       <span className="w-4 shrink-0" aria-hidden="true" />
       <button
         onClick={onClick}
+        title={label}
         className="flex-1 flex items-center gap-1.5 py-1 pr-2 text-sm text-left min-w-0"
       >
         <Icon
@@ -709,6 +880,20 @@ function MoveToFolderDialog({
   const [picked, setPicked] = useState<string>(currentFolder ?? NO_FOLDER_VALUE);
   const [newFolderName, setNewFolderName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Same rationale as SaveThreadDialog: the registry can hold hundreds of
+  // folders post-Outlook-import, so this is a search-filtered, height-capped
+  // list rather than a plain dropdown.
+  const [folderQuery, setFolderQuery] = useState("");
+  // Combobox-style keyboard nav: index into "No folder" + filtered folders +
+  // "New folder…", driven entirely from the search input so keyboard users
+  // never have to tab through every row.
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  // Reset the active option whenever the query changes so a fresh search
+  // doesn't leave the highlight pointing at a now-hidden row.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [folderQuery]);
 
   const isNewFolder = picked === NEW_FOLDER_VALUE;
   const targetFolder = isNewFolder
@@ -716,6 +901,52 @@ function MoveToFolderDialog({
     : picked === NO_FOLDER_VALUE
     ? null
     : picked;
+
+  const folderFilter = folderQuery.trim().toLowerCase();
+  const filteredFolders = folderFilter
+    ? existingFolders.filter((name) => name.toLowerCase().includes(folderFilter))
+    : existingFolders;
+
+  // Option 0 = "No folder", options 1..N = filteredFolders, option N+1 =
+  // "+ New folder…" — this is the same order the list renders in.
+  const optionCount = filteredFolders.length + 2;
+  const safeActiveIndex = Math.min(activeIndex, optionCount - 1);
+  const optionId = (index: number) => `move-folder-option-${index}`;
+
+  // Always-visible selection line — the old SelectTrigger always showed the
+  // chosen folder; a filtered search can hide the selected row entirely, so
+  // this keeps the current pick visible regardless of the query.
+  const selectedFolderLabel = isNewFolder
+    ? newFolderName.trim() || "New folder…"
+    : picked === NO_FOLDER_VALUE
+    ? "No folder"
+    : picked;
+
+  useEffect(() => {
+    document
+      .getElementById(optionId(safeActiveIndex))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [safeActiveIndex]);
+
+  const handleFolderSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, optionCount - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (safeActiveIndex === 0) {
+        setPicked(NO_FOLDER_VALUE);
+      } else if (safeActiveIndex === optionCount - 1) {
+        setPicked(NEW_FOLDER_VALUE);
+      } else {
+        const folder = filteredFolders[safeActiveIndex - 1];
+        if (folder) setPicked(folder);
+      }
+    }
+  };
 
   const noChange =
     !isNewFolder &&
@@ -775,25 +1006,66 @@ function MoveToFolderDialog({
         </DialogHeader>
 
         <div className="space-y-1.5 py-2">
-          <label className="text-xs font-medium text-foreground">Folder</label>
-          <Select value={picked} onValueChange={(v: string | null) => v && setPicked(v)}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="No folder" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NO_FOLDER_VALUE}>
-                <span className="text-muted-foreground">No folder</span>
-              </SelectItem>
-              {existingFolders.map((name) => (
-                <SelectItem key={name} value={name}>
-                  <span className="truncate">{name}</span>
-                </SelectItem>
-              ))}
-              <SelectItem value={NEW_FOLDER_VALUE}>
-                <span className="text-primary">+ New folder…</span>
-              </SelectItem>
-            </SelectContent>
-          </Select>
+          <label className="text-xs font-medium text-foreground" htmlFor="move-folder-search">
+            Folder
+          </label>
+          <input
+            id="move-folder-search"
+            type="text"
+            value={folderQuery}
+            onChange={(e) => setFolderQuery(e.target.value)}
+            onKeyDown={handleFolderSearchKeyDown}
+            placeholder="Search folders…"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="move-folder-listbox"
+            aria-activedescendant={optionId(safeActiveIndex)}
+            className="flex h-8 w-full rounded-md border border-border bg-card px-2.5 text-sm outline-none placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+          />
+          <p className="text-xs text-muted-foreground truncate">
+            Selected: {selectedFolderLabel}
+          </p>
+          <div
+            id="move-folder-listbox"
+            role="listbox"
+            aria-label="Folders"
+            className="max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1"
+          >
+            <FolderOptionRow
+              id={optionId(0)}
+              label="No folder"
+              muted
+              selected={picked === NO_FOLDER_VALUE}
+              active={safeActiveIndex === 0}
+              onClick={() => setPicked(NO_FOLDER_VALUE)}
+            />
+            {filteredFolders.map((name, i) => (
+              <FolderOptionRow
+                key={name}
+                id={optionId(i + 1)}
+                label={name}
+                selected={picked === name}
+                active={safeActiveIndex === i + 1}
+                onClick={() => setPicked(name)}
+              />
+            ))}
+            {folderFilter && filteredFolders.length === 0 && existingFolders.length > 0 && (
+              <p
+                className="px-2 py-1.5 text-xs text-muted-foreground"
+                aria-live="polite"
+              >
+                No folders match &quot;{folderQuery}&quot;.
+              </p>
+            )}
+            <FolderOptionRow
+              id={optionId(filteredFolders.length + 1)}
+              label="+ New folder…"
+              accent
+              selected={isNewFolder}
+              active={safeActiveIndex === filteredFolders.length + 1}
+              onClick={() => setPicked(NEW_FOLDER_VALUE)}
+            />
+          </div>
           {isNewFolder && (
             <Input
               autoFocus
@@ -812,6 +1084,135 @@ function MoveToFolderDialog({
           </Button>
           <Button onClick={handleSubmit} disabled={!canSubmit}>
             {submitting ? "Moving…" : "Move"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * One row in the search-filtered folder list used by MoveToFolderDialog.
+ * Mirrors SaveThreadDialog's `FolderOptionRow` so the two "pick a folder"
+ * surfaces read as the same control.
+ */
+function FolderOptionRow({
+  id,
+  label,
+  selected,
+  active,
+  muted,
+  accent,
+  onClick,
+}: {
+  id?: string;
+  label: string;
+  selected: boolean;
+  active?: boolean;
+  muted?: boolean;
+  accent?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={id}
+      role="option"
+      aria-selected={selected}
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left transition-colors",
+        selected
+          ? "bg-accent text-accent-foreground"
+          : active
+          ? "bg-accent/60"
+          : "hover:bg-accent/60",
+      )}
+    >
+      <span
+        className={cn(
+          "flex-1 truncate",
+          muted && "text-muted-foreground",
+          accent && "text-primary",
+        )}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+// ── New-subfolder dialog ─────────────────────────────────────────────────────
+// Minimal controlled-input dialog for the tree row's hover "+" action —
+// mirrors MoveToFolderDialog's shape (Dialog + single field + Cancel/submit
+// footer) rather than a window.prompt.
+
+function NewSubfolderDialog({
+  parent,
+  onClose,
+  onCreated,
+}: {
+  parent: SavedFolder;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const canSubmit = !submitting && name.trim().length > 0;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      const trimmed = name.trim();
+      await createFolder({ name: trimmed, parent_id: parent.id ?? null });
+      toast.success(`Created folder "${trimmed}".`);
+      onCreated();
+    } catch (err: unknown) {
+      // Backend rejects duplicate names with a 409 — uniqueness is global
+      // (case-insensitive) across the whole folder tree, not just siblings
+      // under the same parent. Surface its detail message verbatim, same
+      // pattern as delete/move.
+      toast.error(err instanceof Error ? err.message : "Could not create folder.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Folder className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
+            New subfolder
+          </DialogTitle>
+          <DialogDescription className="truncate" title={parent.name ?? ""}>
+            Inside &quot;{parent.name}&quot;
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-1.5 py-2">
+          <label className="text-xs font-medium text-foreground">Folder name</label>
+          <Input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSubmit();
+            }}
+            placeholder="e.g. 2025 Return"
+            maxLength={128}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            {submitting ? "Creating…" : "Create"}
           </Button>
         </DialogFooter>
       </DialogContent>

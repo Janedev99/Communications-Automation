@@ -188,13 +188,22 @@ export function Compose() {
 
           <div className="flex items-center gap-1">
             {isFull ? (
-              <TitleBarButton
-                onClick={() => setViewMode("docked")}
-                label="Shrink to corner"
-                subtle
-              >
-                <Minimize2 className="w-4 h-4" aria-hidden="true" />
-              </TitleBarButton>
+              <>
+                <TitleBarButton
+                  onClick={() => setViewMode("docked")}
+                  label="Shrink to corner"
+                  subtle
+                >
+                  <Minimize2 className="w-4 h-4" aria-hidden="true" />
+                </TitleBarButton>
+                <TitleBarButton
+                  onClick={() => setViewMode("minimized")}
+                  label="Minimize"
+                  subtle
+                >
+                  <Minus className="w-4 h-4" aria-hidden="true" />
+                </TitleBarButton>
+              </>
             ) : (
               <>
                 <TitleBarButton

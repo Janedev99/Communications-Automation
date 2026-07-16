@@ -295,6 +295,11 @@ class RecordingEmailProvider:
         self.raise_on_forward: Exception | None = None
         # When set, forward_message returns this instead of a generated id.
         self.forward_returns: str | None = None
+        # Delete-sync delta: programmable per logical folder →
+        # (internet_message_ids, next_delta_link). Calls are recorded.
+        self.delta_results: dict[str, tuple[list[str], str | None]] = {}
+        self.delta_calls: list[dict] = []
+        self.raise_on_delta: Exception | None = None
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -375,6 +380,12 @@ class RecordingEmailProvider:
             {"internet_message_id": internet_message_id, "content_id": content_id}
         )
         return (iter([b"\x89PNG\r\n\x1a\n", b"fake-image-bytes"]), "image/png")
+
+    def delta_folder_messages(self, *, folder: str, delta_link):
+        self.delta_calls.append({"folder": folder, "delta_link": delta_link})
+        if self.raise_on_delta:
+            raise self.raise_on_delta
+        return self.delta_results.get(folder, ([], delta_link))
 
     def disconnect(self) -> None:
         pass

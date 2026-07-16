@@ -305,6 +305,23 @@ class SavedFolderRow(Base):
     )
 
 
+class SyncState(Base):
+    """Small key/value store for background-sync cursors — currently the MS
+    Graph deltaLinks for the Outlook→app delete-sync (one row per watched
+    folder). `value` holds the opaque deltaLink URL; NULL means no baseline
+    captured yet. Not user-facing."""
+    __tablename__ = "sync_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class DraftResponse(Base):
     __tablename__ = "draft_responses"
 

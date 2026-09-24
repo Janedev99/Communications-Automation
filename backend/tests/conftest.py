@@ -300,6 +300,17 @@ class RecordingEmailProvider:
         self.delta_results: dict[str, tuple[list[str], str | None]] = {}
         self.delta_calls: list[dict] = []
         self.raise_on_delta: Exception | None = None
+        # Reply-sync (FEAT/outlook-reply-sync) delta: programmable
+        # (sent_items, next_delta_link) for delta_sent_messages. None (the
+        # default) falls back to the ABC no-op contract — echo the cursor,
+        # no items — same as a real IMAP provider. Calls are recorded.
+        self.sent_delta_results: tuple[list, str | None] | None = None
+        self.sent_delta_calls: list[dict] = []
+        self.raise_on_sent_delta: Exception | None = None
+        # Reply-sync outbound-message fetch: graph_id -> RawEmail. A missing
+        # key returns None, same as a real fetch failure (message deleted /
+        # moved out of the mailbox before we could fetch it).
+        self.graph_messages: dict[str, object] = {}
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -386,6 +397,17 @@ class RecordingEmailProvider:
         if self.raise_on_delta:
             raise self.raise_on_delta
         return self.delta_results.get(folder, ([], delta_link))
+
+    def delta_sent_messages(self, *, delta_link):
+        self.sent_delta_calls.append({"delta_link": delta_link})
+        if self.raise_on_sent_delta:
+            raise self.raise_on_sent_delta
+        if self.sent_delta_results is not None:
+            return self.sent_delta_results
+        return [], delta_link
+
+    def fetch_message_by_graph_id(self, graph_id: str):
+        return self.graph_messages.get(graph_id)
 
     def disconnect(self) -> None:
         pass

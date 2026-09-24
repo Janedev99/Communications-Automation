@@ -621,7 +621,9 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _already_applied_via_audit(db: Session, *, thread_id: uuid.UUID, graph_id: str) -> bool:
+def _already_applied_via_audit(
+    db: Session, *, thread_id: uuid.UUID, graph_id: str, sent_at: datetime
+) -> bool:
     """
     True if a prior poll already ran steps 6-8 for this exact item (N1(b)).
 
@@ -638,12 +640,17 @@ def _already_applied_via_audit(db: Session, *, thread_id: uuid.UUID, graph_id: s
     thread id in `details["thread_id"]` and this item's `graph_id` in
     `details["graph_id"]` — check both since escalation/draft audit rows use
     `entity_type`/`entity_id` for the ESCALATION/DRAFT, not the thread.
-    Filtered to reply-sync's own actions (indexed column) before the
-    per-row detail comparison in Python, to bound the scan.
+    Filtered to reply-sync's own actions and to rows written no earlier than
+    an hour before the reply was sent (both indexed columns) before the
+    per-row detail comparison in Python. Effects are always applied after the
+    send, so older rows can't match; the hour absorbs Exchange/server clock
+    skew. Without the time bound the scan grows with every reply ever synced.
     """
+    since = _as_utc(sent_at) - timedelta(hours=1)
     rows = db.execute(
         select(AuditLog.details).where(
-            AuditLog.action.in_(_REPLY_SYNC_APPLIED_ACTIONS)
+            AuditLog.action.in_(_REPLY_SYNC_APPLIED_ACTIONS),
+            AuditLog.created_at >= since,
         )
     ).scalars().all()
     tid = str(thread_id)
@@ -722,7 +729,9 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
     # N1(a)'s error-streak, or any other re-delivery) would re-run
     # escalation-resolve / draft-retire / status-flip every poll and could
     # override a legitimate staff action taken in the interim.
-    if _already_applied_via_audit(db, thread_id=thread.id, graph_id=item.graph_id):
+    if _already_applied_via_audit(
+        db, thread_id=thread.id, graph_id=item.graph_id, sent_at=item.sent_at
+    ):
         return "skipped_idempotent"
 
     sent_at = _as_utc(item.sent_at)

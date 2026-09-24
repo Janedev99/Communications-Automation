@@ -93,6 +93,21 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         )
         return False
 
+    # A thread already `sent` or `closed` doesn't need (another) auto-send.
+    # Belt-and-suspenders alongside the "already answered" outbound-message
+    # guard below: that guard only catches the case where reply-sync managed
+    # to store a local copy of the Outlook reply (§A.4 step 9). When the body
+    # fetch fails (`applied_message_unstored`), the thread is still flipped to
+    # `sent` but no outbound row exists — without this check, that path would
+    # slip past the guard below and auto-send a duplicate answer.
+    if thread.status in (EmailStatus.sent, EmailStatus.closed):
+        logger.info(
+            "auto_send: thread %s is status=%s — skipping (already answered "
+            "or wrapped up, likely via Outlook reply-sync)",
+            thread_id, thread.status.value,
+        )
+        return False
+
     if thread.auto_sent_at is not None:
         # Already auto-sent (or attempted) — never retry from here. Staff can.
         return False

@@ -375,6 +375,24 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
             logger.warning("Draft generation: thread %s not found", thread_id)
             return
 
+        # Guard against same-poll duplicate work: Phase 1 captured this
+        # thread_id as needing a draft, but reply-sync (which runs between
+        # Phase 1 and Phase 2 — see poll_once) may have since flipped the
+        # thread to `sent`/`closed`/`deleted`/`spam` because Jane answered it
+        # directly in Outlook within this same poll cycle. Generating (and
+        # potentially auto-sending) a fresh draft for an already-answered or
+        # wrapped-up thread would be a duplicate reply. Re-read the status
+        # here rather than trusting Phase 1's snapshot. Reuses
+        # _REPLY_SYNC_SKIP_STATUSES (FEAT/outlook-reply-sync) since it's the
+        # exact same "already terminal, don't touch" status set.
+        if thread.status in _REPLY_SYNC_SKIP_STATUSES:
+            logger.info(
+                "Draft generation: thread %s is now status=%s — skipping "
+                "(likely answered via Outlook reply-sync this same poll cycle)",
+                thread_id, thread.status.value,
+            )
+            return
+
         from app.services.draft_generator import get_draft_generator
         generator = get_draft_generator()
         draft = generator.generate(db, thread)
@@ -636,10 +654,17 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
             return "skipped_idempotent"
 
     sent_at = _as_utc(item.sent_at)
+    latest_inbound_at = _as_utc(inbound_messages[0].received_at)
 
     # 4. App-send detection — an outbound message already on the thread,
     # within the window and sharing a recipient, is almost certainly the
     # same send echoing back from Sent Items rather than a separate reply.
+    # Only an outbound message AT OR AFTER the latest inbound message can be
+    # that echo: an older outbound answers a *previous* client message, so an
+    # app-sent reply from a prior round (say, 8 minutes before a follow-up
+    # client message that Jane then answers from Outlook 1 minute after that)
+    # must not falsely dedupe a genuine new Outlook reply just because it
+    # happens to land within the window of that older, already-answered send.
     outbound_messages = db.execute(
         select(EmailMessage).where(
             EmailMessage.thread_id == thread.id,
@@ -648,6 +673,8 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
     ).scalars().all()
     for ob in outbound_messages:
         ob_sent_at = _as_utc(ob.received_at)
+        if ob_sent_at < latest_inbound_at:
+            continue
         if abs(ob_sent_at - sent_at) > _APP_SEND_WINDOW:
             continue
         ob_recipients = {
@@ -661,7 +688,6 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
     # 5. Supersede (D3) — key on message time, not escalation.created_at
     # (which lags ingestion). If the client wrote again after this reply was
     # sent, the thread's work is still open; don't resolve/retire/close it.
-    latest_inbound_at = _as_utc(inbound_messages[0].received_at)
     if latest_inbound_at > sent_at:
         return "skipped_superseded"
 
@@ -740,10 +766,20 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
             raw = provider.fetch_message_by_graph_id(item.graph_id)
             if raw is None:
                 raise LookupError(f"message {item.graph_id} not fetchable")
+            # Serialize attachment metadata to plain dicts (JSON-safe) — same
+            # shape _store_message uses for inbound messages, so the UI's
+            # attachment rendering works identically on either direction.
+            attachment_data = (
+                [a.to_dict() for a in raw.attachments] if raw.attachments else None
+            )
             outbound = EmailMessage(
                 thread_id=thread.id,
                 message_id_header=raw.message_id,
-                sender=raw.sender or thread.client_email,
+                # The mailbox address, not thread.client_email: this message
+                # was SENT BY the firm's mailbox (Jane), never by the client —
+                # falling back to the client's own address would mislabel who
+                # sent it if Graph's `from` field is ever empty/malformed.
+                sender=raw.sender or settings.msgraph_mailbox,
                 recipient=item.to[0] if item.to else None,
                 to_recipients=item.to or None,
                 cc_recipients=item.cc or None,
@@ -756,6 +792,7 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
                     **(raw.raw_headers or {}),
                     "X-AutoComms-Source": "outlook-reply-sync",
                 },
+                attachments=attachment_data if attachment_data else None,
             )
             db.add(outbound)
             db.flush()
@@ -784,9 +821,12 @@ def reconcile_outlook_replies(provider) -> dict[str, int]:
     down to per-item here since one item's side effects — escalation
     resolve, draft retire, message store — are independent of the next) so
     one bad item can't derail the rest of the batch or poison the whole run.
-    The cursor advances once every item in the batch has been attempted
-    (success, skip, or caught error) and the whole run commits — never after
-    an unhandled failure that could leave things half-applied. Returns
+    The cursor advances only when every item in the batch was applied or
+    cleanly skipped — never past an unhandled per-item error (see the
+    ``counters["error"]`` check below): reprocessing the whole batch next
+    poll is safe because every step is idempotent (step 3's message-id check,
+    the app-send/supersede guards), so replaying already-succeeded items is a
+    no-op while the one that errored gets a fresh attempt. Returns
     per-outcome counters (e.g. ``{"applied": 2, "skipped_idempotent": 1}``).
     """
     counters: dict[str, int] = {}
@@ -815,12 +855,23 @@ def reconcile_outlook_replies(provider) -> dict[str, int]:
                     )
                 counters[outcome] = counters.get(outcome, 0) + 1
 
-        if next_link:
+        # Don't advance the cursor past a batch that had an errored item —
+        # Graph's delta cursor is a one-way pointer with no "retry just this
+        # item" mechanism, so the only safe way to retry an errored item is
+        # to not consume the cursor at all and let next poll re-fetch the
+        # whole batch (idempotent — see the docstring).
+        if next_link and counters.get("error", 0) == 0:
             if state is None:
                 db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
             else:
                 state.value = next_link
                 state.updated_at = datetime.now(timezone.utc)
+        elif next_link:
+            logger.warning(
+                "Reply-sync: %d item(s) errored this batch — cursor not "
+                "advanced, will retry the whole batch next poll",
+                counters["error"],
+            )
         db.commit()
     except Exception as exc:
         db.rollback()

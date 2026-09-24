@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
+from app.models.audit import AuditLog
 from app.models.email import (
     CategorizationSource,
     DraftResponse,
@@ -562,6 +563,29 @@ def reconcile_outlook_deletions(provider) -> int:
 
 _REPLY_SYNC_CURSOR_KEY = "delta:sentitems"
 
+# Consecutive-poll error counter (N1: a deterministically-failing item, e.g.
+# a data problem that always raises, must not stall the cursor forever). Its
+# own SyncState row, separate from the cursor itself.
+_REPLY_SYNC_ERROR_STREAK_KEY = f"{_REPLY_SYNC_CURSOR_KEY}:error_streak"
+# After this many consecutive polls that each had at least one per-item
+# error, force the cursor forward past the offending batch anyway (logging
+# ERROR with the failed graph_ids) rather than stalling indefinitely — a
+# permanently-broken item would otherwise block every subsequent Sent Items
+# delta entry from ever being reconciled.
+_REPLY_SYNC_MAX_ERROR_STREAK = 3
+
+# Audit actions _apply_outlook_reply itself writes when it actually changes
+# something (steps 6/7/8). Used by the idempotency check below to detect
+# "this exact item already had its effects applied on a prior poll" for
+# items whose outbound-message store failed (`applied_message_unstored`) —
+# the EmailMessage-based check (step 3) can't catch those since no row
+# exists to find.
+_REPLY_SYNC_APPLIED_ACTIONS = (
+    "email.sent_via_outlook_reply",
+    "escalation.resolved_via_outlook_reply",
+    "draft.retired_via_outlook_reply",
+)
+
 # Draft states an Outlook reply can retire. Mirrors the states staff review —
 # anything not yet a terminal send/reject.
 _RETIRABLE_DRAFT_STATUSES = frozenset(
@@ -597,6 +621,38 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _already_applied_via_audit(db: Session, *, thread_id: uuid.UUID, graph_id: str) -> bool:
+    """
+    True if a prior poll already ran steps 6-8 for this exact item (N1(b)).
+
+    Needed because step 3's idempotency check only catches items whose
+    outbound copy was successfully stored — an `applied_message_unstored`
+    item leaves no `EmailMessage` row to find, so without this, a cursor
+    stalled by N1(a)'s error-streak (or any other reason the same batch gets
+    re-delivered) would re-run escalation-resolve / draft-retire / status-
+    flip every poll — silently overriding any legitimate staff action taken
+    in between (e.g. reopening the thread and writing a fresh draft, which
+    would then get incorrectly re-rejected).
+
+    All three actions `_apply_outlook_reply` writes (steps 6/7/8) carry the
+    thread id in `details["thread_id"]` and this item's `graph_id` in
+    `details["graph_id"]` — check both since escalation/draft audit rows use
+    `entity_type`/`entity_id` for the ESCALATION/DRAFT, not the thread.
+    Filtered to reply-sync's own actions (indexed column) before the
+    per-row detail comparison in Python, to bound the scan.
+    """
+    rows = db.execute(
+        select(AuditLog.details).where(
+            AuditLog.action.in_(_REPLY_SYNC_APPLIED_ACTIONS)
+        )
+    ).scalars().all()
+    tid = str(thread_id)
+    return any(
+        (d or {}).get("thread_id") == tid and (d or {}).get("graph_id") == graph_id
+        for d in rows
+    )
+
+
 def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
     """
     Reconcile one Sent Items delta entry against local state. Returns an
@@ -606,14 +662,20 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
 
     See design doc §A.4 for the numbered steps this follows.
     """
-    # 1. Match the thread by conversationId.
+    # 1. Match the thread by conversationId. `provider_thread_id` isn't
+    # unique-constrained (N1(b)) — Graph's conversationId can legitimately
+    # collide across distinct app threads in edge cases (e.g. a stale/
+    # re-threaded conversation) — so this picks the most recently created
+    # match rather than using scalar_one_or_none(), which raises
+    # MultipleResultsFound and would permanently stall the batch on a
+    # deterministic error.
     if not item.conversation_id:
         return "skipped_no_thread"
     thread = db.execute(
-        select(EmailThread).where(
-            EmailThread.provider_thread_id == item.conversation_id
-        )
-    ).scalar_one_or_none()
+        select(EmailThread)
+        .where(EmailThread.provider_thread_id == item.conversation_id)
+        .order_by(EmailThread.created_at.desc())
+    ).scalars().first()
     if thread is None:
         return "skipped_no_thread"
 
@@ -652,6 +714,16 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
         ).scalar_one_or_none()
         if existing_msg is not None:
             return "skipped_idempotent"
+
+    # 3b. Idempotency for an item whose outbound copy couldn't be stored last
+    # time (`applied_message_unstored`) — step 3 above can't catch it (no
+    # EmailMessage row exists), but the audit trail can (N1(b)). Without
+    # this, replaying the same batch (e.g. while the cursor is held back by
+    # N1(a)'s error-streak, or any other re-delivery) would re-run
+    # escalation-resolve / draft-retire / status-flip every poll and could
+    # override a legitimate staff action taken in the interim.
+    if _already_applied_via_audit(db, thread_id=thread.id, graph_id=item.graph_id):
+        return "skipped_idempotent"
 
     sent_at = _as_utc(item.sent_at)
     latest_inbound_at = _as_utc(inbound_messages[0].received_at)
@@ -708,7 +780,11 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
             action="escalation.resolved_via_outlook_reply",
             entity_type="escalation",
             entity_id=str(esc.id),
-            details={"thread_id": str(thread.id)},
+            details={
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
             user_id=None,
         )
 
@@ -735,7 +811,11 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
             action="draft.retired_via_outlook_reply",
             entity_type="draft_response",
             entity_id=str(draft.id),
-            details={"thread_id": str(thread.id)},
+            details={
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
             user_id=None,
         )
 
@@ -751,7 +831,12 @@ def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
             action="email.sent_via_outlook_reply",
             entity_type="email_thread",
             entity_id=str(thread.id),
-            details={"conversation_id": item.conversation_id},
+            details={
+                "conversation_id": item.conversation_id,
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
             user_id=None,
         )
 
@@ -821,15 +906,24 @@ def reconcile_outlook_replies(provider) -> dict[str, int]:
     down to per-item here since one item's side effects — escalation
     resolve, draft retire, message store — are independent of the next) so
     one bad item can't derail the rest of the batch or poison the whole run.
-    The cursor advances only when every item in the batch was applied or
-    cleanly skipped — never past an unhandled per-item error (see the
-    ``counters["error"]`` check below): reprocessing the whole batch next
-    poll is safe because every step is idempotent (step 3's message-id check,
-    the app-send/supersede guards), so replaying already-succeeded items is a
-    no-op while the one that errored gets a fresh attempt. Returns
+
+    The cursor normally advances only when every item in the batch was
+    applied or cleanly skipped — never past an unhandled per-item error:
+    reprocessing the whole batch next poll is safe because every step is
+    idempotent (step 3's message-id check, step 3b's audit-based check for
+    items whose outbound copy couldn't be stored, the app-send/supersede
+    guards), so replaying already-succeeded items is a no-op while the one
+    that errored gets a fresh attempt. However, a *deterministically*
+    failing item (a data problem, not a transient one) would otherwise
+    stall the cursor forever and grow the re-fetched batch every poll — so
+    a consecutive-poll error streak (N1(a), own ``SyncState`` row) forces
+    the cursor forward anyway after ``_REPLY_SYNC_MAX_ERROR_STREAK`` polls
+    in a row each had at least one error, logging the failed graph_ids at
+    ERROR so the stuck item is visible for manual follow-up. Returns
     per-outcome counters (e.g. ``{"applied": 2, "skipped_idempotent": 1}``).
     """
     counters: dict[str, int] = {}
+    errored_graph_ids: list[str] = []
     db = SessionLocal()
     try:
         state = db.get(SyncState, _REPLY_SYNC_CURSOR_KEY)
@@ -849,29 +943,67 @@ def reconcile_outlook_replies(provider) -> dict[str, int]:
                         outcome = _apply_outlook_reply(db, provider, item)
                 except Exception as exc:
                     outcome = "error"
+                    errored_graph_ids.append(getattr(item, "graph_id", "?"))
                     logger.error(
                         "Reply-sync: unexpected error processing graph_id=%s: %s",
                         getattr(item, "graph_id", "?"), exc, exc_info=True,
                     )
                 counters[outcome] = counters.get(outcome, 0) + 1
 
-        # Don't advance the cursor past a batch that had an errored item —
-        # Graph's delta cursor is a one-way pointer with no "retry just this
-        # item" mechanism, so the only safe way to retry an errored item is
-        # to not consume the cursor at all and let next poll re-fetch the
-        # whole batch (idempotent — see the docstring).
-        if next_link and counters.get("error", 0) == 0:
-            if state is None:
-                db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
+        error_count = counters.get("error", 0)
+        streak_state = db.get(SyncState, _REPLY_SYNC_ERROR_STREAK_KEY)
+
+        if error_count == 0:
+            # Clean batch: advance the cursor normally and reset the streak
+            # (a clean poll breaks any run of prior error polls).
+            if next_link:
+                if state is None:
+                    db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
+                else:
+                    state.value = next_link
+                    state.updated_at = datetime.now(timezone.utc)
+            if streak_state is not None:
+                db.delete(streak_state)
+        else:
+            streak = int(streak_state.value) if streak_state and streak_state.value else 0
+            streak += 1
+            if streak >= _REPLY_SYNC_MAX_ERROR_STREAK:
+                # N1(a): a deterministically-failing item must not stall the
+                # cursor forever — force it forward past this batch and make
+                # the stuck item(s) loudly visible instead of silently
+                # re-attempting every poll indefinitely.
+                logger.error(
+                    "Reply-sync: %d consecutive poll(s) with errors — forcing "
+                    "the cursor forward past this batch to avoid stalling "
+                    "indefinitely. Failed graph_ids: %s",
+                    streak, errored_graph_ids,
+                )
+                if next_link:
+                    if state is None:
+                        db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
+                    else:
+                        state.value = next_link
+                        state.updated_at = datetime.now(timezone.utc)
+                if streak_state is not None:
+                    db.delete(streak_state)
             else:
-                state.value = next_link
-                state.updated_at = datetime.now(timezone.utc)
-        elif next_link:
-            logger.warning(
-                "Reply-sync: %d item(s) errored this batch — cursor not "
-                "advanced, will retry the whole batch next poll",
-                counters["error"],
-            )
+                # Graph's delta cursor is a one-way pointer with no "retry
+                # just this item" mechanism, so the only safe way to retry
+                # an errored item (below the streak cap) is to not consume
+                # the cursor at all and let next poll re-fetch the whole
+                # batch (idempotent — see the docstring).
+                logger.warning(
+                    "Reply-sync: %d item(s) errored this batch (error streak "
+                    "%d/%d) — cursor not advanced, will retry the whole batch "
+                    "next poll. Failed graph_ids: %s",
+                    error_count, streak, _REPLY_SYNC_MAX_ERROR_STREAK, errored_graph_ids,
+                )
+                if streak_state is None:
+                    db.add(SyncState(key=_REPLY_SYNC_ERROR_STREAK_KEY, value=str(streak)))
+                else:
+                    streak_state.value = str(streak)
+                    streak_state.updated_at = datetime.now(timezone.utc)
+
         db.commit()
     except Exception as exc:
         db.rollback()

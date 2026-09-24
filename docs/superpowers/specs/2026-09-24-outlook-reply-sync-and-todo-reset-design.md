@@ -60,9 +60,10 @@ poll_once()
 
 ## A.4 Reconcile (`services/email_intake.py`)
 `_apply_outlook_reply(db, provider, item) -> outcome label`, no commit:
-1. Match the thread by `provider_thread_id == conversation_id`, else `skipped_no_thread`.
+1. Match the thread by `provider_thread_id == conversation_id`, picking the most recently created match if more than one thread shares that conversationId, else `skipped_no_thread`. Uses `.scalars().first()` rather than `scalar_one_or_none()` — the latter raises `MultipleResultsFound` on a genuine (if rare) duplicate `conversationId`, which is a *deterministic* error that would otherwise stall the cursor on every poll (fixed post-QA: N1(b)).
 2. Recipient guard: to∪cc must intersect the client email and the inbound senders, else `skipped_not_to_client`. This blocks forwards.
 3. Idempotency: skip if an `EmailMessage` already has `message_id_header == internet_message_id`.
+3b. Idempotency for an item that was already applied but never got a stored `EmailMessage` (an `applied_message_unstored` outcome on a prior poll — step 3 above can't catch it, since no row exists to find): skip if reply-sync's own audit trail (`email.sent_via_outlook_reply` / `escalation.resolved_via_outlook_reply` / `draft.retired_via_outlook_reply`, each now carrying `graph_id` and `internet_message_id` in `details`) already has an entry for this thread + `graph_id` (added post-QA: N1(b)). Without this, a batch redelivered while the cursor is held back (e.g. by a *different*, erroring item in the same batch) would re-run escalation-resolve / draft-retire / status-flip every poll and silently override any legitimate staff action taken in between — e.g. staff reopening the thread to `pending_review` and writing a fresh draft, which a naive replay would re-reject and flip back to `sent`.
 4. App-send detection: skip if an outbound message **at or after the latest inbound message's `received_at`** falls within ±10 minutes of `sent_at` and shares a recipient. The `received_at >= latest inbound` qualifier matters: an older app-sent reply from a *prior* round must not falsely dedupe a genuine new Outlook reply to a *later* client follow-up just because the two happen to land within ±10 minutes of each other in absolute time — only a message that could plausibly be answering the same inbound message counts (fixed post-QA; originally compared absolute time only).
 5. Supersede (D3): skip if the latest inbound `received_at` is after `sent_at`.
 6. Resolve every pending or acknowledged escalation: `resolved`, `resolved_at=sent_at`, `resolved_by_id=None`, notes "Replied in Outlook". Audit `escalation.resolved_via_outlook_reply` (system actor).
@@ -70,7 +71,7 @@ poll_once()
 8. Active statuses become `sent` (D2); closed, deleted, spam, and sent stay as they are. Tier is unchanged. Do **not** call `auto_save_to_client_folder`. Audit `email.sent_via_outlook_reply`.
 9. Store the outbound message via `fetch_message_by_graph_id` inside `begin_nested()`, with `raw_headers={"X-AutoComms-Source":"outlook-reply-sync"}` and the same attachment-metadata serialization intake uses for inbound messages. Sender falls back to the mailbox address (`settings.msgraph_mailbox`), never `thread.client_email` — this message was sent BY the firm, not the client. A fetch failure or IntegrityError (e.g. a race landing the same `message_id_header` between step 3's check and this flush) doesn't undo steps 6-8; the item's outcome is `applied_message_unstored` instead of `applied`.
 
-`reconcile_outlook_replies(provider)` mirrors `reconcile_outlook_deletions`: each item runs in its own savepoint (so one bad item can't derail the rest of the batch), and counters are kept per outcome. The cursor advances only when the **whole batch** finished with zero `error` outcomes — Graph's delta cursor has no "retry just this item" mechanism, so a batch containing an errored item leaves the cursor untouched and the entire batch (idempotent) is retried next poll rather than silently skipping the failed item forever (fixed post-QA; originally advanced regardless of per-item errors).
+`reconcile_outlook_replies(provider)` mirrors `reconcile_outlook_deletions`: each item runs in its own savepoint (so one bad item can't derail the rest of the batch), and counters are kept per outcome. The cursor normally advances only when the **whole batch** finished with zero `error` outcomes — Graph's delta cursor has no "retry just this item" mechanism, so a batch containing an errored item leaves the cursor untouched and the entire batch is retried next poll (fixed post-QA; originally advanced regardless of per-item errors). Replaying the batch is safe because every step is idempotent, INCLUDING for an `applied_message_unstored` item (step 3b's audit-based check, added post-QA — the original design called this idempotent without the audit fallback, which was true for `applied` items but not for `applied_message_unstored` ones). A *transient* error resolves itself once the cursor is free to advance past a clean batch; a *deterministic* error (e.g. the `MultipleResultsFound` case step 1 now avoids) would otherwise hold the cursor forever, so a consecutive-poll error streak (its own `SyncState` row, `delta:sentitems:error_streak`) forces the cursor forward anyway after 3 polls in a row each had an error, logging the failed `graph_id`s at ERROR for manual follow-up (added post-QA: N1(a)).
 
 `maybe_auto_send` guards: return False if the thread has an outbound message with `received_at >= latest inbound received_at`, **or** if `thread.status in (sent, closed)` (added post-QA — the outbound-message guard alone misses the `applied_message_unstored` case, where reply-sync flips the thread to `sent` but stores no outbound row).
 
@@ -105,10 +106,11 @@ None.
 | R-A2 | A forward wrongly resolves an escalation | Recipient guard; audit-logged; reversible |
 | R-A3 | A long first baseline | No bodies selected; large pages; log duration |
 | R-A4 | Graph delta `$select`/`changeType` behaves differently | Spike; idempotent logic |
-| R-A5 | Duplicate outbound rows | Idempotency + ±10 minute window |
+| R-A5 | Duplicate outbound rows | Idempotency + ±10 minute window (qualified to at-or-after the latest inbound message — fixed post-QA) |
 | R-A6 | Shared-mailbox move | HANDOFF checklist: `MessageCopyForSentAsEnabled` |
 | R-A7 | Live mailbox | GET only; test asserts no Graph writes |
 | R-A8 | `_graph_msg_to_raw` refactor breaks intake | Pure extraction; existing provider tests stay green |
+| R-A9 | A deterministically-failing item stalls the cursor forever, and replaying an `applied_message_unstored` item overrides a legitimate staff action taken in the interim | Error-streak cap (3 polls) forces the cursor forward + logs ERROR with the failed `graph_id`s; step 3b's audit-based idempotency check; step 1's thread lookup no longer raises on a duplicate `conversationId` (added post-QA: N1) |
 
 ## A.10 Tests
 New file `tests/test_outlook_reply_sync.py`, plus additions in `test_auto_send.py` and a D1 lane test. Covers:
@@ -134,7 +136,9 @@ New file `tests/test_outlook_reply_sync.py`, plus additions in `test_auto_send.p
 - the auto-send guard,
 - the lane predicate and badge/list parity,
 - Graph delta parsing,
-- the walker extraction being unchanged.
+- the walker extraction being unchanged,
+- the error-streak forcing the cursor forward after N polls (added post-QA: N1(a)),
+- a replayed `applied_message_unstored` item not overriding a staff reopen + new draft (added post-QA: N1(b)).
 
 ## A.11 Rollout
 1. Merge to `development` with the flag off.

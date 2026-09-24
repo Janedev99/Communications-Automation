@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_user
@@ -21,6 +21,7 @@ from app.models.audit import AuditLog
 from app.models.email import DraftResponse, DraftStatus, EmailCategory, EmailStatus, EmailThread, KnowledgeEntry, ThreadTier
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
 from app.models.user import User
+from app.services.todo_queue import badge_clause
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -88,19 +89,27 @@ def get_stats(
     ).all()
     threads_by_tier = {row.tier.value: row.count for row in tier_rows}
 
-    # The Escalated lane in the UI matches "tier=t3_escalate OR status=escalated"
-    # (the two columns can drift — see comment in api/emails.py:list_threads).
-    # Recount t3 to include status-only escalations so the tab badge matches the
-    # list it links to.
-    t3_combined = db.execute(
-        select(func.count(EmailThread.id)).where(
-            or_(
-                EmailThread.tier == ThreadTier.t3_escalate,
-                EmailThread.status == EmailStatus.escalated,
-            )
+    # The to-do lane badges (t2 "For review" / t3 "Escalated") must match what
+    # their linked list actually shows: not just tier==t2/t3 but also
+    # excluding threads that no longer need action (`sent`/`closed` — see
+    # services/todo_queue.lane_clause, D1: FEAT/outlook-reply-sync) and the
+    # trash-management terminal states (`deleted`/`spam`) the list hides by
+    # default. t3 additionally counts status-only escalations that drifted
+    # from tier (bulk re-categorize, a manually-resolved escalation, etc.) —
+    # same predicate the list's tier filter uses, so the two can never
+    # disagree.
+    lane_counts = db.execute(
+        select(
+            func.count(EmailThread.id).filter(
+                badge_clause(ThreadTier.t2_review)
+            ).label("t2_review"),
+            func.count(EmailThread.id).filter(
+                badge_clause(ThreadTier.t3_escalate)
+            ).label("t3_escalate"),
         )
-    ).scalar_one()
-    threads_by_tier[ThreadTier.t3_escalate.value] = t3_combined
+    ).one()
+    threads_by_tier[ThreadTier.t2_review.value] = lane_counts.t2_review
+    threads_by_tier[ThreadTier.t3_escalate.value] = lane_counts.t3_escalate
 
     # ── Escalations by status ──────────────────────────────────────────────────
     esc_status_rows = db.execute(

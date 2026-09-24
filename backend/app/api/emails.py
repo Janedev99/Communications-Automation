@@ -105,6 +105,7 @@ from app.services import folder_import
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
 from app.services.folder_sync import sync_thread_to_outlook_folder
+from app.services.todo_queue import lane_clause
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
 from app.utils.recipients import (
@@ -623,21 +624,19 @@ def list_threads(
         )
         query = query.where(outbound_exists)
     if tier is not None:
-        # The Escalated tab is what users mental-model as "everything that
-        # needs Jane's attention." Tier and status are stored independently and
-        # can drift (bulk re-categorize touches one but not the other; resolved
-        # escalations clear status but leave tier; pre-tier-migration rows may
-        # also be inconsistent). Match either column for t3 so a status-only
-        # escalation never disappears from the tab.
-        if tier == ThreadTier.t3_escalate:
-            query = query.where(
-                or_(
-                    EmailThread.tier == ThreadTier.t3_escalate,
-                    EmailThread.status == EmailStatus.escalated,
-                )
-            )
-        else:
-            query = query.where(EmailThread.tier == tier)
+        # The to-do lanes ("For review"=t2, "Escalated"=t3) hide threads that
+        # no longer need action: `sent` (someone replied — including an
+        # Outlook reply reconciled by Feature A, see
+        # email_intake._apply_outlook_reply) or `closed` (explicitly wrapped
+        # up). Tier and status are stored independently and can drift (bulk
+        # re-categorize touches one but not the other; a manually-resolved
+        # escalation clears status but leaves tier=t3; pre-tier-migration
+        # rows may also be inconsistent) — for t3, lane_clause() also matches
+        # status==escalated so a status-only escalation never disappears
+        # from the tab. See services/todo_queue.lane_clause (D1:
+        # FEAT/outlook-reply-sync) — the dashboard badge uses the same
+        # predicate so the two never disagree.
+        query = query.where(lane_clause(tier))
     if client_email:
         # Escape LIKE wildcards to prevent unintended pattern matching
         safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

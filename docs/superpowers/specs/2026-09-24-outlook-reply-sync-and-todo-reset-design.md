@@ -63,16 +63,18 @@ poll_once()
 1. Match the thread by `provider_thread_id == conversation_id`, else `skipped_no_thread`.
 2. Recipient guard: to∪cc must intersect the client email and the inbound senders, else `skipped_not_to_client`. This blocks forwards.
 3. Idempotency: skip if an `EmailMessage` already has `message_id_header == internet_message_id`.
-4. App-send detection: skip if an outbound message on the thread falls within ±10 minutes of `sent_at` and shares a recipient.
+4. App-send detection: skip if an outbound message **at or after the latest inbound message's `received_at`** falls within ±10 minutes of `sent_at` and shares a recipient. The `received_at >= latest inbound` qualifier matters: an older app-sent reply from a *prior* round must not falsely dedupe a genuine new Outlook reply to a *later* client follow-up just because the two happen to land within ±10 minutes of each other in absolute time — only a message that could plausibly be answering the same inbound message counts (fixed post-QA; originally compared absolute time only).
 5. Supersede (D3): skip if the latest inbound `received_at` is after `sent_at`.
 6. Resolve every pending or acknowledged escalation: `resolved`, `resolved_at=sent_at`, `resolved_by_id=None`, notes "Replied in Outlook". Audit `escalation.resolved_via_outlook_reply` (system actor).
 7. Retire drafts in pending, edited, approved, or send_failed, using `with_for_update(skip_locked=True)`: set `rejected`, `rejection_reason=None`, `reviewed_by_id=None`, `reviewed_at=now`. Audit `draft.retired_via_outlook_reply`. A NULL reason keeps these out of `get_negative_patterns`, so the AI learns nothing from them.
 8. Active statuses become `sent` (D2); closed, deleted, spam, and sent stay as they are. Tier is unchanged. Do **not** call `auto_save_to_client_folder`. Audit `email.sent_via_outlook_reply`.
-9. Store the outbound message via `fetch_message_by_graph_id` inside `begin_nested()`, with `raw_headers={"X-AutoComms-Source":"outlook-reply-sync"}`. A fetch failure or IntegrityError doesn't undo steps 6-8.
+9. Store the outbound message via `fetch_message_by_graph_id` inside `begin_nested()`, with `raw_headers={"X-AutoComms-Source":"outlook-reply-sync"}` and the same attachment-metadata serialization intake uses for inbound messages. Sender falls back to the mailbox address (`settings.msgraph_mailbox`), never `thread.client_email` — this message was sent BY the firm, not the client. A fetch failure or IntegrityError (e.g. a race landing the same `message_id_header` between step 3's check and this flush) doesn't undo steps 6-8; the item's outcome is `applied_message_unstored` instead of `applied`.
 
-`reconcile_outlook_replies(provider)` mirrors `reconcile_outlook_deletions`: a savepoint per item, the cursor advances only on success, and counters are kept per outcome.
+`reconcile_outlook_replies(provider)` mirrors `reconcile_outlook_deletions`: each item runs in its own savepoint (so one bad item can't derail the rest of the batch), and counters are kept per outcome. The cursor advances only when the **whole batch** finished with zero `error` outcomes — Graph's delta cursor has no "retry just this item" mechanism, so a batch containing an errored item leaves the cursor untouched and the entire batch (idempotent) is retried next poll rather than silently skipping the failed item forever (fixed post-QA; originally advanced regardless of per-item errors).
 
-`maybe_auto_send` guard: return False if the thread has an outbound message with `received_at >= latest inbound received_at`.
+`maybe_auto_send` guards: return False if the thread has an outbound message with `received_at >= latest inbound received_at`, **or** if `thread.status in (sent, closed)` (added post-QA — the outbound-message guard alone misses the `applied_message_unstored` case, where reply-sync flips the thread to `sent` but stores no outbound row).
+
+Phase 2 of `poll_once` (draft generation) re-reads each thread's status before generating: a thread Phase 1 queued as needing a draft may have been flipped to `sent`/`closed`/`deleted`/`spam` by reply-sync running in between (same poll cycle) — that thread is skipped rather than given a duplicate draft (added post-QA).
 
 ## A.5 Config
 `outlook_reply_sync: bool = False`, set by env `OUTLOOK_REPLY_SYNC`.
@@ -99,7 +101,7 @@ None.
 ## A.9 Risks
 | ID | Risk | Mitigation |
 |---|---|---|
-| R-A1 | Duplicate client reply | Retire all sendable drafts; auto-send guard; reply-sync runs before Phase 2 |
+| R-A1 | Duplicate client reply | Retire all sendable drafts; `maybe_auto_send`'s outbound-message AND thread-status guards; reply-sync runs after Phase 1 but before Phase 2, and Phase 2 re-reads thread status per-item so a same-cycle reply-sync match is never given a duplicate draft (fixed post-QA — originally only the outbound-message guard existed, missing the `applied_message_unstored` case, and Phase 2 trusted Phase 1's stale snapshot) |
 | R-A2 | A forward wrongly resolves an escalation | Recipient guard; audit-logged; reversible |
 | R-A3 | A long first baseline | No bodies selected; large pages; log duration |
 | R-A4 | Graph delta `$select`/`changeType` behaves differently | Spike; idempotent logic |

@@ -115,6 +115,24 @@ class RawEmail:
     attachments: list[AttachmentMeta] = field(default_factory=list)
 
 
+@dataclass
+class SentItem:
+    """
+    A message surfaced by a Sent Items delta query — enough to match it to a
+    local thread and decide whether to act on it, without fetching the full
+    body up front (FEAT/outlook-reply-sync). ``sent_at`` is aware UTC.
+    ``to``/``cc`` are plain address lists, mirroring ``RawEmail``'s
+    ``to_recipients``/``cc_recipients``.
+    """
+    graph_id: str
+    internet_message_id: str | None
+    conversation_id: str | None
+    sent_at: datetime
+    to: list[str] = field(default_factory=list)
+    cc: list[str] = field(default_factory=list)
+    subject: str = "(no subject)"
+
+
 # Microsoft Graph rejects sendMail request bodies above ~4 MB, and base64
 # inflates binary by ~33%, so ~3 MB of raw attachment is the safe inline ceiling.
 # Above it, Graph requires the create-draft → upload-session flow.
@@ -331,6 +349,34 @@ class EmailProvider(ABC):
         """
         return [], delta_link
 
+    def delta_sent_messages(
+        self, *, delta_link: str | None
+    ) -> tuple[list["SentItem"], str | None]:
+        """
+        Return ``(sent_items, next_delta_link)`` for messages that landed in
+        Sent Items since ``delta_link`` (or a fresh baseline when
+        ``delta_link`` is None).
+
+        Powers the Outlook→app reply-sync (FEAT/outlook-reply-sync): a
+        message sent directly from Outlook — bypassing the app entirely —
+        that resolves an open escalation and retires stale AI drafts on the
+        matching thread. Mirrors ``delta_folder_messages`` but on its own
+        cursor (``delta:sentitems``) and its own well-known folder. Base
+        no-op: returns no items and echoes the cursor, so non-delta
+        providers (IMAP) contribute nothing to reply-sync.
+        """
+        return [], delta_link
+
+    def fetch_message_by_graph_id(self, graph_id: str) -> "RawEmail | None":
+        """
+        Fetch one already-known message by its provider-native id and parse
+        it into a ``RawEmail`` (the same shape ``fetch_new_emails``
+        produces), so reply-sync can store the Outlook-side reply as an
+        outbound ``EmailMessage``. Base no-op: returns None so IMAP
+        contributes nothing to reply-sync.
+        """
+        return None
+
     def disconnect(self) -> None:
         """Optional cleanup. Called on shutdown."""
         pass
@@ -404,81 +450,92 @@ class MSGraphProvider(EmailProvider):
             return []
 
         messages = resp.json().get("value", [])
-        results: list[RawEmail] = []
-        for msg in messages:
-            raw_headers = {
-                h["name"]: h["value"]
-                for h in msg.get("internetMessageHeaders") or []
-            }
+        return [self._graph_msg_to_raw(msg, mailbox) for msg in messages]
 
-            # Extract attachment metadata (skip inline/embedded images)
-            attachments: list[AttachmentMeta] = []
-            if msg.get("hasAttachments"):
-                for att in msg.get("attachments") or []:
-                    if att.get("isInline"):
-                        continue  # Skip inline images embedded in HTML body
-                    attachments.append(AttachmentMeta(
-                        filename=att.get("name") or "attachment",
-                        size=att.get("size"),
-                        content_type=att.get("contentType"),
-                        attachment_id=att.get("id"),
-                    ))
+    def _graph_msg_to_raw(self, msg: dict, mailbox: str) -> RawEmail:
+        """
+        Parse one Graph message JSON object (the shape returned by both the
+        Inbox list in ``fetch_new_emails`` and a single-message GET in
+        ``fetch_message_by_graph_id``) into a ``RawEmail``.
 
-            # Body extraction — MS Graph returns a single `body` object with
-            # either contentType="html" (default) or "text". Older code mapped
-            # the two fields as mutually exclusive, leaving body_text=None on
-            # every HTML email — which blanked the dashboard and forced the AI
-            # categorizer to read raw HTML (with <style>, <head>, inline CSS).
-            # Now: store HTML as-is in body_html AND derive a clean plain-text
-            # version into body_text so both consumers get what they expect.
-            body_obj = msg.get("body") or {}
-            content = body_obj.get("content") or ""
-            content_type = (body_obj.get("contentType") or "").lower()
-            if content_type == "html":
-                body_html: str | None = content or None
-                body_text: str | None = _html_to_text(content) or None
-            elif content_type == "text":
-                body_html = None
-                body_text = content or None
-            else:
-                body_html = None
-                body_text = None
+        Pure extraction from the body that used to live inline in
+        ``fetch_new_emails`` (FEAT/outlook-reply-sync §A.3, R-A8) — behaviour
+        is unchanged; the existing body-extraction tests
+        (test_email_provider_msgraph.py) exercise this same logic and must
+        keep passing unmodified.
+        """
+        raw_headers = {
+            h["name"]: h["value"]
+            for h in msg.get("internetMessageHeaders") or []
+        }
 
-            # Coerce nullable Graph fields. `msg.get("subject", default)` doesn't
-            # protect against `"subject": null` — that returns None, which then
-            # crashes downstream calls like `subject.strip()` (seen in real
-            # production data: iCloud-sent emails routinely omit the subject).
-            # Same for `from`: occasional system messages have a null `from`.
-            sender_obj = (msg.get("from") or {}).get("emailAddress") or {}
-            to_addrs = [
-                r.get("emailAddress", {}).get("address")
-                for r in (msg.get("toRecipients") or [])
-                if r.get("emailAddress", {}).get("address")
-            ]
-            cc_addrs = [
-                r.get("emailAddress", {}).get("address")
-                for r in (msg.get("ccRecipients") or [])
-                if r.get("emailAddress", {}).get("address")
-            ]
-            results.append(RawEmail(
-                message_id=msg.get("internetMessageId") or msg["id"],
-                subject=msg.get("subject") or "(no subject)",
-                sender=sender_obj.get("address") or "",
-                recipient=mailbox,
-                body_text=body_text,
-                body_html=body_html,
-                received_at=datetime.fromisoformat(
-                    msg["receivedDateTime"].replace("Z", "+00:00")
-                ),
-                to_recipients=to_addrs,
-                cc_recipients=cc_addrs,
-                raw_headers=raw_headers,
-                provider_thread_id=msg.get("conversationId"),
-                in_reply_to=raw_headers.get("In-Reply-To"),
-                references=raw_headers.get("References"),
-                attachments=attachments,
-            ))
-        return results
+        # Extract attachment metadata (skip inline/embedded images)
+        attachments: list[AttachmentMeta] = []
+        if msg.get("hasAttachments"):
+            for att in msg.get("attachments") or []:
+                if att.get("isInline"):
+                    continue  # Skip inline images embedded in HTML body
+                attachments.append(AttachmentMeta(
+                    filename=att.get("name") or "attachment",
+                    size=att.get("size"),
+                    content_type=att.get("contentType"),
+                    attachment_id=att.get("id"),
+                ))
+
+        # Body extraction — MS Graph returns a single `body` object with
+        # either contentType="html" (default) or "text". Older code mapped
+        # the two fields as mutually exclusive, leaving body_text=None on
+        # every HTML email — which blanked the dashboard and forced the AI
+        # categorizer to read raw HTML (with <style>, <head>, inline CSS).
+        # Now: store HTML as-is in body_html AND derive a clean plain-text
+        # version into body_text so both consumers get what they expect.
+        body_obj = msg.get("body") or {}
+        content = body_obj.get("content") or ""
+        content_type = (body_obj.get("contentType") or "").lower()
+        if content_type == "html":
+            body_html: str | None = content or None
+            body_text: str | None = _html_to_text(content) or None
+        elif content_type == "text":
+            body_html = None
+            body_text = content or None
+        else:
+            body_html = None
+            body_text = None
+
+        # Coerce nullable Graph fields. `msg.get("subject", default)` doesn't
+        # protect against `"subject": null` — that returns None, which then
+        # crashes downstream calls like `subject.strip()` (seen in real
+        # production data: iCloud-sent emails routinely omit the subject).
+        # Same for `from`: occasional system messages have a null `from`.
+        sender_obj = (msg.get("from") or {}).get("emailAddress") or {}
+        to_addrs = [
+            r.get("emailAddress", {}).get("address")
+            for r in (msg.get("toRecipients") or [])
+            if r.get("emailAddress", {}).get("address")
+        ]
+        cc_addrs = [
+            r.get("emailAddress", {}).get("address")
+            for r in (msg.get("ccRecipients") or [])
+            if r.get("emailAddress", {}).get("address")
+        ]
+        return RawEmail(
+            message_id=msg.get("internetMessageId") or msg["id"],
+            subject=msg.get("subject") or "(no subject)",
+            sender=sender_obj.get("address") or "",
+            recipient=mailbox,
+            body_text=body_text,
+            body_html=body_html,
+            received_at=datetime.fromisoformat(
+                msg["receivedDateTime"].replace("Z", "+00:00")
+            ),
+            to_recipients=to_addrs,
+            cc_recipients=cc_addrs,
+            raw_headers=raw_headers,
+            provider_thread_id=msg.get("conversationId"),
+            in_reply_to=raw_headers.get("In-Reply-To"),
+            references=raw_headers.get("References"),
+            attachments=attachments,
+        )
 
     def _resolve_graph_message_id(self, internet_message_id: str) -> str | None:
         """
@@ -762,6 +819,47 @@ class MSGraphProvider(EmailProvider):
             )
             raise
 
+    def _walk_delta(
+        self, url: str, headers: dict[str, str]
+    ) -> tuple[list[dict], str | None]:
+        """
+        Follow a Graph delta query from ``url`` across ``@odata.nextLink``
+        pages to the terminal ``@odata.deltaLink``, returning every raw item
+        (callers decide what to do with ``@removed`` entries — this helper
+        doesn't filter them) and that terminal deltaLink.
+
+        Returns ``(items, None)`` if the page cap is hit before a deltaLink
+        turns up — callers must NOT advance their cursor in that case (a
+        capped baseline retries from scratch next poll rather than silently
+        marking itself done).
+
+        Pure I/O-in-a-loop extraction from the original
+        ``delta_folder_messages`` body (FEAT/outlook-reply-sync §A.3, R-A8);
+        behaviour is unchanged and shared with ``delta_sent_messages``. The
+        existing delta-paging tests (test_email_delete_sync.py) exercise this
+        same logic and must keep passing unmodified.
+        """
+        items: list[dict] = []
+        next_url: str | None = url
+        delta_link: str | None = None
+        # Cap pages as a safety bound (≈500k messages at 500/page) so a
+        # pathological cursor can't spin the poll thread forever — but high
+        # enough that a real baseline over a large folder finishes and captures
+        # its deltaLink.
+        for _ in range(1000):
+            if not next_url:
+                break
+            resp = self._client.get(next_url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+            items.extend(payload.get("value", []))
+            if "@odata.deltaLink" in payload:
+                delta_link = payload["@odata.deltaLink"]
+                next_url = None
+            else:
+                next_url = payload.get("@odata.nextLink")
+        return items, delta_link
+
     def delta_folder_messages(
         self, *, folder: str, delta_link: str | None
     ) -> tuple[list[str], str | None]:
@@ -783,7 +881,7 @@ class MSGraphProvider(EmailProvider):
                 f"{sorted(self._DESTINATION_FOLDER_IDS)}"
             )
         mailbox = self._settings.msgraph_mailbox
-        url: str | None = delta_link or (
+        url = delta_link or (
             f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/{folder_id}"
             "/messages/delta?$select=internetMessageId"
         )
@@ -793,40 +891,119 @@ class MSGraphProvider(EmailProvider):
         # hundreds of round-trips. Graph honours odata.maxpagesize on message
         # delta (server caps it), and the token is carried in @odata.nextLink.
         headers = {**self._headers(), "Prefer": "odata.maxpagesize=500"}
-        ids: list[str] = []
-        next_delta: str | None = delta_link
-        reached_delta_link = False
-        # Cap pages as a safety bound (≈500k messages at 500/page) so a
-        # pathological cursor can't spin the poll thread forever — but high
-        # enough that a real baseline over a large folder finishes and captures
-        # its deltaLink. An aborted baseline advances no cursor and would
-        # re-walk from scratch every poll (see the warning below).
-        for _ in range(1000):
-            if not url:
-                break
-            resp = self._client.get(url, headers=headers)
-            resp.raise_for_status()
-            payload = resp.json()
-            for item in payload.get("value", []):
-                if "@removed" in item:
-                    continue
-                imid = item.get("internetMessageId")
-                if imid:
-                    ids.append(imid)
-            if "@odata.deltaLink" in payload:
-                next_delta = payload["@odata.deltaLink"]
-                url = None
-                reached_delta_link = True
-            else:
-                url = payload.get("@odata.nextLink")
-        if not reached_delta_link:
+        items, next_delta = self._walk_delta(url, headers)
+        if next_delta is None:
             logger.warning(
                 "MSGraph delta for %s hit the page cap without a deltaLink; "
                 "cursor not advanced (will retry next poll). If this recurs, the "
                 "folder is larger than the cap allows to baseline.",
                 folder,
             )
+            next_delta = delta_link  # unchanged — no false advance
+        ids = [
+            item["internetMessageId"]
+            for item in items
+            if "@removed" not in item and item.get("internetMessageId")
+        ]
         return ids, next_delta
+
+    def delta_sent_messages(
+        self, *, delta_link: str | None
+    ) -> tuple[list[SentItem], str | None]:
+        """
+        Delta-query Sent Items for newly-sent messages, returning
+        ``(sent_items, next_delta_link)`` — the Outlook→app reply-sync source
+        (FEAT/outlook-reply-sync §A.3). Mirrors ``delta_folder_messages`` but
+        on its own cursor (``delta:sentitems``) and its own well-known
+        folder; a first (baseline) run must be treated as cursor-capture only
+        by the caller, same contract as the delete-sync folders.
+
+        PENDING LIVE VERIFICATION: the credentialed Graph spike that was
+        meant to confirm this exact ``$select`` list and
+        ``changeType=created`` on the sentitems delta endpoint couldn't run
+        (expired credentials — see design doc §A.3). The delta URL is built
+        in this one place so it's a single edit if the real mailbox behaves
+        differently; every downstream consumer treats missing fields
+        defensively (an item with no ``sentDateTime`` is skipped rather than
+        crashing).
+        """
+        mailbox = self._settings.msgraph_mailbox
+        url = delta_link or (
+            f"{self.GRAPH_BASE}/users/{mailbox}/mailFolders/sentitems/messages"
+            "/delta?changeType=created&$select=id,internetMessageId,"
+            "conversationId,sentDateTime,toRecipients,ccRecipients,subject"
+        )
+        headers = {**self._headers(), "Prefer": "odata.maxpagesize=500"}
+        items, next_delta = self._walk_delta(url, headers)
+        if next_delta is None:
+            logger.warning(
+                "MSGraph sentitems delta hit the page cap without a deltaLink; "
+                "cursor not advanced (will retry next poll)."
+            )
+            next_delta = delta_link  # unchanged — no false advance
+
+        sent_items: list[SentItem] = []
+        for item in items:
+            if "@removed" in item:
+                continue
+            sent_at_raw = item.get("sentDateTime")
+            if not sent_at_raw:
+                # Defensive: if the spike above turns out wrong and Graph
+                # omits sentDateTime for some created entries, skip rather
+                # than crash — reply-sync can't act without a message time
+                # (D3's supersede check depends on it).
+                continue
+            to_addrs = [
+                r.get("emailAddress", {}).get("address")
+                for r in (item.get("toRecipients") or [])
+                if r.get("emailAddress", {}).get("address")
+            ]
+            cc_addrs = [
+                r.get("emailAddress", {}).get("address")
+                for r in (item.get("ccRecipients") or [])
+                if r.get("emailAddress", {}).get("address")
+            ]
+            sent_items.append(SentItem(
+                graph_id=item["id"],
+                internet_message_id=item.get("internetMessageId"),
+                conversation_id=item.get("conversationId"),
+                sent_at=datetime.fromisoformat(sent_at_raw.replace("Z", "+00:00")),
+                to=to_addrs,
+                cc=cc_addrs,
+                subject=item.get("subject") or "(no subject)",
+            ))
+        return sent_items, next_delta
+
+    def fetch_message_by_graph_id(self, graph_id: str) -> RawEmail | None:
+        """
+        GET a single already-known message by its Graph-native id and parse
+        it via ``_graph_msg_to_raw`` (the same pure extraction
+        ``fetch_new_emails`` uses) — used by reply-sync to store the
+        Outlook-side reply as an outbound ``EmailMessage`` once
+        ``reconcile_outlook_replies`` matches a Sent Items delta entry to a
+        local thread. Returns None (rather than raising) on any failure so a
+        transient Graph error only skips storing this one message's body —
+        it must not undo the escalation-resolve / draft-retire steps that
+        already ran (see design doc §A.4 step 9).
+        """
+        mailbox = self._settings.msgraph_mailbox
+        url = (
+            f"{self.GRAPH_BASE}/users/{mailbox}/messages/{graph_id}"
+            "?$select=id,subject,from,toRecipients,ccRecipients,body,bodyPreview,"
+            "receivedDateTime,conversationId,internetMessageId,"
+            "internetMessageHeaders,hasAttachments,attachments"
+            "&$expand=attachments($select=id,name,size,contentType,isInline)"
+        )
+        try:
+            resp = self._client.get(url, headers=self._headers())
+            resp.raise_for_status()
+            msg = resp.json()
+            return self._graph_msg_to_raw(msg, mailbox)
+        except Exception as exc:
+            logger.warning(
+                "MSGraph fetch_message_by_graph_id failed for %s: %s", graph_id, exc
+            )
+            return None
 
     def find_or_create_folder(self, name: str) -> str | None:
         """Find a mailbox root folder named `name` (case-insensitive) or create

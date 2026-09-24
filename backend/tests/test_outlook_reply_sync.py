@@ -18,6 +18,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import app.database as _db_mod
 import app.services.email_intake as ei
 from app.models.audit import AuditLog
@@ -140,6 +142,33 @@ def _add_outbound(
             received_at=received_at,
             direction=MessageDirection.outbound,
             is_processed=True,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _add_inbound(
+    thread_id: str,
+    *,
+    received_at: datetime,
+    sender: str = "Client <client@example.com>",
+) -> None:
+    """Add an ADDITIONAL inbound message to a thread already seeded by
+    _seed_thread (which creates the first one) — used to build a
+    multi-message timeline (e.g. a client follow-up after an app reply)."""
+    db = _db_mod.SessionLocal()
+    try:
+        db.add(EmailMessage(
+            thread_id=uuid.UUID(thread_id),
+            message_id_header=_uid("inbound2"),
+            sender=sender,
+            recipient="firm@example.com",
+            body_text="Follow-up.",
+            received_at=received_at,
+            direction=MessageDirection.inbound,
+            is_processed=True,
+            raw_headers={},
         ))
         db.commit()
     finally:
@@ -278,6 +307,85 @@ def test_poll_respects_the_flag(mock_email_provider, monkeypatch):
     assert len(mock_email_provider.sent_delta_calls) == 1
 
 
+@pytest.mark.parametrize("has_body", [True, False])
+def test_poll_once_reply_sync_prevents_same_cycle_duplicate_draft_and_send(
+    mock_email_provider, monkeypatch, has_body,
+):
+    """
+    F1 regression: within a SINGLE poll_once cycle, Phase 1 ingests a new
+    inbound message on a thread that reply-sync (running right after Phase
+    1, before Phase 2) then matches and flips to `sent` because Jane
+    answered it directly in Outlook. Phase 2 must not generate — and
+    therefore never auto-send — a duplicate draft for that thread, whether
+    or not reply-sync managed to store a local copy of the reply's body
+    (parametrized: `applied` vs `applied_message_unstored`).
+
+    Categorization and escalation are mocked out at the same seam
+    tests/test_e2e_happy_path.py uses (`get_categorizer` / `get_escalation_engine`
+    patched directly) rather than the real Anthropic-shaped `mock_anthropic`
+    fixture — going through the real LLM client here would also engage the
+    real `ai_budget` gate, which opens its own nested `SessionLocal()` mid
+    Phase-1-transaction and is unrelated to what this test is verifying.
+    """
+    monkeypatch.setattr(ei.settings, "outlook_reply_sync", True)
+    monkeypatch.setattr(ei.settings, "draft_auto_generate", True)
+    _upsert_cursor("poll-cur-0")
+
+    conv = _conv()
+    client_email = "client@example.com"
+    now = datetime.now(timezone.utc)
+
+    from tests.conftest import make_raw_email
+    inbound_at = now - timedelta(minutes=5)
+    raw = make_raw_email(
+        message_id=_uid("poll-inbound"),
+        sender=f"Client <{client_email}>",
+        received_at=inbound_at,
+        provider_thread_id=conv,
+    )
+    mock_email_provider.fetch_new_emails = lambda: [raw]
+
+    item = _sent_item(conversation_id=conv, to=[client_email], sent_at=now)
+    if has_body:
+        _stub_graph_message(mock_email_provider, item.graph_id)
+    mock_email_provider.sent_delta_results = ([item], "poll-cur-1")
+
+    from unittest.mock import MagicMock, patch
+    from app.schemas.email import CategorizationResult
+
+    mock_cat = MagicMock()
+    mock_cat.categorize.return_value = CategorizationResult(
+        category=EmailCategory.general_inquiry,
+        confidence=0.9,
+        escalation_needed=False,
+        summary="Client has a general question.",
+    )
+    mock_esc_engine = MagicMock()
+    mock_esc_engine.process.return_value = None
+
+    with patch("app.services.email_intake.get_categorizer", return_value=mock_cat), \
+         patch("app.services.email_intake.get_escalation_engine", return_value=mock_esc_engine):
+        processed = ei.poll_once()
+
+    assert processed == 1  # Phase 1 still ingested the inbound message
+
+    db = _db_mod.SessionLocal()
+    try:
+        thread = db.execute(
+            select(EmailThread).where(EmailThread.provider_thread_id == conv)
+        ).scalar_one()
+        tid = thread.id
+        assert thread.status == EmailStatus.sent
+        drafts = db.execute(
+            select(DraftResponse).where(DraftResponse.thread_id == tid)
+        ).scalars().all()
+    finally:
+        db.close()
+
+    assert drafts == []  # Phase 2 must not have generated a draft
+    assert mock_email_provider.sent_emails == []  # ...and never auto-sent one
+
+
 def test_first_run_is_baseline_only(mock_email_provider):
     """No stored cursor -> capture the deltaLink but act on nothing."""
     _reset_cursor()
@@ -315,6 +423,37 @@ def test_delta_failure_is_isolated(mock_email_provider):
 
     assert counters == {}
     assert _get_cursor() == "sent-link-0"  # cursor untouched
+
+
+def test_cursor_does_not_advance_past_a_batch_with_an_error(mock_email_provider):
+    """
+    F4: Graph's delta cursor is a one-way pointer — it can't retry "just
+    that one item." If any item in the batch errors, the cursor must stay
+    put so next poll re-fetches and retries the WHOLE batch (safe because
+    every step is idempotent).
+    """
+    _upsert_cursor("sent-link-0")
+    good_item = _sent_item(conversation_id=_conv(), to=["client@example.com"])
+    bad_item = object()
+    mock_email_provider.sent_delta_results = ([bad_item, good_item], "sent-link-1")
+
+    counters = reconcile_outlook_replies(mock_email_provider)
+
+    assert counters.get("error") == 1
+    assert _get_cursor() == "sent-link-0"  # NOT advanced to sent-link-1
+
+
+def test_cursor_advances_when_the_batch_is_clean(mock_email_provider):
+    """Sanity counterpart to the above: a batch with no errors still
+    advances the cursor normally (no regression from the F4 fix)."""
+    _upsert_cursor("sent-link-0")
+    item = _sent_item(conversation_id=_conv("ghost"), to=["nobody@example.com"])
+    mock_email_provider.sent_delta_results = ([item], "sent-link-1")
+
+    counters = reconcile_outlook_replies(mock_email_provider)
+
+    assert "error" not in counters
+    assert _get_cursor() == "sent-link-1"
 
 
 # ── core reconcile behaviour ───────────────────────────────────────────────────
@@ -496,6 +635,47 @@ def test_app_send_window_skips(mock_email_provider):
     assert _escalation(esc_id).status == EscalationStatus.pending
 
 
+def test_app_send_window_does_not_dedupe_a_reply_to_a_later_followup(mock_email_provider):
+    """
+    F2 regression: an app-sent reply from a PRIOR round must not falsely
+    dedupe a genuine new Outlook reply to a later client follow-up, purely
+    because both happen to fall within ±10 minutes of EACH OTHER in
+    absolute time. Only an outbound message at or after the latest inbound
+    message can be that reply's own echo.
+
+    Timeline: app reply at -8m (to the thread's original inbound), client
+    follow-up at -5m, Jane's genuine Outlook reply (to the follow-up) at
+    -1m. -8m and -1m are 7 minutes apart (within the window), but the -8m
+    app-send predates the -5m follow-up it doesn't answer.
+    """
+    _upsert_cursor("cur-0")
+    conv = _conv()
+    now = datetime.now(timezone.utc)
+    tid = _seed_thread(
+        conversation_id=conv, status=EmailStatus.escalated, tier=ThreadTier.t3_escalate,
+        inbound_at=now - timedelta(minutes=20),
+    )
+    esc_id = _add_escalation(tid)
+
+    _add_outbound(
+        tid, received_at=now - timedelta(minutes=8),
+        to=["client@example.com"], message_id=_uid("app-reply-1"),
+    )
+    _add_inbound(tid, received_at=now - timedelta(minutes=5))  # client follow-up
+
+    item = _sent_item(
+        conversation_id=conv, to=["client@example.com"],
+        sent_at=now - timedelta(minutes=1),
+    )
+    _stub_graph_message(mock_email_provider, item.graph_id)
+    mock_email_provider.sent_delta_results = ([item], "cur-1")
+
+    counters = reconcile_outlook_replies(mock_email_provider)
+
+    assert counters.get("applied") == 1
+    assert _escalation(esc_id).status == EscalationStatus.resolved
+
+
 def test_forward_is_skipped(mock_email_provider):
     """A reply addressed to a third party (forward) shares the conversationId
     but not a recipient with the client — must not resolve the escalation."""
@@ -596,6 +776,89 @@ def test_body_fetch_failure_does_not_undo_escalation_or_draft(mock_email_provide
     assert _outbound_messages(tid) == []
 
 
+def test_step9_integrity_error_does_not_undo_escalation_or_draft(mock_email_provider):
+    """
+    F3: a genuine IntegrityError at step 9 — the graph-fetched body's own
+    message_id collides with a row that already exists (simulating a race:
+    something else stored a message under that header between step 3's
+    idempotency check and this flush) — must not roll back steps 6-8, and
+    the batch must continue to the next item.
+    """
+    _upsert_cursor("cur-0")
+    conv = _conv()
+    tid = _seed_thread(conversation_id=conv, status=EmailStatus.escalated, tier=ThreadTier.t3_escalate)
+    esc_id = _add_escalation(tid)
+    draft_id = _add_draft(tid, status=DraftStatus.pending)
+
+    # A pre-existing row whose header collides with what fetch_message_by_
+    # graph_id will return for this item — NOT the same as item's own
+    # internet_message_id, so step 3's idempotency check doesn't catch it
+    # first; the collision only surfaces when step 9 tries to insert it.
+    colliding_mid = _uid("collision")
+    _add_outbound(tid, received_at=datetime.now(timezone.utc), message_id=colliding_mid)
+
+    item = _sent_item(
+        conversation_id=conv, to=["client@example.com"],
+        internet_message_id=_uid("distinct-from-collision"),
+    )
+    _stub_graph_message(mock_email_provider, item.graph_id, message_id=colliding_mid)
+
+    # A second, independent item in the same batch proves the batch
+    # continues past this item's failure.
+    conv2 = _conv("second")
+    tid2 = _seed_thread(conversation_id=conv2, status=EmailStatus.escalated, tier=ThreadTier.t3_escalate)
+    esc2_id = _add_escalation(tid2)
+    item2 = _sent_item(conversation_id=conv2, to=["client@example.com"])
+    _stub_graph_message(mock_email_provider, item2.graph_id)
+
+    mock_email_provider.sent_delta_results = ([item, item2], "cur-1")
+    counters = reconcile_outlook_replies(mock_email_provider)
+
+    assert counters.get("applied_message_unstored") == 1
+    assert counters.get("applied") == 1
+    assert _escalation(esc_id).status == EscalationStatus.resolved
+    assert _draft(draft_id).status == DraftStatus.rejected
+    assert _thread(tid).status == EmailStatus.sent
+    assert _escalation(esc2_id).status == EscalationStatus.resolved
+
+
+def test_reconcile_never_calls_graph_write_methods(mock_email_provider, monkeypatch):
+    """
+    F3: reply-sync is read-only toward Outlook. Spy on every write-capable
+    provider method and assert none are called across a run that resolves
+    an escalation, retires a draft, and flips the thread to sent.
+    """
+    graph_write_calls: list[str] = []
+
+    def _spy(name):
+        def _inner(*args, **kwargs):
+            graph_write_calls.append(name)
+        return _inner
+
+    for method_name in (
+        "send_email", "move_message", "forward_message", "mark_as_read",
+        "find_or_create_folder", "move_message_to_folder",
+    ):
+        monkeypatch.setattr(
+            mock_email_provider, method_name, _spy(method_name), raising=False
+        )
+
+    _upsert_cursor("cur-0")
+    conv = _conv()
+    tid = _seed_thread(conversation_id=conv, status=EmailStatus.escalated, tier=ThreadTier.t3_escalate)
+    _add_escalation(tid)
+    _add_draft(tid, status=DraftStatus.pending)
+
+    item = _sent_item(conversation_id=conv, to=["client@example.com"])
+    _stub_graph_message(mock_email_provider, item.graph_id)
+    mock_email_provider.sent_delta_results = ([item], "cur-1")
+
+    reconcile_outlook_replies(mock_email_provider)
+
+    assert graph_write_calls == []
+    assert _thread(tid).status == EmailStatus.sent  # confirms real work happened
+
+
 def test_a_bad_item_does_not_derail_the_rest_of_the_batch(mock_email_provider, monkeypatch):
     """One item raising unexpectedly is isolated (its own savepoint) so a
     second, well-formed item in the same batch still gets applied."""
@@ -692,6 +955,36 @@ class TestD1LanePredicate:
         }
         assert tid_spam not in visible
         assert tid_deleted not in visible
+
+    def test_api_badge_matches_list_total_across_all_statuses(self, logged_in_staff):
+        """
+        End-to-end API-level D1 parity (F3): seed a thread for every
+        EmailStatus value in both to-do tiers, then assert
+        /dashboard/stats' t2/t3 badge counts equal /emails?tier=...'s
+        `total` — the same predicate must produce the same number whichever
+        endpoint computes it. Parity is asserted as a relative equality (not
+        an absolute count), so this test is unaffected by threads other
+        tests have already accumulated in the shared test DB.
+        """
+        for tier in (ThreadTier.t2_review, ThreadTier.t3_escalate):
+            for st in EmailStatus:
+                _seed_thread(conversation_id=_conv(), status=st, tier=tier)
+
+        stats = logged_in_staff.get("/api/v1/dashboard/stats")
+        assert stats.status_code == 200, stats.text
+        badges = stats.json()["threads_by_tier"]
+
+        list_t2 = logged_in_staff.get(
+            "/api/v1/emails", params={"tier": "t2_review", "page_size": 100}
+        )
+        list_t3 = logged_in_staff.get(
+            "/api/v1/emails", params={"tier": "t3_escalate", "page_size": 100}
+        )
+        assert list_t2.status_code == 200, list_t2.text
+        assert list_t3.status_code == 200, list_t3.text
+
+        assert badges["t2_review"] == list_t2.json()["total"]
+        assert badges["t3_escalate"] == list_t3.json()["total"]
 
     def test_reply_sync_and_lane_clause_agree(self, mock_email_provider, db_session):
         """End-to-end: after reply-sync resolves+flips a t3 thread, it must no

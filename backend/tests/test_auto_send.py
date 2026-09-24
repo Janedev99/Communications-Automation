@@ -467,3 +467,26 @@ def test_older_outbound_does_not_block_auto_send(db_session, mock_email_provider
     assert len(mock_email_provider.sent_emails) == 1
     db_session.refresh(draft)
     assert draft.status == DraftStatus.sent
+
+
+def test_skips_when_thread_status_is_sent_with_no_outbound_row(db_session, mock_email_provider):
+    """
+    F1 (auto_send guard gap the outbound-message check alone misses): when
+    reply-sync's outbound-message fetch fails (`applied_message_unstored`),
+    the thread is flipped to `sent` but NO outbound row is stored — the
+    outbound-message guard above sees nothing and would let this slip
+    through. This second, thread-status guard catches it independently.
+    """
+    _enable_auto_send(db_session)
+    thread = _make_t1_thread(db_session)
+    thread.status = EmailStatus.sent  # simulates applied_message_unstored
+    _add_inbound_message(db_session, thread)
+    draft = _add_pending_draft(db_session, thread)
+    db_session.commit()
+
+    sent = maybe_auto_send(db_session, thread_id=thread.id, draft_id=draft.id)
+
+    assert sent is False
+    assert mock_email_provider.sent_emails == []
+    db_session.refresh(draft)
+    assert draft.status == DraftStatus.pending

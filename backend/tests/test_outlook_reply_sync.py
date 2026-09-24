@@ -249,6 +249,15 @@ def _get_cursor() -> str | None:
         db.close()
 
 
+def _get_error_streak() -> int:
+    db = _db_mod.SessionLocal()
+    try:
+        row = db.get(SyncState, f"{CURSOR_KEY}:error_streak")
+        return int(row.value) if row and row.value else 0
+    finally:
+        db.close()
+
+
 def _audit_count(entity_id: str, action: str) -> int:
     db = _db_mod.SessionLocal()
     try:
@@ -307,6 +316,30 @@ def test_poll_respects_the_flag(mock_email_provider, monkeypatch):
     assert len(mock_email_provider.sent_delta_calls) == 1
 
 
+class _FakeDraftGenerator:
+    """
+    Stands in for the real DraftGenerator at the exact seam
+    _generate_draft_for_thread uses (a module-level factory function,
+    imported locally at call time). Records every call so the test can
+    assert it's never invoked — the real generator would otherwise fail
+    silently on a network call in this test environment, which would let
+    a broken Phase-2 guard pass unnoticed (T1: the real generator "creates
+    no draft" isn't proof the guard fired; a stub that WOULD create one is).
+    """
+    def __init__(self):
+        self.calls: list[uuid.UUID] = []
+
+    def generate(self, db, thread):
+        self.calls.append(thread.id)
+        draft = DraftResponse(
+            thread_id=thread.id, body_text="fake ai draft", status=DraftStatus.pending
+        )
+        db.add(draft)
+        db.flush()
+        thread.status = EmailStatus.draft_ready
+        return draft
+
+
 @pytest.mark.parametrize("has_body", [True, False])
 def test_poll_once_reply_sync_prevents_same_cycle_duplicate_draft_and_send(
     mock_email_provider, monkeypatch, has_body,
@@ -326,6 +359,12 @@ def test_poll_once_reply_sync_prevents_same_cycle_duplicate_draft_and_send(
     fixture — going through the real LLM client here would also engage the
     real `ai_budget` gate, which opens its own nested `SessionLocal()` mid
     Phase-1-transaction and is unrelated to what this test is verifying.
+
+    Tier is forced to t1_auto with auto-send enabled (real TierRule +
+    SystemSetting rows — decide_tier and maybe_auto_send are NOT mocked) so
+    a broken guard would be caught end-to-end: a duplicate draft AND a
+    duplicate auto-sent email, not just a draft that a stubbed generator
+    happens to create.
     """
     monkeypatch.setattr(ei.settings, "outlook_reply_sync", True)
     monkeypatch.setattr(ei.settings, "draft_auto_generate", True)
@@ -352,6 +391,10 @@ def test_poll_once_reply_sync_prevents_same_cycle_duplicate_draft_and_send(
 
     from unittest.mock import MagicMock, patch
     from app.schemas.email import CategorizationResult
+    from app.models.system_setting import SystemSetting
+    from app.models.tier_rule import TierRule
+    from app.services import system_settings as ss
+    from sqlalchemy import delete
 
     mock_cat = MagicMock()
     mock_cat.categorize.return_value = CategorizationResult(
@@ -362,28 +405,55 @@ def test_poll_once_reply_sync_prevents_same_cycle_duplicate_draft_and_send(
     )
     mock_esc_engine = MagicMock()
     mock_esc_engine.process.return_value = None
-
-    with patch("app.services.email_intake.get_categorizer", return_value=mock_cat), \
-         patch("app.services.email_intake.get_escalation_engine", return_value=mock_esc_engine):
-        processed = ei.poll_once()
-
-    assert processed == 1  # Phase 1 still ingested the inbound message
+    fake_gen = _FakeDraftGenerator()
 
     db = _db_mod.SessionLocal()
     try:
-        thread = db.execute(
-            select(EmailThread).where(EmailThread.provider_thread_id == conv)
-        ).scalar_one()
-        tid = thread.id
-        assert thread.status == EmailStatus.sent
-        drafts = db.execute(
-            select(DraftResponse).where(DraftResponse.thread_id == tid)
-        ).scalars().all()
+        db.add(TierRule(category=EmailCategory.general_inquiry, t1_eligible=True, t1_min_confidence=0.5))
+        db.execute(delete(SystemSetting).where(SystemSetting.key == ss.AUTO_SEND_ENABLED))
+        db.add(SystemSetting(key=ss.AUTO_SEND_ENABLED, value="true"))
+        db.commit()
     finally:
         db.close()
 
-    assert drafts == []  # Phase 2 must not have generated a draft
-    assert mock_email_provider.sent_emails == []  # ...and never auto-sent one
+    try:
+        with patch("app.services.email_intake.get_categorizer", return_value=mock_cat), \
+             patch("app.services.email_intake.get_escalation_engine", return_value=mock_esc_engine), \
+             patch("app.services.draft_generator.get_draft_generator", return_value=fake_gen):
+            processed = ei.poll_once()
+
+        assert processed == 1  # Phase 1 still ingested the inbound message
+        assert fake_gen.calls == []  # Phase 2 must never reach the generator
+
+        db = _db_mod.SessionLocal()
+        try:
+            thread = db.execute(
+                select(EmailThread).where(EmailThread.provider_thread_id == conv)
+            ).scalar_one()
+            tid = thread.id
+            assert thread.status == EmailStatus.sent
+            drafts = db.execute(
+                select(DraftResponse).where(DraftResponse.thread_id == tid)
+            ).scalars().all()
+        finally:
+            db.close()
+
+        assert drafts == []  # Phase 2 must not have generated a draft
+        assert mock_email_provider.sent_emails == []  # ...and never auto-sent one
+    finally:
+        # This test seeds global (not per-record) state — a TierRule keyed
+        # on the category and the AUTO_SEND_ENABLED system setting — that
+        # other tests assume is absent/false by default. Clean up so nothing
+        # leaks into the rest of the shared-DB test session.
+        db = _db_mod.SessionLocal()
+        try:
+            db.execute(
+                delete(TierRule).where(TierRule.category == EmailCategory.general_inquiry)
+            )
+            db.execute(delete(SystemSetting).where(SystemSetting.key == ss.AUTO_SEND_ENABLED))
+            db.commit()
+        finally:
+            db.close()
 
 
 def test_first_run_is_baseline_only(mock_email_provider):
@@ -454,6 +524,100 @@ def test_cursor_advances_when_the_batch_is_clean(mock_email_provider):
 
     assert "error" not in counters
     assert _get_cursor() == "sent-link-1"
+
+
+def test_error_streak_forces_cursor_forward_after_n_polls(mock_email_provider, caplog):
+    """
+    N1(a): a deterministically-failing item (e.g. a data problem that
+    always raises) must not stall the cursor forever. After
+    _REPLY_SYNC_MAX_ERROR_STREAK (3) consecutive polls that each had an
+    error, the cursor is forced forward and an ERROR is logged with the
+    failed graph_id(s).
+    """
+    import app.services.email_intake as _ei
+
+    _upsert_cursor("streak-cur-0")
+    bad_item = object()  # deterministic: always raises AttributeError
+    mock_email_provider.sent_delta_results = ([bad_item], "streak-cur-1")
+
+    with caplog.at_level("WARNING", logger="app.services.email_intake"):
+        counters1 = reconcile_outlook_replies(mock_email_provider)
+        assert counters1.get("error") == 1
+        assert _get_cursor() == "streak-cur-0"  # not advanced
+        assert _get_error_streak() == 1
+
+        counters2 = reconcile_outlook_replies(mock_email_provider)
+        assert counters2.get("error") == 1
+        assert _get_cursor() == "streak-cur-0"  # still not advanced
+        assert _get_error_streak() == 2
+
+        counters3 = reconcile_outlook_replies(mock_email_provider)
+        assert counters3.get("error") == 1
+
+    # Streak hit the cap on the 3rd poll: cursor forced forward, streak reset.
+    assert _get_cursor() == "streak-cur-1"
+    assert _get_error_streak() == 0
+
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any("forcing" in r.message.lower() for r in error_records), (
+        "expected an ERROR log naming the forced cursor advance"
+    )
+
+
+def test_idempotent_replay_does_not_override_staff_reopen(mock_email_provider, caplog):
+    """
+    N1(b): a batch containing one deterministically-failing item (holding
+    the cursor back below the error-streak cap) and one already-applied-
+    but-unstored item must not re-process the second item on replay. If
+    staff reopened the thread and wrote a fresh draft in between polls,
+    that draft must survive untouched — replaying the same batch is a
+    true no-op for an already-applied item, not just "safe to repeat."
+    """
+    _upsert_cursor("idem-cur-0")
+    conv = _conv()
+    tid = _seed_thread(conversation_id=conv, status=EmailStatus.escalated, tier=ThreadTier.t3_escalate)
+    esc_id = _add_escalation(tid)
+
+    good_item = _sent_item(conversation_id=conv, to=["client@example.com"])
+    # graph_messages has no entry -> outbound store fails -> applied_message_unstored
+    bad_item = object()  # deterministic error, holds the cursor back
+    mock_email_provider.sent_delta_results = ([bad_item, good_item], "idem-cur-1")
+
+    with caplog.at_level("WARNING", logger="app.services.email_intake"):
+        # Poll 1: escalation resolved, thread flipped to sent (first, real
+        # application of the unstored item); the bad item errors.
+        counters1 = reconcile_outlook_replies(mock_email_provider)
+        assert counters1.get("applied_message_unstored") == 1
+        assert counters1.get("error") == 1
+        assert _escalation(esc_id).status == EscalationStatus.resolved
+        assert _thread(tid).status == EmailStatus.sent
+        assert _get_cursor() == "idem-cur-0"  # held back by the bad item
+
+        # Staff reopens the thread and writes a fresh draft — simulating
+        # exactly the QA repro.
+        db = _db_mod.SessionLocal()
+        try:
+            thread = db.get(EmailThread, uuid.UUID(tid))
+            thread.status = EmailStatus.pending_review
+            db.commit()
+        finally:
+            db.close()
+        staff_draft_id = _add_draft(tid, status=DraftStatus.pending)
+
+        # Poll 2: SAME batch redelivered (cursor unchanged). The good item
+        # must be recognized as already-applied and skipped — NOT retire
+        # the staff's new draft or flip status back to sent.
+        counters2 = reconcile_outlook_replies(mock_email_provider)
+        assert counters2.get("error") == 1
+        assert _get_cursor() == "idem-cur-0"  # still held back (streak=2)
+
+        # Poll 3: streak hits the cap — cursor forced forward.
+        reconcile_outlook_replies(mock_email_provider)
+
+    assert _get_cursor() == "idem-cur-1"
+    # The staff's draft and status survived every replay untouched.
+    assert _draft(staff_draft_id).status == DraftStatus.pending
+    assert _thread(tid).status == EmailStatus.pending_review
 
 
 # ── core reconcile behaviour ───────────────────────────────────────────────────

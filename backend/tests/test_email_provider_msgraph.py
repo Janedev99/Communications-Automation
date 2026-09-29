@@ -521,3 +521,63 @@ class TestMsgraphDraftSendFlow:
         )
 
         assert returned == "<local-4@example.com>"
+
+
+# ── internetMessageId lookup encoding ─────────────────────────────────────────
+
+class TestResolveGraphMessageIdEncoding:
+    """
+    Regression: `_resolve_graph_message_id` built its OData filter into the URL
+    by hand, and httpx leaves a literal `+` in a query string. Graph decodes
+    `+` as a space, so an internetMessageId containing `+` (common in Gmail /
+    Outlook ids) never matched. `mark_as_read` then silently skipped the PATCH
+    and the same unread messages were re-fetched on every poll; attachment
+    downloads and mailbox moves for those messages failed the same way.
+
+    Uses a real httpx.Client over a MockTransport whose "server" decodes the
+    query exactly like Graph does (form-decoding, so `+` → space), so the test
+    exercises the actual URL encoding rather than a MagicMock.
+    """
+
+    STORED_ID = "<CAB+x9=Qz+abc@mail.gmail.com>"
+
+    def _provider_with_fake_graph(self):
+        import httpx
+        from urllib.parse import parse_qs, urlsplit
+
+        seen_filters: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            query = parse_qs(urlsplit(str(request.url)).query)
+            flt = query.get("$filter", [""])[0]
+            seen_filters.append(flt)
+            match = flt == f"internetMessageId eq '{self.STORED_ID}'"
+            return httpx.Response(200, json={"value": [{"id": "graph-1"}] if match else []})
+
+        provider = _make_provider()
+        provider._client = httpx.Client(transport=httpx.MockTransport(handler))
+        return provider, seen_filters
+
+    def test_id_with_plus_is_found(self):
+        provider, seen = self._provider_with_fake_graph()
+        assert provider._resolve_graph_message_id(self.STORED_ID) == "graph-1", (
+            f"server decoded the filter as {seen[-1]!r}"
+        )
+
+    def test_single_quote_is_still_escaped(self):
+        provider, seen = self._provider_with_fake_graph()
+        provider._resolve_graph_message_id("<a'b@example.com>")
+        assert seen[-1] == "internetMessageId eq '<a''b@example.com>'"
+
+    def test_mark_as_read_patches_a_plus_id(self):
+        provider, _ = self._provider_with_fake_graph()
+        patched: list[str] = []
+        real_patch = provider._client.patch
+
+        def spy(url, **kw):
+            patched.append(url)
+            return real_patch(url, **kw)
+
+        provider._client.patch = spy
+        provider.mark_as_read(self.STORED_ID)
+        assert patched and patched[0].endswith("/messages/graph-1")

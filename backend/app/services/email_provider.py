@@ -547,12 +547,13 @@ class MSGraphProvider(EmailProvider):
         mailbox = self._settings.msgraph_mailbox
         # Escape single quotes — OData filter injection vector
         safe_id = internet_message_id.replace("'", "''")
-        url = (
-            f"{self.GRAPH_BASE}/users/{mailbox}/messages"
-            f"?$filter=internetMessageId eq '{safe_id}'"
-            "&$select=id"
-        )
-        resp = self._client.get(url, headers=self._headers())
+        url = f"{self.GRAPH_BASE}/users/{mailbox}/messages"
+        # Pass the filter as params so httpx percent-encodes it. Built into the
+        # URL by hand, a `+` in the id stays literal and Graph decodes it as a
+        # space, so ids containing `+` never matched (mark_as_read then silently
+        # skipped and the message was re-fetched every poll).
+        params = {"$filter": f"internetMessageId eq '{safe_id}'", "$select": "id"}
+        resp = self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         msgs = resp.json().get("value", [])
         return msgs[0]["id"] if msgs else None

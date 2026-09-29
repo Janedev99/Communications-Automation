@@ -248,3 +248,14 @@ A (including D1), then B on `FEAT/start-clean-reset` after A merges.
 - Staff mailbox Sent Items.
 - Finding 0.6.
 - A bulk-mutation reset.
+
+---
+
+# Feature B — implementation notes (2026-09-30)
+
+- Line references in B.3 had drifted; the code was followed (dashboard stats now read every to-do number from `services/todo_queue.todo_counts`).
+- `lane_clause` / `badge_clause` gained an optional `cutoff` argument rather than a parallel module. t1_auto is not a to-do lane and ignores the cutoff.
+- `GET /escalations?active=true` applies the cutoff; `include_hidden=true` bypasses it. Other views (resolved, all statuses, get-by-id) ignore it.
+- Undo is one level deep: it consumes `todo_cutoff_previous`, so a second Undo returns 409.
+- Audit details: `todo_reset.applied` records `hidden_escalations`, `hidden_reviews`, `hidden_escalated_threads`, `hidden_drafts_pending`; `todo_reset.undone` records `restored_escalations`, `restored_reviews`.
+- R-B5: EXPLAIN QUERY PLAN (SQLite) shows both EXISTS subqueries use `ix_email_messages_thread_id` and `ix_escalations_thread_id`; no new index added. Re-check on Postgres against a prod snapshot.

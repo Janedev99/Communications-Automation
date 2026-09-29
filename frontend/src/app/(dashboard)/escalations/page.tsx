@@ -13,32 +13,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useEscalations } from "@/hooks/use-escalations";
+import { useDashboard } from "@/hooks/use-dashboard";
 
 export default function EscalationsPage() {
   const [status, setStatus] = useState("active");
   const [severity, setSeverity] = useState("");
+  const [showHidden, setShowHidden] = useState(false);
   const [page, setPage] = useState(1);
 
-  // "active" is a UI-only value meaning "pending + acknowledged"
-  const apiStatus = status === "active" ? undefined : status === "all" ? undefined : status;
+  // "active" (pending + acknowledged) is filtered by the server, so the page
+  // total and pagination are correct and a "Start clean" reset is honoured.
+  const isActiveView = status === "active";
+  const apiStatus = isActiveView || status === "all" ? undefined : status;
+
+  const { stats } = useDashboard();
+  const cutoffActive = Boolean(stats?.todo_cutoff_at);
 
   const { escalations, total, isLoading, isError, mutate } = useEscalations({
     status: apiStatus,
     severity: severity || undefined,
+    active: isActiveView,
+    includeHidden: showHidden,
     page,
     page_size: 25,
   });
-
-  // Client-side filter for "active" (pending + acknowledged) since API may not support multi-value
-  const filteredEscalations =
-    status === "active"
-      ? escalations.filter((e) => e.status === "pending" || e.status === "acknowledged")
-      : escalations;
-
-  // When "active" is selected, pagination total must reflect the filtered count,
-  // not the unfiltered API total (which includes resolved escalations).
-  const paginationTotal = status === "active" ? filteredEscalations.length : total;
 
   const handleFilterChange = (setter: (v: string) => void) => (v: string) => {
     setter(v);
@@ -79,6 +79,26 @@ export default function EscalationsPage() {
               <SelectItem value="critical">Critical</SelectItem>
             </SelectContent>
           </Select>
+
+          {isActiveView && cutoffActive && (
+            <div className="flex items-center gap-2 pl-1">
+              <Switch
+                id="show-reset-escalations"
+                checked={showHidden}
+                onCheckedChange={(checked: boolean) => {
+                  setShowHidden(checked);
+                  setPage(1);
+                }}
+                aria-label="Show escalations cleared by Start clean"
+              />
+              <label
+                htmlFor="show-reset-escalations"
+                className="text-sm text-muted-foreground cursor-pointer"
+              >
+                Show items cleared by &ldquo;Start clean&rdquo;
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
@@ -92,11 +112,11 @@ export default function EscalationsPage() {
         <TableSkeleton rows={6} />
       ) : (
         <>
-          <EscalationList escalations={filteredEscalations} onRefresh={mutate} />
+          <EscalationList escalations={escalations} onRefresh={mutate} />
           <Pagination
             page={page}
             pageSize={25}
-            total={paginationTotal}
+            total={total}
             onPageChange={setPage}
           />
         </>

@@ -345,6 +345,8 @@ export interface DashboardStats {
     completion_tokens: number;
     estimated_cost_usd: number;
   };
+  /** "Start clean" cutoff (ISO UTC); null/absent when no reset is active. */
+  todo_cutoff_at?: string | null;
   generated_at: string;
 }
 
@@ -486,6 +488,18 @@ export interface SystemSetting {
   updated_at: string;
   updated_by_id: string | null;
   updated_by_name: string | null;
+}
+
+/** "Start clean" to-do reset (GET/POST/DELETE /system-settings/todo-reset). */
+export interface TodoResetState {
+  cutoff_at: string | null;
+  set_by_name: string | null;
+  set_at: string | null;
+  can_undo: boolean;
+  would_hide: {
+    escalations: number;
+    reviews: number;
+  };
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────────────

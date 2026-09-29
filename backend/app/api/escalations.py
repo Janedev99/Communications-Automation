@@ -2,6 +2,7 @@
 Escalation routes.
 
 GET /escalations                          — list escalations with filters
+                                            (?active=true = open + not reset away)
 GET /escalations/{id}                     — get a single escalation
 PUT /escalations/{id}/acknowledge         — Jane/admin marks as seen
 PUT /escalations/{id}/resolve             — Jane/admin marks as resolved
@@ -26,6 +27,7 @@ from app.schemas.escalation import (
     EscalationResponse,
     ResolveEscalationRequest,
 )
+from app.services.todo_queue import escalation_visible_clause, get_cutoff
 from app.utils.audit import log_action
 
 router = APIRouter(prefix="/escalations", tags=["escalations"])
@@ -58,6 +60,18 @@ def list_escalations(
     status_filter: EscalationStatus | None = Query(default=None, alias="status"),
     severity: EscalationSeverity | None = Query(default=None),
     assigned_to_me: bool = Query(default=False),
+    active: bool = Query(
+        default=False,
+        description=(
+            "Only open escalations (pending + acknowledged), hiding anything "
+            "the 'Start clean' reset cleared. Applied server-side so "
+            "pagination totals are correct."
+        ),
+    ),
+    include_hidden: bool = Query(
+        default=False,
+        description="With active=true, also show escalations hidden by the reset.",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -65,6 +79,17 @@ def list_escalations(
 ) -> EscalationListResponse:
     """List escalations with optional filtering."""
     query = select(Escalation)
+
+    if active:
+        query = query.where(
+            Escalation.status.in_(
+                [EscalationStatus.pending, EscalationStatus.acknowledged]
+            )
+        )
+        # The reset only applies to the active (to-do) view; history views —
+        # resolved, all statuses, get-by-id — always show everything.
+        if not include_hidden:
+            query = query.where(escalation_visible_clause(get_cutoff(db)))
 
     if status_filter is not None:
         query = query.where(Escalation.status == status_filter)

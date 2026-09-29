@@ -105,7 +105,7 @@ from app.services import folder_import
 from app.services.categorizer import get_categorizer
 from app.services.escalation import get_escalation_engine
 from app.services.folder_sync import sync_thread_to_outlook_folder
-from app.services.todo_queue import lane_clause
+from app.services.todo_queue import get_cutoff, lane_clause
 from app.utils.audit import log_action
 from app.utils.rate_limit import check_ai_rate_limit, record_ai_call
 from app.utils.recipients import (
@@ -635,8 +635,10 @@ def list_threads(
         # status==escalated so a status-only escalation never disappears
         # from the tab. See services/todo_queue.lane_clause (D1:
         # FEAT/outlook-reply-sync) — the dashboard badge uses the same
-        # predicate so the two never disagree.
-        query = query.where(lane_clause(tier))
+        # predicate so the two never disagree. The "Start clean" cutoff
+        # (Feature B) is applied inside the same clause, so lane and badge
+        # stay in lockstep.
+        query = query.where(lane_clause(tier, get_cutoff(db)))
     if client_email:
         # Escape LIKE wildcards to prevent unintended pattern matching
         safe_email = client_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -474,6 +474,26 @@ def test_first_run_is_baseline_only(mock_email_provider):
     assert _get_cursor() == "sent-link-1"
 
 
+def test_baseline_run_logs_baseline_captured(mock_email_provider, caplog):
+    """Rollout step (§A.11) tells the operator to watch for this line."""
+    import logging
+
+    _reset_cursor()
+    items = [_sent_item(conversation_id=_conv(), to=["client@example.com"]) for _ in range(2)]
+    mock_email_provider.sent_delta_results = (items, "sent-link-1")
+    with caplog.at_level(logging.INFO, logger="app.services.email_intake"):
+        reconcile_outlook_replies(mock_email_provider)
+    baseline = [r for r in caplog.records if "baseline captured" in r.getMessage()]
+    assert len(baseline) == 1
+    assert "2 sent item" in baseline[0].getMessage()
+
+    caplog.clear()
+    mock_email_provider.sent_delta_results = ([], "sent-link-2")
+    with caplog.at_level(logging.INFO, logger="app.services.email_intake"):
+        reconcile_outlook_replies(mock_email_provider)
+    assert not [r for r in caplog.records if "baseline captured" in r.getMessage()]
+
+
 def test_cursor_is_passed_back_on_next_run(mock_email_provider):
     _upsert_cursor("sent-link-A")
     mock_email_provider.sent_delta_results = ([], "sent-link-B")

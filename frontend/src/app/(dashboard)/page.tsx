@@ -185,6 +185,7 @@ export default function DashboardPage() {
         <TierBreakdownCard
           countsByTier={stats?.threads_by_tier}
           isLoading={statsLoading}
+          sinceReset={Boolean(stats?.todo_cutoff_at)}
         />
       </div>
 

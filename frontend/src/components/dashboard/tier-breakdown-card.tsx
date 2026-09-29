@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 interface TierBreakdownCardProps {
   countsByTier: Record<string, number> | undefined;
   isLoading?: boolean;
+  /** A "Start clean" reset is active, so the counts cover activity since it. */
+  sinceReset?: boolean;
 }
 
 interface Lane {
@@ -49,7 +51,7 @@ const LANES: Lane[] = [
   },
 ];
 
-export function TierBreakdownCard({ countsByTier, isLoading }: TierBreakdownCardProps) {
+export function TierBreakdownCard({ countsByTier, isLoading, sinceReset }: TierBreakdownCardProps) {
   const counts = LANES.map((lane) => ({
     ...lane,
     count: countsByTier?.[lane.id] ?? 0,
@@ -67,6 +69,7 @@ export function TierBreakdownCard({ countsByTier, isLoading }: TierBreakdownCard
         <h2 className="text-sm font-semibold text-foreground">Triage Distribution</h2>
         <span className="text-xs text-muted-foreground tabular-nums">
           {total.toLocaleString()} {total === 1 ? "thread" : "threads"}
+          {sinceReset ? " since reset" : ""}
         </span>
       </div>
       <p className="text-xs text-muted-foreground mb-4">

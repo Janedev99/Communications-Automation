@@ -93,6 +93,21 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         )
         return False
 
+    # A thread already `sent` or `closed` doesn't need (another) auto-send.
+    # Belt-and-suspenders alongside the "already answered" outbound-message
+    # guard below: that guard only catches the case where reply-sync managed
+    # to store a local copy of the Outlook reply (§A.4 step 9). When the body
+    # fetch fails (`applied_message_unstored`), the thread is still flipped to
+    # `sent` but no outbound row exists — without this check, that path would
+    # slip past the guard below and auto-send a duplicate answer.
+    if thread.status in (EmailStatus.sent, EmailStatus.closed):
+        logger.info(
+            "auto_send: thread %s is status=%s — skipping (already answered "
+            "or wrapped up, likely via Outlook reply-sync)",
+            thread_id, thread.status.value,
+        )
+        return False
+
     if thread.auto_sent_at is not None:
         # Already auto-sent (or attempted) — never retry from here. Staff can.
         return False
@@ -122,8 +137,34 @@ def maybe_auto_send(db: Session, *, thread_id: uuid.UUID, draft_id: uuid.UUID) -
         )
         return False
 
-    # ── Build outbound headers ────────────────────────────────────────────────
     latest_inbound = inbound_messages[0]
+
+    # ── "Already answered" guard (FEAT/outlook-reply-sync) ────────────────────
+    # An outbound message already on the thread at or after the latest inbound
+    # message means something already answered it — most likely an Outlook
+    # reply reconciled by reconcile_outlook_replies, which resolves the
+    # escalation and retires this very draft back to `rejected` (see
+    # email_intake._apply_outlook_reply), but the two run in separate poll
+    # steps so this draft could still be `pending` at the instant auto-send
+    # gets to it. Auto-sending here would be a duplicate answer to a client
+    # who was already replied to. An older outbound from a prior round
+    # doesn't count — it doesn't cover the newest client message.
+    already_answered = db.execute(
+        select(EmailMessage.id).where(
+            EmailMessage.thread_id == thread.id,
+            EmailMessage.direction == MessageDirection.outbound,
+            EmailMessage.received_at >= latest_inbound.received_at,
+        )
+    ).first()
+    if already_answered is not None:
+        logger.info(
+            "auto_send: thread %s already has an outbound reply at/after the "
+            "latest inbound message — skipping to avoid a duplicate answer",
+            thread_id,
+        )
+        return False
+
+    # ── Build outbound headers ────────────────────────────────────────────────
     reply_to_message_id = latest_inbound.message_id_header
     parent_refs = (latest_inbound.raw_headers or {}).get("References", "")
     references_header = (

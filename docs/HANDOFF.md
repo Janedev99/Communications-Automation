@@ -172,6 +172,17 @@ Production today: `SHADOW_MODE=true` → nothing auto-sends, every email is huma
 ### 6.5 RunPod (dormant, optional)
 The system can run drafting on a self-hosted GPU pod (RunPod) instead of Anthropic — built before the 2026-05-14 decision to standardize on Anthropic for email. The orchestration (auto-start, idle-stop, daily cost cap, Claude fallback) is fully functional but **disabled in production** (`RUNPOD_POD_ID` empty). The dev pod lives on a shared RunPod account already held on the client side (~$2.99/hr H100 when running). Ignore unless the firm revisits self-hosting; everything is documented in `.env.example`.
 
+### 6.6 Outlook reply-sync (`OUTLOOK_REPLY_SYNC`, dark by default)
+Reconciles a reply Jane sends **directly from Outlook** (not through the app) back into the portal: it resolves the thread's open escalation, retires its stale AI drafts, and marks the thread `sent` so it clears the "For review"/"Escalated" to-do lanes. READ-only toward Outlook throughout — it only reads Sent Items via its own Graph delta cursor (`sync_state` key `delta:sentitems`) and writes local state; it never writes to the mailbox.
+
+**Enable steps:**
+1. Set `OUTLOOK_REPLY_SYNC=true` and redeploy.
+2. Watch the logs for the first poll after enabling — the first run per cursor is baseline-only (captures the delta cursor without acting on anything already in Sent Items), so don't expect anything to happen on the very first cycle.
+3. Smoke test: reply to a live test thread directly in Outlook, then confirm within one poll interval (`EMAIL_POLL_INTERVAL_SECONDS`) that the thread's escalation (if any) resolved, its pending draft (if any) moved to `rejected`, and the thread shows `sent`.
+4. Roll back by unsetting the flag — no data is destroyed by disabling it; the cursor just stops advancing.
+
+**Shared-mailbox caveat (R-A6):** this only works because Jane currently sends from her own mailbox, so her Outlook replies land in *her own* Sent Items, which the delta cursor watches. When the mailbox moves to a shared address (`office@`/`info@` — see §8, roadmap item 1), a reply sent **as** that shared mailbox by an individual staff member (Send As) lands in **that staff member's own** Sent Items by default, not the shared mailbox's — unless the shared mailbox has **`MessageCopyForSentAsEnabled`** turned on (an Exchange Online mailbox setting, set via `Set-Mailbox -MessageCopyForSentAsEnabled $true` in PowerShell). Without it, reply-sync silently sees nothing for those replies. Confirm this setting before/after the mailbox migration, or reply-sync will quietly stop reconciling anything.
+
 ---
 
 ## 7. Known issues & sharp edges

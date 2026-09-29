@@ -21,15 +21,18 @@ import asyncio
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
+from app.models.audit import AuditLog
 from app.models.email import (
     CategorizationSource,
+    DraftResponse,
+    DraftStatus,
     EmailCategory,
     EmailMessage,
     EmailStatus,
@@ -38,8 +41,9 @@ from app.models.email import (
     SyncState,
     ThreadTier,
 )
+from app.models.escalation import Escalation, EscalationStatus
 from app.services.categorizer import get_categorizer
-from app.services.email_provider import RawEmail, get_email_provider
+from app.services.email_provider import RawEmail, SentItem, get_email_provider
 from app.services.escalation import get_escalation_engine
 from app.services.tier_engine import decide_tier
 from app.utils.audit import log_action
@@ -372,6 +376,24 @@ def _generate_draft_for_thread(thread_id: uuid.UUID) -> None:
             logger.warning("Draft generation: thread %s not found", thread_id)
             return
 
+        # Guard against same-poll duplicate work: Phase 1 captured this
+        # thread_id as needing a draft, but reply-sync (which runs between
+        # Phase 1 and Phase 2 — see poll_once) may have since flipped the
+        # thread to `sent`/`closed`/`deleted`/`spam` because Jane answered it
+        # directly in Outlook within this same poll cycle. Generating (and
+        # potentially auto-sending) a fresh draft for an already-answered or
+        # wrapped-up thread would be a duplicate reply. Re-read the status
+        # here rather than trusting Phase 1's snapshot. Reuses
+        # _REPLY_SYNC_SKIP_STATUSES (FEAT/outlook-reply-sync) since it's the
+        # exact same "already terminal, don't touch" status set.
+        if thread.status in _REPLY_SYNC_SKIP_STATUSES:
+            logger.info(
+                "Draft generation: thread %s is now status=%s — skipping "
+                "(likely answered via Outlook reply-sync this same poll cycle)",
+                thread_id, thread.status.value,
+            )
+            return
+
         from app.services.draft_generator import get_draft_generator
         generator = get_draft_generator()
         draft = generator.generate(db, thread)
@@ -530,6 +552,476 @@ def reconcile_outlook_deletions(provider) -> int:
     return total_changed
 
 
+# ── Outlook → app reply sync (FEAT/outlook-reply-sync, Feature A) ─────────────
+# A reply Jane (or any user with mailbox access) sends directly from Outlook —
+# bypassing the app entirely — is otherwise invisible to it: the escalation
+# stays open and a stale AI draft can still get sent later. This mirrors that
+# reply back: resolve the thread's open escalations, retire its sendable
+# drafts, and flip it to `sent` (D2). READ-only toward Outlook throughout — no
+# Graph writes, no auto_save_to_client_folder. Gated on
+# `settings.outlook_reply_sync` (default off).
+
+_REPLY_SYNC_CURSOR_KEY = "delta:sentitems"
+
+# Consecutive-poll error counter (N1: a deterministically-failing item, e.g.
+# a data problem that always raises, must not stall the cursor forever). Its
+# own SyncState row, separate from the cursor itself.
+_REPLY_SYNC_ERROR_STREAK_KEY = f"{_REPLY_SYNC_CURSOR_KEY}:error_streak"
+# After this many consecutive polls that each had at least one per-item
+# error, force the cursor forward past the offending batch anyway (logging
+# ERROR with the failed graph_ids) rather than stalling indefinitely — a
+# permanently-broken item would otherwise block every subsequent Sent Items
+# delta entry from ever being reconciled.
+_REPLY_SYNC_MAX_ERROR_STREAK = 3
+
+# Audit actions _apply_outlook_reply itself writes when it actually changes
+# something (steps 6/7/8). Used by the idempotency check below to detect
+# "this exact item already had its effects applied on a prior poll" for
+# items whose outbound-message store failed (`applied_message_unstored`) —
+# the EmailMessage-based check (step 3) can't catch those since no row
+# exists to find.
+_REPLY_SYNC_APPLIED_ACTIONS = (
+    "email.sent_via_outlook_reply",
+    "escalation.resolved_via_outlook_reply",
+    "draft.retired_via_outlook_reply",
+)
+
+# Draft states an Outlook reply can retire. Mirrors the states staff review —
+# anything not yet a terminal send/reject.
+_RETIRABLE_DRAFT_STATUSES = frozenset(
+    {DraftStatus.pending, DraftStatus.edited, DraftStatus.approved, DraftStatus.send_failed}
+)
+
+# Escalation states still "open" from Jane's point of view.
+_OPEN_ESCALATION_STATUSES = (EscalationStatus.pending, EscalationStatus.acknowledged)
+
+# Thread statuses an Outlook reply must NOT overwrite — already-terminal
+# (sent/closed) so a redundant reply doesn't churn `updated_at`, and
+# deleted/spam so a tidy-up reply after Jane trashed/junked a thread doesn't
+# resurrect it. Mirrors _DELETE_SYNC_SKIP_STATUSES. Escalation resolution and
+# draft retirement (steps 6-7) still run regardless of thread status — a
+# deleted/junked thread's stale drafts still get retired (A.8 edge case).
+_REPLY_SYNC_SKIP_STATUSES = frozenset(
+    {EmailStatus.sent, EmailStatus.closed, EmailStatus.deleted, EmailStatus.spam}
+)
+
+# App-send detection window (A.4 step 4): most app sends carry a locally
+# generated correlation id rather than the real internetMessageId (see design
+# doc §0.2), so idempotency alone can't catch "this is our own reply echoing
+# back from Sent Items." A reply within this window of an app-recorded
+# outbound message, sharing a recipient, is treated as that same send.
+_APP_SEND_WINDOW = timedelta(minutes=10)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Coerce a naive datetime to aware UTC. A.8: all reply-sync comparisons
+    use aware UTC — SQLite (tests) round-trips naive datetimes as-is."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _already_applied_via_audit(
+    db: Session, *, thread_id: uuid.UUID, graph_id: str, sent_at: datetime
+) -> bool:
+    """
+    True if a prior poll already ran steps 6-8 for this exact item (N1(b)).
+
+    Needed because step 3's idempotency check only catches items whose
+    outbound copy was successfully stored — an `applied_message_unstored`
+    item leaves no `EmailMessage` row to find, so without this, a cursor
+    stalled by N1(a)'s error-streak (or any other reason the same batch gets
+    re-delivered) would re-run escalation-resolve / draft-retire / status-
+    flip every poll — silently overriding any legitimate staff action taken
+    in between (e.g. reopening the thread and writing a fresh draft, which
+    would then get incorrectly re-rejected).
+
+    All three actions `_apply_outlook_reply` writes (steps 6/7/8) carry the
+    thread id in `details["thread_id"]` and this item's `graph_id` in
+    `details["graph_id"]` — check both since escalation/draft audit rows use
+    `entity_type`/`entity_id` for the ESCALATION/DRAFT, not the thread.
+    Filtered to reply-sync's own actions and to rows written no earlier than
+    an hour before the reply was sent (both indexed columns) before the
+    per-row detail comparison in Python. Effects are always applied after the
+    send, so older rows can't match; the hour absorbs Exchange/server clock
+    skew. Without the time bound the scan grows with every reply ever synced.
+    """
+    since = _as_utc(sent_at) - timedelta(hours=1)
+    rows = db.execute(
+        select(AuditLog.details).where(
+            AuditLog.action.in_(_REPLY_SYNC_APPLIED_ACTIONS),
+            AuditLog.created_at >= since,
+        )
+    ).scalars().all()
+    tid = str(thread_id)
+    return any(
+        (d or {}).get("thread_id") == tid and (d or {}).get("graph_id") == graph_id
+        for d in rows
+    )
+
+
+def _apply_outlook_reply(db: Session, provider, item: SentItem) -> str:
+    """
+    Reconcile one Sent Items delta entry against local state. Returns an
+    outcome label for the caller's per-outcome counters. Does NOT commit —
+    ``reconcile_outlook_replies`` owns the transaction (each item runs inside
+    its own savepoint, so one bad item can't derail the rest of the batch).
+
+    See design doc §A.4 for the numbered steps this follows.
+    """
+    # 1. Match the thread by conversationId. `provider_thread_id` isn't
+    # unique-constrained (N1(b)) — Graph's conversationId can legitimately
+    # collide across distinct app threads in edge cases (e.g. a stale/
+    # re-threaded conversation) — so this picks the most recently created
+    # match rather than using scalar_one_or_none(), which raises
+    # MultipleResultsFound and would permanently stall the batch on a
+    # deterministic error.
+    if not item.conversation_id:
+        return "skipped_no_thread"
+    thread = db.execute(
+        select(EmailThread)
+        .where(EmailThread.provider_thread_id == item.conversation_id)
+        .order_by(EmailThread.created_at.desc())
+    ).scalars().first()
+    if thread is None:
+        return "skipped_no_thread"
+
+    inbound_messages = db.execute(
+        select(EmailMessage).where(
+            EmailMessage.thread_id == thread.id,
+            EmailMessage.direction == MessageDirection.inbound,
+        ).order_by(EmailMessage.received_at.desc())
+    ).scalars().all()
+    if not inbound_messages:
+        # A thread with no inbound message at all isn't one reply-sync should
+        # ever touch — there's nothing for this reply to be answering.
+        return "skipped_no_thread"
+
+    # 2. Recipient guard — to∪cc must intersect the client's own address (the
+    # thread record) or one of the thread's inbound senders. Blocks forwards:
+    # a forward to a third party shares the conversationId but not a
+    # recipient with the client, so it never resolves the escalation or
+    # retires the drafts.
+    reply_recipients = {a.strip().lower() for a in (item.to + item.cc) if a}
+    known_senders = {
+        _extract_sender_parts(m.sender)[1].strip().lower() for m in inbound_messages
+    }
+    if thread.client_email:
+        known_senders.add(thread.client_email.strip().lower())
+    if not reply_recipients & known_senders:
+        return "skipped_not_to_client"
+
+    # 3. Idempotency — this exact message is already stored (a re-emitted
+    # delta entry, or we already processed it on a prior poll).
+    if item.internet_message_id:
+        existing_msg = db.execute(
+            select(EmailMessage).where(
+                EmailMessage.message_id_header == item.internet_message_id
+            )
+        ).scalar_one_or_none()
+        if existing_msg is not None:
+            return "skipped_idempotent"
+
+    # 3b. Idempotency for an item whose outbound copy couldn't be stored last
+    # time (`applied_message_unstored`) — step 3 above can't catch it (no
+    # EmailMessage row exists), but the audit trail can (N1(b)). Without
+    # this, replaying the same batch (e.g. while the cursor is held back by
+    # N1(a)'s error-streak, or any other re-delivery) would re-run
+    # escalation-resolve / draft-retire / status-flip every poll and could
+    # override a legitimate staff action taken in the interim.
+    if _already_applied_via_audit(
+        db, thread_id=thread.id, graph_id=item.graph_id, sent_at=item.sent_at
+    ):
+        return "skipped_idempotent"
+
+    sent_at = _as_utc(item.sent_at)
+    latest_inbound_at = _as_utc(inbound_messages[0].received_at)
+
+    # 4. App-send detection — an outbound message already on the thread,
+    # within the window and sharing a recipient, is almost certainly the
+    # same send echoing back from Sent Items rather than a separate reply.
+    # Only an outbound message AT OR AFTER the latest inbound message can be
+    # that echo: an older outbound answers a *previous* client message, so an
+    # app-sent reply from a prior round (say, 8 minutes before a follow-up
+    # client message that Jane then answers from Outlook 1 minute after that)
+    # must not falsely dedupe a genuine new Outlook reply just because it
+    # happens to land within the window of that older, already-answered send.
+    outbound_messages = db.execute(
+        select(EmailMessage).where(
+            EmailMessage.thread_id == thread.id,
+            EmailMessage.direction == MessageDirection.outbound,
+        )
+    ).scalars().all()
+    for ob in outbound_messages:
+        ob_sent_at = _as_utc(ob.received_at)
+        if ob_sent_at < latest_inbound_at:
+            continue
+        if abs(ob_sent_at - sent_at) > _APP_SEND_WINDOW:
+            continue
+        ob_recipients = {
+            a.strip().lower()
+            for a in (ob.to_recipients or ([ob.recipient] if ob.recipient else []))
+            if a
+        }
+        if ob_recipients & reply_recipients:
+            return "skipped_app_send"
+
+    # 5. Supersede (D3) — key on message time, not escalation.created_at
+    # (which lags ingestion). If the client wrote again after this reply was
+    # sent, the thread's work is still open; don't resolve/retire/close it.
+    if latest_inbound_at > sent_at:
+        return "skipped_superseded"
+
+    # 6. Resolve every open escalation on the thread.
+    open_escalations = db.execute(
+        select(Escalation).where(
+            Escalation.thread_id == thread.id,
+            Escalation.status.in_(_OPEN_ESCALATION_STATUSES),
+        )
+    ).scalars().all()
+    for esc in open_escalations:
+        esc.status = EscalationStatus.resolved
+        esc.resolved_at = sent_at
+        esc.resolved_by_id = None
+        esc.resolution_notes = "Replied in Outlook"
+        log_action(
+            db,
+            action="escalation.resolved_via_outlook_reply",
+            entity_type="escalation",
+            entity_id=str(esc.id),
+            details={
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
+            user_id=None,
+        )
+
+    # 7. Retire every sendable draft — a client answered in Outlook shouldn't
+    # also receive a stale AI draft later. skip_locked so a concurrent manual
+    # send wins the race instead of erroring out.
+    retirable_drafts = db.execute(
+        select(DraftResponse)
+        .where(
+            DraftResponse.thread_id == thread.id,
+            DraftResponse.status.in_(_RETIRABLE_DRAFT_STATUSES),
+        )
+        .with_for_update(skip_locked=True)
+    ).scalars().all()
+    for draft in retirable_drafts:
+        draft.status = DraftStatus.rejected
+        # NULL reason (not "Replied in Outlook") — this isn't Jane's feedback
+        # on draft quality, so it must stay out of get_negative_patterns.
+        draft.rejection_reason = None
+        draft.reviewed_by_id = None
+        draft.reviewed_at = datetime.now(timezone.utc)
+        log_action(
+            db,
+            action="draft.retired_via_outlook_reply",
+            entity_type="draft_response",
+            entity_id=str(draft.id),
+            details={
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
+            user_id=None,
+        )
+
+    # 8. Active statuses become `sent` (D2); closed/deleted/spam/sent are left
+    # untouched. Tier is unchanged — D1's lane predicate (services/todo_queue)
+    # is what actually clears the to-do lane for a `sent` thread. Never calls
+    # auto_save_to_client_folder — this path is read-only toward Outlook.
+    if thread.status not in _REPLY_SYNC_SKIP_STATUSES:
+        thread.status = EmailStatus.sent
+        thread.updated_at = datetime.now(timezone.utc)
+        log_action(
+            db,
+            action="email.sent_via_outlook_reply",
+            entity_type="email_thread",
+            entity_id=str(thread.id),
+            details={
+                "conversation_id": item.conversation_id,
+                "thread_id": str(thread.id),
+                "graph_id": item.graph_id,
+                "internet_message_id": item.internet_message_id,
+            },
+            user_id=None,
+        )
+
+    # 9. Store the outbound message, isolated in its own savepoint: a fetch
+    # failure (Graph error) or IntegrityError (a race with an app send that
+    # landed the same message_id_header between step 3's check and here)
+    # must not undo steps 6-8 — the escalation is genuinely resolved and the
+    # drafts are genuinely stale regardless of whether a copy of the reply
+    # itself gets stored.
+    try:
+        with db.begin_nested():
+            raw = provider.fetch_message_by_graph_id(item.graph_id)
+            if raw is None:
+                raise LookupError(f"message {item.graph_id} not fetchable")
+            # Serialize attachment metadata to plain dicts (JSON-safe) — same
+            # shape _store_message uses for inbound messages, so the UI's
+            # attachment rendering works identically on either direction.
+            attachment_data = (
+                [a.to_dict() for a in raw.attachments] if raw.attachments else None
+            )
+            outbound = EmailMessage(
+                thread_id=thread.id,
+                message_id_header=raw.message_id,
+                # The mailbox address, not thread.client_email: this message
+                # was SENT BY the firm's mailbox (Jane), never by the client —
+                # falling back to the client's own address would mislabel who
+                # sent it if Graph's `from` field is ever empty/malformed.
+                sender=raw.sender or settings.msgraph_mailbox,
+                recipient=item.to[0] if item.to else None,
+                to_recipients=item.to or None,
+                cc_recipients=item.cc or None,
+                body_text=raw.body_text,
+                body_html=raw.body_html,
+                received_at=sent_at,
+                direction=MessageDirection.outbound,
+                is_processed=True,
+                raw_headers={
+                    **(raw.raw_headers or {}),
+                    "X-AutoComms-Source": "outlook-reply-sync",
+                },
+                attachments=attachment_data if attachment_data else None,
+            )
+            db.add(outbound)
+            db.flush()
+    except Exception as exc:
+        logger.warning(
+            "Reply-sync: could not store outbound copy for thread=%s graph_id=%s: %s",
+            thread.id, item.graph_id, exc,
+        )
+        return "applied_message_unstored"
+
+    return "applied"
+
+
+def reconcile_outlook_replies(provider) -> dict[str, int]:
+    """
+    Reflect an Outlook-only reply back into the app: delta-query Sent Items
+    on its own cursor (``delta:sentitems``), and for each new sent item that
+    matches a local thread, resolve open escalations, retire sendable
+    drafts, and flip the thread to `sent`. Gated by the caller on
+    ``settings.outlook_reply_sync``.
+
+    First run (no stored deltaLink) is baseline-only: it captures the cursor
+    without acting, mirroring ``reconcile_outlook_deletions`` so pre-existing
+    Sent Items aren't retroactively applied. Each item is processed inside
+    its own savepoint (mirrors delete-sync's per-folder transaction, scoped
+    down to per-item here since one item's side effects — escalation
+    resolve, draft retire, message store — are independent of the next) so
+    one bad item can't derail the rest of the batch or poison the whole run.
+
+    The cursor normally advances only when every item in the batch was
+    applied or cleanly skipped — never past an unhandled per-item error:
+    reprocessing the whole batch next poll is safe because every step is
+    idempotent (step 3's message-id check, step 3b's audit-based check for
+    items whose outbound copy couldn't be stored, the app-send/supersede
+    guards), so replaying already-succeeded items is a no-op while the one
+    that errored gets a fresh attempt. However, a *deterministically*
+    failing item (a data problem, not a transient one) would otherwise
+    stall the cursor forever and grow the re-fetched batch every poll — so
+    a consecutive-poll error streak (N1(a), own ``SyncState`` row) forces
+    the cursor forward anyway after ``_REPLY_SYNC_MAX_ERROR_STREAK`` polls
+    in a row each had at least one error, logging the failed graph_ids at
+    ERROR so the stuck item is visible for manual follow-up. Returns
+    per-outcome counters (e.g. ``{"applied": 2, "skipped_idempotent": 1}``).
+    """
+    counters: dict[str, int] = {}
+    errored_graph_ids: list[str] = []
+    db = SessionLocal()
+    try:
+        state = db.get(SyncState, _REPLY_SYNC_CURSOR_KEY)
+        prior_link = state.value if state else None
+        try:
+            items, next_link = provider.delta_sent_messages(delta_link=prior_link)
+        except Exception as exc:
+            logger.warning("Reply-sync: delta fetch failed: %s", exc)
+            db.rollback()
+            return counters
+
+        # Baseline run (no prior cursor): capture the deltaLink only.
+        if prior_link is not None:
+            for item in items:
+                try:
+                    with db.begin_nested():
+                        outcome = _apply_outlook_reply(db, provider, item)
+                except Exception as exc:
+                    outcome = "error"
+                    errored_graph_ids.append(getattr(item, "graph_id", "?"))
+                    logger.error(
+                        "Reply-sync: unexpected error processing graph_id=%s: %s",
+                        getattr(item, "graph_id", "?"), exc, exc_info=True,
+                    )
+                counters[outcome] = counters.get(outcome, 0) + 1
+
+        error_count = counters.get("error", 0)
+        streak_state = db.get(SyncState, _REPLY_SYNC_ERROR_STREAK_KEY)
+
+        if error_count == 0:
+            # Clean batch: advance the cursor normally and reset the streak
+            # (a clean poll breaks any run of prior error polls).
+            if next_link:
+                if state is None:
+                    db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
+                else:
+                    state.value = next_link
+                    state.updated_at = datetime.now(timezone.utc)
+            if streak_state is not None:
+                db.delete(streak_state)
+        else:
+            streak = int(streak_state.value) if streak_state and streak_state.value else 0
+            streak += 1
+            if streak >= _REPLY_SYNC_MAX_ERROR_STREAK:
+                # N1(a): a deterministically-failing item must not stall the
+                # cursor forever — force it forward past this batch and make
+                # the stuck item(s) loudly visible instead of silently
+                # re-attempting every poll indefinitely.
+                logger.error(
+                    "Reply-sync: %d consecutive poll(s) with errors — forcing "
+                    "the cursor forward past this batch to avoid stalling "
+                    "indefinitely. Failed graph_ids: %s",
+                    streak, errored_graph_ids,
+                )
+                if next_link:
+                    if state is None:
+                        db.add(SyncState(key=_REPLY_SYNC_CURSOR_KEY, value=next_link))
+                    else:
+                        state.value = next_link
+                        state.updated_at = datetime.now(timezone.utc)
+                if streak_state is not None:
+                    db.delete(streak_state)
+            else:
+                # Graph's delta cursor is a one-way pointer with no "retry
+                # just this item" mechanism, so the only safe way to retry
+                # an errored item (below the streak cap) is to not consume
+                # the cursor at all and let next poll re-fetch the whole
+                # batch (idempotent — see the docstring).
+                logger.warning(
+                    "Reply-sync: %d item(s) errored this batch (error streak "
+                    "%d/%d) — cursor not advanced, will retry the whole batch "
+                    "next poll. Failed graph_ids: %s",
+                    error_count, streak, _REPLY_SYNC_MAX_ERROR_STREAK, errored_graph_ids,
+                )
+                if streak_state is None:
+                    db.add(SyncState(key=_REPLY_SYNC_ERROR_STREAK_KEY, value=str(streak)))
+                else:
+                    streak_state.value = str(streak)
+                    streak_state.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Reply-sync: reconcile failed: %s", exc, exc_info=True)
+    finally:
+        db.close()
+    return counters
+
+
 def poll_once() -> int:
     """
     Run a single poll cycle: fetch new emails and process each one.
@@ -567,36 +1059,52 @@ def poll_once() -> int:
         except Exception as exc:
             logger.error("Delete-sync: unexpected error: %s", exc, exc_info=True)
 
-    if not raw_emails:
-        logger.debug("No new emails found")
-        return 0
-
-    logger.info("Polling: found %d new email(s)", len(raw_emails))
     processed = 0
     # Collect thread_ids that need AI draft generation (T1.8)
     threads_needing_drafts: list[uuid.UUID] = []
 
-    # Phase 1: Categorize + commit each email individually
-    for raw in raw_emails:
-        db = SessionLocal()
-        try:
-            thread_id = process_single_email(db, raw)
-            db.commit()
-            # Mark as read only after successfully storing
+    if not raw_emails:
+        logger.debug("No new emails found")
+    else:
+        logger.info("Polling: found %d new email(s)", len(raw_emails))
+
+        # Phase 1: Categorize + commit each email individually
+        for raw in raw_emails:
+            db = SessionLocal()
             try:
-                provider.mark_as_read(raw.message_id)
+                thread_id = process_single_email(db, raw)
+                db.commit()
+                # Mark as read only after successfully storing
+                try:
+                    provider.mark_as_read(raw.message_id)
+                except Exception as exc:
+                    logger.warning("Could not mark message as read: %s", exc)
+                processed += 1
+                if thread_id is not None:
+                    threads_needing_drafts.append(thread_id)
             except Exception as exc:
-                logger.warning("Could not mark message as read: %s", exc)
-            processed += 1
-            if thread_id is not None:
-                threads_needing_drafts.append(thread_id)
+                db.rollback()
+                logger.error(
+                    "Failed to process message_id=%s: %s", raw.message_id, exc, exc_info=True
+                )
+            finally:
+                db.close()
+
+    # Outlook → app reply-sync: reflect a reply Jane sent directly from
+    # Outlook back into the app (resolve escalations, retire stale drafts,
+    # mark the thread sent). Runs every cycle — including when there was no
+    # new inbound mail this poll — same "independent of new-mail volume"
+    # contract as delete-sync above, and after Phase 1 ingest so a reply-sync
+    # match never races a same-cycle inbound message for this thread. Fully
+    # guarded so it can never break the core poll. Gated on the flag; default
+    # off = current behaviour (an Outlook-only reply is invisible to the app).
+    if settings.outlook_reply_sync:
+        try:
+            outcomes = reconcile_outlook_replies(provider)
+            if outcomes:
+                logger.info("Reply-sync: %s", outcomes)
         except Exception as exc:
-            db.rollback()
-            logger.error(
-                "Failed to process message_id=%s: %s", raw.message_id, exc, exc_info=True
-            )
-        finally:
-            db.close()
+            logger.error("Reply-sync: unexpected error: %s", exc, exc_info=True)
 
     # Phase 2: Generate drafts in separate per-thread transactions (T1.8)
     # This runs AFTER all categorization commits, decoupled from the poll transaction.

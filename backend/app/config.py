@@ -141,6 +141,19 @@ class Settings(BaseSettings):
     # (app→Outlook delete/spam only). Enable after a supervised live test.
     email_delete_sync: bool = False
 
+    # ── Outlook → app reply sync (FEAT/outlook-reply-sync) ────────────────────
+    # When True, each poll also reconciles Graph Sent Items (its own delta
+    # cursor) against local threads: a reply Jane sends directly from Outlook
+    # resolves the thread's open escalations, retires its stale AI drafts, and
+    # flips its status to `sent` — mirroring what happens when staff send a
+    # draft from inside the app. READ-only against Outlook (no Graph writes,
+    # no auto-file-to-folder) — it only stores a local copy of the reply and
+    # changes local state. Default False = current behaviour (an Outlook-only
+    # reply is invisible to the app; the thread lingers in the to-do lanes
+    # until someone manually resolves/closes it). Enable after a supervised
+    # live test — see docs/HANDOFF.md.
+    outlook_reply_sync: bool = False
+
     # ── RunPod orchestrator ───────────────────────────────────────────────────
     # The orchestrator wraps the runpod_client REST primitives in a service
     # that auto-starts the pod before a draft generation and auto-stops it

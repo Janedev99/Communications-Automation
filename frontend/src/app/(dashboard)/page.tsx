@@ -29,10 +29,13 @@ export default function DashboardPage() {
     page: 1,
     page_size: 5,
   });
+  // `active` applies the "Start clean" cutoff, so this panel lists the same
+  // escalations the "Open Escalations" card counts (stats.pending_escalations).
   const { escalations, isLoading: escalationsLoading, isError: escalationsError, mutate: mutateEscalations } = useEscalations({
     page: 1,
     page_size: 5,
     status: "pending",
+    active: true,
   });
   const { items: activityItems, isLoading: activityLoading } = useActivity(20);
 

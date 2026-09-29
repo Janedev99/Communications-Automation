@@ -191,15 +191,22 @@ def apply_todo_reset(
     previous = todo_queue.parse_cutoff(previous_raw)
     hidden = todo_queue.todo_counts(db, previous)
     now = datetime.now(timezone.utc)
+    current_row = db.get(SystemSetting, todo_queue.CUTOFF_KEY)
 
     # Save the previous value first so Undo can restore it (reset twice, then
-    # undo, returns to the first cutoff — not to "no cutoff").
-    ss.set_setting(
+    # undo, returns to the first cutoff — not to "no cutoff"). The saved row
+    # keeps the ORIGINAL setter and time, so after Undo "set by" describes the
+    # restored cutoff rather than whoever pressed Undo.
+    saved = ss.set_setting(
         db,
         todo_queue.CUTOFF_PREVIOUS_KEY,
         previous.isoformat() if previous else "",
-        updated_by_id=current_user.id,
+        updated_by_id=(
+            current_row.updated_by_id if previous and current_row else current_user.id
+        ),
     )
+    if previous and current_row is not None:
+        saved.updated_at = current_row.updated_at
     ss.set_setting(
         db, todo_queue.CUTOFF_KEY, now.isoformat(), updated_by_id=current_user.id
     )
@@ -238,12 +245,16 @@ def undo_todo_reset(
         )
     current = todo_queue.get_cutoff(db)
     restored = todo_queue.parse_cutoff(previous_row.value)
-    ss.set_setting(
+    restored_row = ss.set_setting(
         db,
         todo_queue.CUTOFF_KEY,
         restored.isoformat() if restored else "",
-        updated_by_id=current_user.id,
+        # The restored cutoff keeps its original setter/time (saved on reset);
+        # the undo itself is attributed to current_user in the audit log below.
+        updated_by_id=previous_row.updated_by_id if restored else current_user.id,
     )
+    if restored:
+        restored_row.updated_at = previous_row.updated_at
     # One level of undo: consume the saved value so a second Undo is a 409.
     db.delete(previous_row)
     db.flush()

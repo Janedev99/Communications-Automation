@@ -644,6 +644,35 @@ def test_undo_restores_previous_state_and_second_undo_is_409(logged_in_admin):
     assert logged_in_admin.delete(BASE).status_code == 409
 
 
+def test_undo_restores_who_set_the_cutoff_and_when(logged_in_admin):
+    """QA P3-1: after Undo, "set by" / "set at" describe the RESTORED cutoff,
+    not the admin who pressed Undo."""
+    from app.models.user import UserRole
+    from app.services.auth import create_user
+
+    first_at = NOW() - timedelta(days=3)
+    db = _db_mod.SessionLocal()
+    try:
+        sara = create_user(
+            db, email=f"sara-{uuid.uuid4().hex[:8]}@example.com",
+            name="Sara Original", password="SaraPass123!", role=UserRole.admin,
+        )
+        ss.set_setting(db, todo_queue.CUTOFF_KEY, first_at.isoformat(), updated_by_id=sara.id)
+        row = db.get(ss.SystemSetting, todo_queue.CUTOFF_KEY)
+        row.updated_at = first_at
+        db.commit()
+    finally:
+        db.close()
+
+    assert logged_in_admin.post(BASE).status_code == 200  # second reset, by the logged-in admin
+    undo = logged_in_admin.delete(BASE)
+    assert undo.status_code == 200, undo.text
+    state = undo.json()
+    assert datetime.fromisoformat(state["cutoff_at"]) == first_at
+    assert state["set_by_name"] == "Sara Original"
+    assert datetime.fromisoformat(state["set_at"]).replace(tzinfo=timezone.utc) == first_at
+
+
 def test_undo_with_nothing_to_undo_is_409(logged_in_admin):
     assert logged_in_admin.delete(BASE).status_code == 409
 

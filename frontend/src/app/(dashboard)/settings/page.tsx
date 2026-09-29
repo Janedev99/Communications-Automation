@@ -12,6 +12,7 @@ import { SendPreferencesForm } from "@/components/settings/send-preferences-form
 import { SignatureForm } from "@/components/settings/signature-form";
 import { MySignatureForm } from "@/components/settings/my-signature-form";
 import { FoldersSettings } from "@/components/settings/folders-settings";
+import { TodoResetCard } from "@/components/settings/todo-reset-card";
 import { TableSkeleton } from "@/components/shared/loading-skeleton";
 import { ErrorState } from "@/components/shared/error-state";
 import { useUser } from "@/hooks/use-user";
@@ -144,6 +145,14 @@ export default function SettingsPage() {
               </span>
             </Link>
           </div>
+        </section>
+      )}
+
+      {/* To-do list reset ("Start clean") — admin only (affects everyone's lanes) */}
+      {isAdmin && (
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3 tracking-tight">To-do list</h2>
+          <TodoResetCard />
         </section>
       )}
 

@@ -971,6 +971,13 @@ def reconcile_outlook_replies(provider) -> dict[str, int]:
                 else:
                     state.value = next_link
                     state.updated_at = datetime.now(timezone.utc)
+                if prior_link is None:
+                    # The rollout runbook (spec §A.11) watches for this line.
+                    logger.info(
+                        "Reply-sync: baseline captured (%d sent item(s) indexed; "
+                        "Outlook replies are applied from the next poll)",
+                        len(items),
+                    )
             if streak_state is not None:
                 db.delete(streak_state)
         else:

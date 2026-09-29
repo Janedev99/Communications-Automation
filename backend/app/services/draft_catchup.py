@@ -40,6 +40,7 @@ from app.models.email import (
     EmailThread,
     ThreadTier,
 )
+from app.services.todo_queue import get_cutoff, visible_clause
 
 logger = logging.getLogger(__name__)
 
@@ -68,15 +69,21 @@ def find_threads_needing_drafts(
         (some other process flagged it, intentional human review may be
         in progress).
       - No DraftResponse row exists for this thread. The whole point.
+      - The thread is visible under the "Start clean" cutoff, if one is set.
 
     Ordered newest-first (`updated_at DESC`) so Jane sees the most recent
     threads drafted before older ones — if the cap kicks in, she still
     gets the freshest context covered first.
     """
+    # "Start clean" (Feature B): a thread the cutoff hid is no longer part of
+    # the to-do list, so don't spend AI credits drafting for it. New inbound
+    # mail brings it back into visibility (and intake drafts it then).
+    cutoff = get_cutoff(db)
     return list(
         db.execute(
             select(EmailThread)
             .where(
+                visible_clause(cutoff),
                 EmailThread.tier.in_([ThreadTier.t1_auto, ThreadTier.t2_review]),
                 EmailThread.status.notin_(
                     [

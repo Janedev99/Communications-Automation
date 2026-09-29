@@ -21,7 +21,7 @@ from app.models.audit import AuditLog
 from app.models.email import DraftResponse, DraftStatus, EmailCategory, EmailStatus, EmailThread, KnowledgeEntry, ThreadTier
 from app.models.escalation import Escalation, EscalationSeverity, EscalationStatus
 from app.models.user import User
-from app.services.todo_queue import badge_clause
+from app.services.todo_queue import get_cutoff, todo_counts
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -89,27 +89,15 @@ def get_stats(
     ).all()
     threads_by_tier = {row.tier.value: row.count for row in tier_rows}
 
-    # The to-do lane badges (t2 "For review" / t3 "Escalated") must match what
-    # their linked list actually shows: not just tier==t2/t3 but also
-    # excluding threads that no longer need action (`sent`/`closed` — see
-    # services/todo_queue.lane_clause, D1: FEAT/outlook-reply-sync) and the
-    # trash-management terminal states (`deleted`/`spam`) the list hides by
-    # default. t3 additionally counts status-only escalations that drifted
-    # from tier (bulk re-categorize, a manually-resolved escalation, etc.) —
-    # same predicate the list's tier filter uses, so the two can never
-    # disagree.
-    lane_counts = db.execute(
-        select(
-            func.count(EmailThread.id).filter(
-                badge_clause(ThreadTier.t2_review)
-            ).label("t2_review"),
-            func.count(EmailThread.id).filter(
-                badge_clause(ThreadTier.t3_escalate)
-            ).label("t3_escalate"),
-        )
-    ).one()
-    threads_by_tier[ThreadTier.t2_review.value] = lane_counts.t2_review
-    threads_by_tier[ThreadTier.t3_escalate.value] = lane_counts.t3_escalate
+    # Every to-do number (lane badges, sidebar escalation dot, High/critical
+    # badge, drafts card) comes from services/todo_queue so it applies the SAME
+    # predicates as the lists: D1's lane clause (sent/closed drop out, deleted/
+    # spam excluded) plus the "Start clean" cutoff. Thread/category/status
+    # breakdowns and analytics deliberately ignore the cutoff.
+    cutoff = get_cutoff(db)
+    todo = todo_counts(db, cutoff)
+    threads_by_tier[ThreadTier.t2_review.value] = todo.t2_review
+    threads_by_tier[ThreadTier.t3_escalate.value] = todo.t3_escalate
 
     # ── Escalations by status ──────────────────────────────────────────────────
     esc_status_rows = db.execute(
@@ -119,18 +107,11 @@ def get_stats(
     escalations_by_status = {row.status.value: row.count for row in esc_status_rows}
 
     # ── Escalations by severity ────────────────────────────────────────────────
-    # Counts UNRESOLVED escalations only (status in {pending, acknowledged}).
-    # Both consumers — the dashboard "Open Escalations" card and the sidebar
-    # red badge — communicate "needs attention right now," and including
-    # resolved escalations from months ago painted both red for no reason.
-    # Resolved-inclusive analytics can re-add an explicit
-    # `escalations_by_severity_all_time` field when needed.
-    esc_severity_rows = db.execute(
-        select(Escalation.severity, func.count(Escalation.id).label("count"))
-        .where(Escalation.status != EscalationStatus.resolved)
-        .group_by(Escalation.severity)
-    ).all()
-    escalations_by_severity = {row.severity.value: row.count for row in esc_severity_rows}
+    # Counts UNRESOLVED escalations only (status in {pending, acknowledged}),
+    # visible under the reset cutoff. Both consumers — the dashboard "Open
+    # Escalations" card and the sidebar red badge — communicate "needs
+    # attention right now", so resolved and reset-away items don't count.
+    escalations_by_severity = todo.escalations_by_severity
 
     # ── Totals + last-24h counts in a single pass ──────────────────────────────
     # Combine thread total, pending escalations, and 24h activity into fewer queries.
@@ -147,21 +128,14 @@ def get_stats(
 
     esc_summary = db.execute(
         select(
-            func.count(Escalation.id).filter(
-                Escalation.status == EscalationStatus.pending
-            ).label("pending"),
             func.count(Escalation.id).filter(Escalation.created_at >= since).label("last_24h"),
         )
     ).one()
-    pending_escalations = esc_summary.pending
+    pending_escalations = todo.pending_escalations
     new_escalations_24h = esc_summary.last_24h
 
     # ── Phase 2: Draft stats ───────────────────────────────────────────────────
-    drafts_pending_review = db.execute(
-        select(func.count(DraftResponse.id)).where(
-            DraftResponse.status.in_([DraftStatus.pending, DraftStatus.edited])
-        )
-    ).scalar_one()
+    drafts_pending_review = todo.drafts_pending_review
 
     today_start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -226,6 +200,9 @@ def get_stats(
             "completion_tokens": int(ai_token_rows.completion_tokens),
             "estimated_cost_usd": round(estimated_cost_usd, 4),
         },
+        # "Start clean" cutoff (ISO UTC) so the UI can show a lane notice;
+        # None when no reset is active.
+        "todo_cutoff_at": cutoff.isoformat() if cutoff else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useEmails, bulkAction } from "@/hooks/use-emails";
 import { useDashboard } from "@/hooks/use-dashboard";
+import { formatDate } from "@/lib/utils";
 import { useUser } from "@/hooks/use-user";
 import { useCompose } from "@/components/emails/compose-context";
 import type { BulkActionRequest, ThreadTier } from "@/lib/types";
@@ -334,6 +335,16 @@ export default function EmailsPage() {
           onChange={handleTierChange}
         />
       )}
+
+      {/* "Start clean" reminder (R-B1): the To-do lanes are filtered, but
+          nothing was deleted — All still shows every thread. */}
+      {isInbox && !isSearchActive && stats?.todo_cutoff_at &&
+        (tier === "t2_review" || tier === "t3_escalate") && (
+          <p className="text-xs text-muted-foreground mb-3">
+            Showing activity since {formatDate(stats.todo_cutoff_at)} (Start clean).
+            Older items are still in <span className="font-medium">All</span>.
+          </p>
+        )}
 
       {/* Global search bar — inbox only (search spans all threads regardless
           of folder, so it would be misleading inside Spam / Deleted views) */}

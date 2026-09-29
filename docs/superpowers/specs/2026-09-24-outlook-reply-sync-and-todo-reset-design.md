@@ -57,6 +57,11 @@ poll_once()
   - `delta_sent_messages` uses `/mailFolders/sentitems/messages/delta?changeType=created&$select=id,internetMessageId,conversationId,sentDateTime,toRecipients,ccRecipients,subject`, with no body.
   - `fetch_message_by_graph_id` uses `GET /messages/{id}` and parses via `_graph_msg_to_raw` (a pure extraction from `fetch_new_emails`).
 - **Pre-build spike (read-only):** confirm delta `$select` support, `changeType=created`, and that an Outlook Reply keeps the inbound `conversationId`.
+  - **Result, 2026-09-30 (passed).** Run read-only against the production mailbox; only counts were recorded.
+    - `$select` and `changeType=created` are accepted. Only the selected fields are returned, with no body and no `@removed` entries. Every item carries id, internetMessageId, conversationId, sentDateTime and toRecipients.
+    - 21 of 22 recent Outlook "RE:" replies share a `conversationId` with an earlier inbound message. The one miss is most likely a reply whose original is no longer in the mailbox.
+    - Baseline: 18,266 sent items in 37 pages at `odata.maxpagesize=500`, taking 227 s. The slowest page took 7.8 s, well inside the 30 s httpx timeout. Replaying the fresh deltaLink returns 0 items.
+    - Rollout consequence: the first poll after `OUTLOOK_REPLY_SYNC=true` takes about 4 minutes and delays that one poll's ingest. Enable the flag outside office hours.
 
 ## A.4 Reconcile (`services/email_intake.py`)
 `_apply_outlook_reply(db, provider, item) -> outcome label`, no commit:

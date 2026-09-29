@@ -918,14 +918,15 @@ class MSGraphProvider(EmailProvider):
         folder; a first (baseline) run must be treated as cursor-capture only
         by the caller, same contract as the delete-sync folders.
 
-        PENDING LIVE VERIFICATION: the credentialed Graph spike that was
-        meant to confirm this exact ``$select`` list and
-        ``changeType=created`` on the sentitems delta endpoint couldn't run
-        (expired credentials — see design doc §A.3). The delta URL is built
-        in this one place so it's a single edit if the real mailbox behaves
-        differently; every downstream consumer treats missing fields
-        defensively (an item with no ``sentDateTime`` is skipped rather than
-        crashing).
+        Verified live on 2026-09-30 (read-only spike against the production
+        mailbox, design doc §A.3): this exact URL and ``$select`` list are
+        accepted with ``changeType=created``; only the selected fields come
+        back (no body) and no ``@removed`` entries appear. A full baseline
+        was 18,266 items in 37 pages at ``odata.maxpagesize=500``, 227 s
+        total with the slowest page at 7.8 s, so it fits inside the client's
+        30 s per-request timeout. Downstream consumers still treat missing
+        fields defensively (an item with no ``sentDateTime`` is skipped
+        rather than crashing).
         """
         mailbox = self._settings.msgraph_mailbox
         url = delta_link or (

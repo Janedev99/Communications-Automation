@@ -7,7 +7,7 @@ provided explicitly.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # ── Application ──────────────────────────────────────────────────────────
     app_env: Literal["development", "production"] = "development"
-    app_secret_key: str = "dev-secret-key-replace-in-production"
+    app_secret_key: str = Field(default="dev-secret-key-replace-in-production", repr=False)
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_log_level: Literal["debug", "info", "warning", "error"] = "info"
@@ -47,14 +47,14 @@ class Settings(BaseSettings):
     # anthropic SDK; tests/conftest.py pins LLM_PROVIDER=anthropic before
     # importing the app so existing fixtures keep working).
     llm_provider: Literal["anthropic", "openai_compat"] = "openai_compat"
-    llm_api_key: str = ""
+    llm_api_key: str = Field(default="", repr=False)
     llm_base_url: str = ""  # e.g. https://api.runpod.ai/v2/<endpoint-id>/openai/v1
     llm_model: str = ""  # falls back to claude_model when provider=anthropic
     llm_timeout: float = 30.0
 
     # Legacy fields — still read by AnthropicLLMClient for back-compat with
     # existing .env files and tests. New deployments should use llm_*.
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = Field(default="", repr=False)
     claude_model: str = "claude-sonnet-4-5"
 
     # ── Email Provider ────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # MS Graph
     msgraph_client_id: str = ""
-    msgraph_client_secret: str = ""
+    msgraph_client_secret: str = Field(default="", repr=False)
     msgraph_tenant_id: str = ""
     msgraph_mailbox: str = ""
 
@@ -71,19 +71,19 @@ class Settings(BaseSettings):
     imap_port: int = 993
     imap_use_ssl: bool = True
     imap_username: str = ""
-    imap_password: str = ""
+    imap_password: str = Field(default="", repr=False)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_use_tls: bool = True
     smtp_username: str = ""
-    smtp_password: str = ""
+    smtp_password: str = Field(default="", repr=False)
 
     # ── Polling ───────────────────────────────────────────────────────────────
     email_poll_interval_seconds: int = 60
 
     # ── Notifications ─────────────────────────────────────────────────────────
     notify_log_file: str = ""
-    slack_webhook_url: str = ""
+    slack_webhook_url: str = Field(default="", repr=False)
 
     # ── Draft Generation ──────────────────────────────────────────────────────
     draft_temperature: float = 0.3
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     # ── Seed admin ────────────────────────────────────────────────────────────
     admin_email: str = "jane@example.com"
     admin_name: str = "Jane"
-    admin_password: str = ""
+    admin_password: str = Field(default="", repr=False)
 
     # ── Trusted Proxies (rate-limiter / IP extraction) ────────────────────────
     # Comma-separated list of trusted proxy IP addresses (e.g. Caddy, Railway LB).

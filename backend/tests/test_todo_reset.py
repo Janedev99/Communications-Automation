@@ -713,3 +713,47 @@ def test_cutoff_keys_are_not_patchable(logged_in_admin, key):
     resp = logged_in_admin.patch(f"/api/v1/system-settings/{key}", json={"value": "2020-01-01T00:00:00+00:00"})
     assert resp.status_code == 404
     assert key not in _setting_keys()
+
+
+# ── Clear (QA P3-2): a way back to "no reset" ────────────────────────────────
+
+CLEAR = BASE + "/clear"
+
+
+def test_clear_turns_the_reset_off_and_can_be_undone(logged_in_admin):
+    tid = _mk_thread()
+    first = logged_in_admin.post(BASE).json()["cutoff_at"]
+    logged_in_admin.post(BASE)  # reset twice: undo alone can no longer reach "none"
+    assert tid not in _lane_ids(logged_in_admin, "t2_review")
+
+    resp = logged_in_admin.post(CLEAR)
+    assert resp.status_code == 200, resp.text
+    state = resp.json()
+    assert state["cutoff_at"] is None
+    assert state["can_undo"] is True
+    assert tid in _lane_ids(logged_in_admin, "t2_review")
+
+    undone = logged_in_admin.delete(BASE).json()
+    assert undone["cutoff_at"] is not None and undone["cutoff_at"] >= first
+    assert tid not in _lane_ids(logged_in_admin, "t2_review")
+
+
+def test_clear_with_no_active_reset_is_409(logged_in_admin):
+    assert logged_in_admin.post(CLEAR).status_code == 409
+
+
+def test_clear_is_admin_only_and_needs_csrf(logged_in_staff, logged_in_admin):
+    assert logged_in_staff.post(CLEAR).status_code == 403
+    logged_in_admin.post(BASE)
+    assert logged_in_admin.post(CLEAR, headers={"X-CSRF-Token": ""}).status_code == 403
+
+
+def test_clear_is_audited(logged_in_admin):
+    _mk_thread()
+    logged_in_admin.post(BASE)
+    n_before = len(_audit_rows("todo_reset.cleared"))
+    assert logged_in_admin.post(CLEAR).status_code == 200
+    rows = _audit_rows("todo_reset.cleared")
+    assert len(rows) == n_before + 1
+    assert rows[-1].details["cleared_cutoff_at"] is not None
+    assert rows[-1].details["restored_reviews"] >= 1

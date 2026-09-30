@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     # live test — see docs/HANDOFF.md.
     outlook_reply_sync: bool = False
 
+    # Mark each ingested Inbox message as read in Outlook (the poller only
+    # fetches UNREAD mail). Default True = unchanged behaviour. Set False on
+    # any copy that shares a mailbox with another copy (e.g. a test deploy
+    # polling the live mailbox): otherwise whichever copy polls first marks the
+    # email read and the other never sees it. With False, re-fetched mail is
+    # skipped as a duplicate before any AI call.
+    mark_as_read: bool = True
+
     # ── RunPod orchestrator ───────────────────────────────────────────────────
     # The orchestrator wraps the runpod_client REST primitives in a service
     # that auto-starts the pod before a draft generation and auto-stops it

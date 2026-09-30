@@ -68,6 +68,21 @@ export function TodoResetCard() {
     }
   };
 
+  const handleClear = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const next = await api.post<TodoResetState>(`${RESET_ENDPOINT}/clear`);
+      await refreshViews(next);
+      toast.success("Reset turned off. The To-do lanes show everything again — Undo brings the reset back.");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not turn off the reset.");
+      await mutate();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const wouldHide = data?.would_hide;
 
   return (
@@ -97,6 +112,11 @@ export function TodoResetCard() {
           {data?.can_undo && (
             <Button variant="outline" onClick={handleUndo} disabled={busy}>
               Undo
+            </Button>
+          )}
+          {data?.cutoff_at && (
+            <Button variant="outline" onClick={handleClear} disabled={busy}>
+              Turn off reset
             </Button>
           )}
           <Button onClick={() => setConfirmOpen(true)} disabled={busy || !data}>

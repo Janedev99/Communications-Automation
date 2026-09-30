@@ -277,3 +277,54 @@ def undo_todo_reset(
     )
     db.commit()
     return _reset_state(db)
+
+
+@router.post("/todo-reset/clear", response_model=TodoResetState)
+def clear_todo_reset(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    _: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> TodoResetState:
+    """Turn the reset off (QA P3-2): the to-do lanes show everything again.
+
+    Undo is one level deep, so after two resets it can never get back to "no
+    cutoff" — this is that way back. The active cutoff (with its original
+    setter and time) is saved as the Undo target, so clearing is reversible.
+    """
+    current = todo_queue.get_cutoff(db)
+    if current is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No reset is active.",
+        )
+    current_row = db.get(SystemSetting, todo_queue.CUTOFF_KEY)
+    before = todo_queue.todo_counts(db, current)
+
+    saved = ss.set_setting(
+        db,
+        todo_queue.CUTOFF_PREVIOUS_KEY,
+        current.isoformat(),
+        updated_by_id=current_row.updated_by_id if current_row else current_user.id,
+    )
+    if current_row is not None:
+        saved.updated_at = current_row.updated_at
+    ss.set_setting(db, todo_queue.CUTOFF_KEY, "", updated_by_id=current_user.id)
+    db.flush()
+
+    after = todo_queue.todo_counts(db, None)
+    log_action(
+        db,
+        action="todo_reset.cleared",
+        entity_type="system_setting",
+        entity_id=todo_queue.CUTOFF_KEY,
+        user_id=current_user.id,
+        ip_address=get_client_ip(request),
+        details={
+            "cleared_cutoff_at": current.isoformat(),
+            "restored_escalations": max(after.active_escalations - before.active_escalations, 0),
+            "restored_reviews": max(after.t2_review - before.t2_review, 0),
+        },
+    )
+    db.commit()
+    return _reset_state(db)

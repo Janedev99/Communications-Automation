@@ -1081,11 +1081,13 @@ def poll_once() -> int:
             try:
                 thread_id = process_single_email(db, raw)
                 db.commit()
-                # Mark as read only after successfully storing
-                try:
-                    provider.mark_as_read(raw.message_id)
-                except Exception as exc:
-                    logger.warning("Could not mark message as read: %s", exc)
+                # Mark as read only after successfully storing — unless this
+                # copy shares the mailbox with another (MARK_AS_READ=false).
+                if settings.mark_as_read:
+                    try:
+                        provider.mark_as_read(raw.message_id)
+                    except Exception as exc:
+                        logger.warning("Could not mark message as read: %s", exc)
                 processed += 1
                 if thread_id is not None:
                     threads_needing_drafts.append(thread_id)
